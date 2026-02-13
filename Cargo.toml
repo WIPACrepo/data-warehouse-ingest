@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "citadel",
+    "barbican",
+]
+resolver = "3"
