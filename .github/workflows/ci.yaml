@@ -98,6 +98,18 @@ jobs:
           fi
       - run: cargo tarpaulin --fail-immediately --fail-under 20 --locked
 
+  image-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}  # lock to triggered commit (github.ref is dynamic)
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+
 
   ############################################################################
   # TAG + RELEASE
@@ -108,7 +120,8 @@ jobs:
     needs: [
       lint,
       test,
-      coverage
+      coverage,
+      image-test-build
     ]
     runs-on: ubuntu-latest
     outputs:
