@@ -15,8 +15,9 @@ RUN if [ -n "$VERSION" ]; then \
     fi
 
 # automatically find binary targets and put them in /usr/local/cargo/bin/
-RUN python3 -c 'import tomllib;[print(m) for m in tomllib.load(open("Cargo.toml", "rb"))["workspace"]["members"]]' \
-    | xargs -I{} cargo install --path {}
+RUN python3 -c 'import tomllib;[print(m) for m in tomllib.load(open("Cargo.toml", "rb"))["workspace"]["members"] if m != "common"]' > .build-objs && \
+    echo "BUILDING TARGETS:" && cat .build-objs && \
+    cat .build-objs | xargs -I{} cargo install --path {}
 
 # Stage 2: Runtime (Minimal glibc environment)
 FROM gcr.io/distroless/cc-debian13

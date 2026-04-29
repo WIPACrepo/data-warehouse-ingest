@@ -26,7 +26,7 @@ MVP: An API allowing limited operations:
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| `POST` | `/api/v1/inbox` | Create a new  inbox |
+| `POST` | `/api/v1/inbox` | Create a new inbox |
 | `GET`  | `/api/v1/inbox/[id]` | Get info on inbox |
 | `DELETE` | `/api/v1/inbox/[id]` | Delete inbox |
 | `POST` | `/api/v1/inbox/[id]/publish` | Publish inbox to data warehouse |
