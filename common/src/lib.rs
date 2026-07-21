@@ -1,4 +1,4 @@
-use std::{future::ready, str::FromStr, sync::Arc, time::{Duration, Instant}};
+use std::{future::ready, str::FromStr, sync::Arc, thread::JoinHandle, time::{Duration, Instant}};
 
 use axum::{
     Json, Router, extract::{FromRequest, MatchedPath, Path, Request, State, rejection::JsonRejection}, http::StatusCode, middleware::{Next, from_fn}, response::{IntoResponse, Response}, routing::{delete, get, post, put}
@@ -131,7 +131,7 @@ pub fn router_logging_layer<T>(router: Router<T>) -> Router<T>
                         .get::<MatchedPath>()
                         .map(|matched_path| matched_path.as_str());
 
-                    tracing::debug_span!("request", %method, %uri, matched_path)
+                    tracing::info_span!("request", %method, %uri, matched_path)
                 }),
             // Graceful shutdown will wait for outstanding requests to complete. Add a timeout so
             // requests don't hang forever.
@@ -165,7 +165,9 @@ pub async fn start_metrics_server() {
         .await
         .unwrap();
     tracing::debug!("listening on {}", listener.local_addr().unwrap());
-    axum::serve(listener, app).await.unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
 }
 
 pub fn router_prometheus(router: Router) -> Router {

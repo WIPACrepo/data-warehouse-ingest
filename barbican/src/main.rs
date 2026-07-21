@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Json, Router, extract::{FromRequest, MatchedPath, Path, Request, State, rejection::JsonRejection}, http::StatusCode, middleware::{Next, from_fn}, response::{IntoResponse, Response}, routing::{delete, get, post, put}
 };
-use common::{db_collection, db_setup, logging_setup, router_logging_layer, shutdown_signal};
+use common::{db_collection, db_setup, logging_setup, router_logging_layer, shutdown_signal, start_metrics_server};
 use mongodb::{
     Client, Collection, bson::{doc, oid::ObjectId}, results::{DeleteResult, InsertOneResult, UpdateResult}
 };
@@ -20,11 +20,19 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() {
     logging_setup(env!("CARGO_CRATE_NAME"));
 
+    // set up prometheus
+    start_metrics_server().await;
+
     // get db
     let client = db_setup().await;
 
     // run it
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    run(client, "127.0.0.1:3000").await
+}
+
+// main loop - broken out for testing
+async fn run(client: Client, bind_address: &str) {
+    let listener = tokio::net::TcpListener::bind(bind_address)
         .await
         .unwrap();
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
