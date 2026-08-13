@@ -4,14 +4,20 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+async-trait = { workspace = true }
 axum = { workspace = true }
 axum-prometheus = { workspace = true }
 axum-test = { workspace = true }
+common = { workspace = true }
+mockall = { workspace = true }
 mongodb = { workspace = true }
 serde = { workspace = true }
+serde-aux = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-common = { workspace = true }
-serde-aux = "4.7.0"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tower = { workspace = true }

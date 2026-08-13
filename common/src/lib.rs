@@ -1,18 +1,17 @@
-use std::{future::ready, str::FromStr, sync::Arc, thread::JoinHandle, time::{Duration, Instant}};
+use std::{str::FromStr, time::Duration};
 
 use axum::{
-    Json, Router, extract::{FromRequest, MatchedPath, Path, Request, State, rejection::JsonRejection}, http::StatusCode, middleware::{Next, from_fn}, response::{IntoResponse, Response}, routing::{delete, get, post, put}
+    Router, extract::{FromRequest, MatchedPath, Request}, http::StatusCode, middleware::Next, response::{IntoResponse, Response}, routing::get
 };
+use serde::Serialize;
 use axum_prometheus::{AXUM_HTTP_REQUESTS_DURATION_SECONDS, utils::SECONDS_DURATION_BUCKETS, PrometheusMetricLayer};
 use axum_prometheus::metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use mongodb::{
     bson::doc,
-    results::{DeleteResult, InsertOneResult, UpdateResult},
     Client, Collection,
 };
-use serde::{Deserialize, Serialize};
-use tokio::{fs::create_dir, signal};
-use tower_http::{metrics, timeout::TimeoutLayer, trace::TraceLayer};
+use tokio::signal;
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{Level, error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -173,6 +172,62 @@ pub async fn start_metrics_server() {
 pub fn router_prometheus(router: Router) -> Router {
     let metric_layer = PrometheusMetricLayer::new();
     router.layer(metric_layer)
+}
+
+// Create our own JSON extractor by wrapping `axum::Json`. This makes it easy to override the
+// rejection and provide our own which formats errors to match our application.
+//
+// `axum::Json` responds with plain text if the input is invalid.
+#[derive(FromRequest)]
+#[from_request(via(axum::Json), rejection(AppError))]
+pub struct AppJson<T>(T);
+
+impl<T> IntoResponse for AppJson<T>
+where
+    axum::Json<T>: IntoResponse,
+{
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
+
+// The kinds of errors we can have in our application.
+#[derive(Debug)]
+pub enum AppError {
+    // The request body contained invalid JSON
+    JsonRejection(axum::extract::rejection::JsonRejection),
+}
+
+// Tell axum how `AppError` should be converted into a response.
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        // How we want errors responses to be serialized
+        #[derive(Serialize)]
+        struct ErrorResponse {
+            message: String,
+        }
+
+        let (status, message) = match &self {
+            AppError::JsonRejection(rejection) => {
+                // This error is caused by bad user input so don't log it
+                (rejection.status(), rejection.body_text())
+            }
+        };
+
+        let response = (status, AppJson(ErrorResponse { message })).into_response();
+        response
+    }
+}
+
+impl From<axum::extract::rejection::JsonRejection> for AppError {
+    fn from(rejection: axum::extract::rejection::JsonRejection) -> Self {
+        Self::JsonRejection(rejection)
+    }
+}
+
+// Our middleware is responsible for logging error details internally
+pub async fn log_app_errors(_request: Request, next: Next) -> Response {
+    next.run(_request).await
 }
 
 

@@ -10,6 +10,9 @@ See `README.md` for a project overview.
 
 * Always set the package version in the workspace `Cargo.toml`, then reference it from workspace packages and libraries that need it.
 
-## Testing instructions
+## Tests
 
-* Always run `cargo test` to check that all tests pass.
+* Each crate gets its own `src/tests/` directory
+* Test utilities live in `src/tests/test_utils/`
+* Tests mirror the source structure
+* All tests run with standard `cargo test`
