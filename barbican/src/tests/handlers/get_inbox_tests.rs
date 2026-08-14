@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
-        Router,
         routing::get,
     };
     use mockall::predicate;
@@ -11,11 +11,9 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::{
-        handlers::get_inbox,
-    };
-    use common::test_utils::create_test_inbox_with_id;
+    use crate::handlers::get_inbox;
     use common::MockInboxStore;
+    use common::test_utils::create_test_inbox_with_id;
 
     #[tokio::test]
     async fn test_get_inbox_success() {

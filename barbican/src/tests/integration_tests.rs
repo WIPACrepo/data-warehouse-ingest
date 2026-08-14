@@ -1,7 +1,7 @@
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
     routing::{delete, get, post},
 };
 use chrono::Utc;
@@ -10,11 +10,8 @@ use mongodb::bson::{doc, oid::ObjectId};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use crate::{
-    MockInboxStore,
-    CreateInbox, InboxDB, InboxStatus,
-};
-use crate::handlers::{create_inbox, get_inbox, delete_inbox, publish_inbox};
+use crate::handlers::{create_inbox, delete_inbox, get_inbox, publish_inbox};
+use crate::{CreateInbox, InboxDB, InboxStatus, MockInboxStore};
 
 /// End-to-end test for full inbox lifecycle
 #[tokio::test]
@@ -23,7 +20,7 @@ async fn test_full_inbox_lifecycle() {
 
     let inbox_id = ObjectId::new();
     let now = Utc::now();
-    
+
     let create_inbox_data = CreateInbox {
         name: "lifecycle-test".to_string(),
         size: 250,
@@ -32,7 +29,7 @@ async fn test_full_inbox_lifecycle() {
         archive_enabled: false,
         archive_sites: vec![],
     };
-    
+
     let expected_inbox = InboxDB {
         id: Some(inbox_id),
         name: create_inbox_data.name.clone(),
@@ -53,7 +50,7 @@ async fn test_full_inbox_lifecycle() {
         .with(predicate::eq(doc! { "warehouse_path": "/test/lifecycle" }))
         .times(1)
         .returning(move |_| Ok(None));
-    
+
     // Then insert_one
     mock_store
         .expect_insert_one()
@@ -82,7 +79,9 @@ async fn test_full_inbox_lifecycle() {
                 .method("POST")
                 .uri("/api/v1/inbox")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_string(&create_inbox_data).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&create_inbox_data).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -121,7 +120,7 @@ async fn test_delete_inbox() {
 
     let inbox_id = ObjectId::new();
     let now = Utc::now();
-    
+
     let inbox = InboxDB {
         id: Some(inbox_id),
         name: "delete-test".to_string(),
@@ -173,7 +172,7 @@ async fn test_publish_inbox() {
 
     let inbox_id = ObjectId::new();
     let now = Utc::now();
-    
+
     let inbox = InboxDB {
         id: Some(inbox_id),
         name: "publish-test".to_string(),

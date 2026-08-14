@@ -1,7 +1,7 @@
-use axum::{extract::{State, Json}};
+use axum::extract::{Json, State};
 use std::sync::Arc;
 
-use common::{InboxStore, CreateInbox, InboxDB, InboxStatus, AppError, AppJson};
+use common::{AppError, AppJson, CreateInbox, InboxDB, InboxStatus, InboxStore};
 
 /// Handler to create a new inbox
 pub async fn create_inbox(
@@ -11,22 +11,22 @@ pub async fn create_inbox(
     // Validate input
     if input.warehouse_path.is_empty() {
         return Err(AppError::ValidationError(
-            "warehouse_path is required".to_string()
+            "warehouse_path is required".to_string(),
         ));
     }
-    
+
     // Check for existing inbox with same warehouse_path
     let existing = store
         .find_one(mongodb::bson::doc! { "warehouse_path": &input.warehouse_path })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
-    
+
     if existing.is_some() {
         return Err(AppError::ValidationError(
-            "An inbox already exists for this warehouse path".to_string()
+            "An inbox already exists for this warehouse path".to_string(),
         ));
     }
-    
+
     let now = chrono::Utc::now();
     let inbox = InboxDB {
         id: None,
@@ -49,6 +49,6 @@ pub async fn create_inbox(
     // Return the created inbox with its new ID
     let mut created_inbox = inbox;
     created_inbox.id = result.inserted_id.as_object_id();
-    
+
     Ok(AppJson::new(created_inbox))
 }

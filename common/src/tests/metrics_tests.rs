@@ -14,7 +14,7 @@ fn test_metrics_app_has_metrics_route() {
 fn test_router_prometheus_adds_layer() {
     let base_router: Router = Router::new().route("/test", get(|| async { "OK" }));
     let router_with_metrics = router_prometheus(base_router);
-    
+
     // Verify we get a Router back (type check)
     let _ = router_with_metrics;
 }

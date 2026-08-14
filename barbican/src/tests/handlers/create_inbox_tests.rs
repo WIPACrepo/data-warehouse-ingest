@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
-        Router,
         routing::post,
     };
     use mockall::predicate;
@@ -12,8 +12,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::handlers::create_inbox;
-    use common::test_utils::{create_test_inbox, create_test_request};
     use common::MockInboxStore;
+    use common::test_utils::{create_test_inbox, create_test_request};
 
     #[tokio::test]
     async fn test_create_inbox_success() {
@@ -21,14 +21,14 @@ mod tests {
 
         let expected_inbox = create_test_inbox("test-inbox", 100);
         let _inbox_id = expected_inbox.id.unwrap();
-        
+
         // Expect find_one to check for duplicates (returns None = no duplicate)
         mock_store
             .expect_find_one()
             .with(predicate::always())
             .times(1)
             .returning(move |_| Ok(None));
-        
+
         mock_store
             .expect_insert_one()
             .with(predicate::always())
@@ -64,14 +64,14 @@ mod tests {
         let mut mock_store = MockInboxStore::new();
 
         let _inbox_id = ObjectId::new();
-        
+
         // Expect find_one to check for duplicates (returns None = no duplicate)
         mock_store
             .expect_find_one()
             .with(predicate::always())
             .times(1)
             .returning(move |_| Ok(None));
-        
+
         mock_store
             .expect_insert_one()
             .with(predicate::always())
@@ -112,7 +112,7 @@ mod tests {
             .with(predicate::always())
             .times(1)
             .returning(move |_| Ok(None));
-        
+
         // Use Error::custom() since ErrorKind variants are #[non_exhaustive]
         let db_error = mongodb::error::Error::custom("Database connection failed");
 
@@ -171,7 +171,7 @@ mod tests {
         let mut mock_store = MockInboxStore::new();
 
         let existing_inbox = create_test_inbox("existing-inbox", 100);
-        
+
         // Expect find_one to return existing inbox (duplicate)
         mock_store
             .expect_find_one()

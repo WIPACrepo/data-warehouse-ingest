@@ -1,19 +1,20 @@
 use axum::{Router, routing::get};
-use axum_prometheus::{AXUM_HTTP_REQUESTS_DURATION_SECONDS, utils::SECONDS_DURATION_BUCKETS, PrometheusMetricLayer};
 use axum_prometheus::metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
+use axum_prometheus::{
+    AXUM_HTTP_REQUESTS_DURATION_SECONDS, PrometheusMetricLayer, utils::SECONDS_DURATION_BUCKETS,
+};
 
 pub fn metrics_app() -> Router {
     // This is the default if you use `PrometheusMetricLayer::pair`.
     let metric_handle = PrometheusBuilder::new()
-       .set_buckets_for_metric(
-           Matcher::Full(AXUM_HTTP_REQUESTS_DURATION_SECONDS.to_string()),
-           SECONDS_DURATION_BUCKETS,
-       )
-       .unwrap()
-       .install_recorder()
-       .unwrap();
-    Router::new()
-        .route("/metrics", get(|| async move { metric_handle.render() }))
+        .set_buckets_for_metric(
+            Matcher::Full(AXUM_HTTP_REQUESTS_DURATION_SECONDS.to_string()),
+            SECONDS_DURATION_BUCKETS,
+        )
+        .unwrap()
+        .install_recorder()
+        .unwrap();
+    Router::new().route("/metrics", get(|| async move { metric_handle.render() }))
 }
 
 pub async fn start_metrics_server() {

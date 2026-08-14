@@ -1,6 +1,9 @@
-use crate::{MockInboxStore, models::{CreateInbox, InboxDB, InboxStatus}};
-use mongodb::bson::oid::ObjectId;
+use crate::{
+    MockInboxStore,
+    models::{CreateInbox, InboxDB, InboxStatus},
+};
 use chrono::Utc;
+use mongodb::bson::oid::ObjectId;
 
 /// Creates a test inbox with the given name and size
 pub fn create_test_inbox(name: &str, size: u64) -> InboxDB {

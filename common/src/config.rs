@@ -16,7 +16,10 @@ pub fn logging_setup(crate_name: &str) {
         match Level::from_str(&raw.to_lowercase()) {
             Ok(level) => level.to_string(),
             Err(_) => {
-                validation_errors.push(format!("Invalid log level '{}' for {}; falling back to '{}'", raw, key, default));
+                validation_errors.push(format!(
+                    "Invalid log level '{}' for {}; falling back to '{}'",
+                    raw, key, default
+                ));
                 default.to_string()
             }
         }
@@ -28,11 +31,17 @@ pub fn logging_setup(crate_name: &str) {
     let crate_level = get_level("LOG_LEVEL", "info");
     let common_crate_name = env!("CARGO_CRATE_NAME");
 
-    let filter_str = format!("{},tower_http={},{}={},{}={}", overall, http, common_crate_name, crate_level, crate_name, crate_level);
+    let filter_str = format!(
+        "{},tower_http={},{}={},{}={}",
+        overall, http, common_crate_name, crate_level, crate_name, crate_level
+    );
 
     // Initialize
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| filter_str.clone().into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| filter_str.clone().into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 

@@ -1,12 +1,15 @@
 //! Integration tests requiring a running MongoDB instance
-//! 
+//!
 //! Run with: cargo test-integration
-
 
 #![cfg(feature = "integration-tests")]
 
 use common::{
-    adapters::MongoInboxStore, db::{db_collection, db_database, db_setup}, models::InboxDB, test_utils::InboxBuilder, traits::InboxStore,
+    adapters::MongoInboxStore,
+    db::{db_collection, db_database, db_setup},
+    models::InboxDB,
+    test_utils::InboxBuilder,
+    traits::InboxStore,
 };
 use mongodb::Collection;
 
@@ -26,7 +29,9 @@ async fn clear_db() -> Result<(), mongodb::error::Error> {
     for name in collection_names {
         // Skip system collections if needed
         if !name.starts_with("system.") {
-            db.collection::<mongodb::bson::Document>(&name).drop().await?;
+            db.collection::<mongodb::bson::Document>(&name)
+                .drop()
+                .await?;
             println!("Dropped collection: {}", name);
         }
     }
@@ -43,18 +48,18 @@ async fn test_mongo_inbox_store_insert_and_find() {
     let store = MongoInboxStore::new(collection);
 
     let inbox = InboxBuilder::new()
-        .with_name("Integration Test Inbox" )
+        .with_name("Integration Test Inbox")
         .build();
 
     let result = store.insert_one(inbox.clone()).await;
     assert!(result.is_ok());
-    
+
     // Then try to find it
     let filter = mongodb::bson::doc! { "name": "Integration Test Inbox" };
     let found = store.find_one(filter).await.unwrap();
-    
+
     assert!(found.is_some());
     assert_eq!(found.unwrap().name, "Integration Test Inbox");
-    
+
     clear_db().await.unwrap();
 }

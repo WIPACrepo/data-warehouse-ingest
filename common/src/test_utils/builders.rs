@@ -1,6 +1,6 @@
 use crate::models::{CreateInbox, InboxDB, InboxStatus};
-use mongodb::bson::oid::ObjectId;
 use chrono::Utc;
+use mongodb::bson::oid::ObjectId;
 
 /// Builder pattern for creating test InboxDB instances
 #[derive(Debug, Clone)]

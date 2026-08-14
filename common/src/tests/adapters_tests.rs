@@ -1,8 +1,8 @@
 use crate::adapters::MongoInboxStore;
 use crate::models::{InboxDB, InboxStatus};
 use crate::traits::InboxStore;
-use mongodb::{Client, Collection};
 use chrono::Utc;
+use mongodb::{Client, Collection};
 
 #[test]
 fn test_mongo_inbox_store_new() {
@@ -19,14 +19,14 @@ async fn test_mongo_inbox_store_insert_one() {
         println!("Skipping test - no DATABASE_URL set");
         return;
     }
-    
+
     let db_url = std::env::var("DATABASE_URL").unwrap();
     let db_name = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "test_db".to_string());
-    
+
     let client = Client::with_uri_str(&db_url).await.unwrap();
     let collection: Collection<InboxDB> = client.database(&db_name).collection("test_inboxes");
     let store = MongoInboxStore::new(collection);
-    
+
     let now = Utc::now();
     let inbox = InboxDB {
         id: None,
@@ -40,9 +40,9 @@ async fn test_mongo_inbox_store_insert_one() {
         created_at: now,
         updated_at: now,
     };
-    
+
     let result = store.insert_one(inbox).await;
-    
+
     // Should succeed if MongoDB is running
     assert!(result.is_ok());
 }
@@ -54,14 +54,14 @@ async fn test_mongo_inbox_store_find_one() {
         println!("Skipping test - no DATABASE_URL set");
         return;
     }
-    
+
     let db_url = std::env::var("DATABASE_URL").unwrap();
     let db_name = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "test_db".to_string());
-    
+
     let client = Client::with_uri_str(&db_url).await.unwrap();
     let collection: Collection<InboxDB> = client.database(&db_name).collection("test_inboxes");
     let store = MongoInboxStore::new(collection);
-    
+
     // First insert a document
     let now = Utc::now();
     let inbox = InboxDB {
@@ -76,13 +76,13 @@ async fn test_mongo_inbox_store_find_one() {
         created_at: now,
         updated_at: now,
     };
-    
+
     store.insert_one(inbox.clone()).await.unwrap();
-    
+
     // Then try to find it
     let filter = mongodb::bson::doc! { "name": "Find Test" };
     let result = store.find_one(filter).await;
-    
+
     assert!(result.is_ok());
     let found = result.unwrap();
     assert!(found.is_some());

@@ -1,6 +1,6 @@
 use crate::models::{CreateInbox, InboxDB, InboxStatus};
-use mongodb::bson::oid::ObjectId;
 use chrono::Utc;
+use mongodb::bson::oid::ObjectId;
 
 /// Creates a default test inbox with common values
 pub fn create_default_test_inbox() -> InboxDB {
@@ -70,8 +70,17 @@ pub fn assert_inboxes_equal_ignoring_id_and_timestamps(a: &InboxDB, b: &InboxDB)
     assert_eq!(a.name, b.name, "Inbox names don't match");
     assert_eq!(a.size, b.size, "Inbox sizes don't match");
     assert_eq!(a.status, b.status, "Inbox status doesn't match");
-    assert_eq!(a.warehouse_path, b.warehouse_path, "Warehouse paths don't match");
+    assert_eq!(
+        a.warehouse_path, b.warehouse_path,
+        "Warehouse paths don't match"
+    );
     assert_eq!(a.lifetime, b.lifetime, "Lifetime values don't match");
-    assert_eq!(a.archive_enabled, b.archive_enabled, "Archive enabled flags don't match");
-    assert_eq!(a.archive_sites, b.archive_sites, "Archive sites don't match");
+    assert_eq!(
+        a.archive_enabled, b.archive_enabled,
+        "Archive enabled flags don't match"
+    );
+    assert_eq!(
+        a.archive_sites, b.archive_sites,
+        "Archive sites don't match"
+    );
 }

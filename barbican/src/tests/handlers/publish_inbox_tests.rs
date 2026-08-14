@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
-        Router,
         routing::post,
     };
     use mockall::predicate;

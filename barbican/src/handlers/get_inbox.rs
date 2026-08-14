@@ -1,8 +1,8 @@
-use axum::{extract::{Path, State}};
+use axum::extract::{Path, State};
 use mongodb::bson::{doc, oid::ObjectId};
 use std::sync::Arc;
 
-use common::{InboxStore, InboxDB, AppError, AppJson};
+use common::{AppError, AppJson, InboxDB, InboxStore};
 
 /// Handler to get an inbox by ID
 pub async fn get_inbox(

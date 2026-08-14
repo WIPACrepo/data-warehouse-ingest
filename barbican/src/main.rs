@@ -1,5 +1,5 @@
 use barbican::serve;
-use common::{logging_setup, start_metrics_server, db_setup};
+use common::{db_setup, logging_setup, start_metrics_server};
 
 #[tokio::main]
 async fn main() {

@@ -1,7 +1,7 @@
 use crate::models::{CreateInbox, InboxDB, InboxStatus};
+use chrono::Utc;
 use mongodb::bson::oid::ObjectId;
 use serde_json;
-use chrono::Utc;
 
 #[test]
 fn test_inbox_db_serialization_roundtrip() {
@@ -80,7 +80,8 @@ fn test_create_inbox_serialization() {
     };
 
     let serialized = serde_json::to_string(&create_inbox).expect("Failed to serialize");
-    let deserialized: CreateInbox = serde_json::from_str(&serialized).expect("Failed to deserialize");
+    let deserialized: CreateInbox =
+        serde_json::from_str(&serialized).expect("Failed to deserialize");
 
     assert_eq!(create_inbox.name, deserialized.name);
     assert_eq!(create_inbox.size, deserialized.size);
@@ -134,7 +135,7 @@ fn test_inbox_db_clone() {
     };
 
     let cloned = inbox.clone();
-    
+
     assert_eq!(inbox.name, cloned.name);
     assert_eq!(inbox.size, cloned.size);
     assert_eq!(inbox.status, cloned.status);

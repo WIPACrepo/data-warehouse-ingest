@@ -6,10 +6,14 @@ pub mod test_utils;
 #[cfg(test)]
 pub mod tests;
 
-pub use common::{InboxDB, CreateInbox, InboxStore, MockInboxStore, InboxStatus, MongoInboxStore};
+pub use common::{CreateInbox, InboxDB, InboxStatus, InboxStore, MockInboxStore, MongoInboxStore};
 
-use axum::{Router, middleware::from_fn, routing::{get, post, delete}};
-use common::{log_app_errors, db_collection};
+use axum::{
+    Router,
+    middleware::from_fn,
+    routing::{delete, get, post},
+};
+use common::{db_collection, log_app_errors};
 use mongodb::Collection;
 use std::sync::Arc;
 
@@ -21,16 +25,12 @@ pub fn create_app(store: Arc<dyn InboxStore>) -> Router {
         .route("/api/v1/inbox/{id}", delete(handlers::delete_inbox))
         .route("/api/v1/inbox/{id}/publish", post(handlers::publish_inbox));
     router = common::router_logging_layer(router);
-    router
-        .layer(from_fn(log_app_errors))
-        .with_state(store)
+    router.layer(from_fn(log_app_errors)).with_state(store)
 }
 
 /// Serve the application on the given address
 pub async fn serve(client: mongodb::Client, bind_address: &str) {
-    let listener = tokio::net::TcpListener::bind(bind_address)
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind(bind_address).await.unwrap();
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
     let collection: Collection<InboxDB> = db_collection(client, "inbox");
     let store = Arc::new(MongoInboxStore::new(collection));
