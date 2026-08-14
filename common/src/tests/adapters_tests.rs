@@ -1,7 +1,8 @@
 use crate::adapters::MongoInboxStore;
-use crate::models::InboxDB;
+use crate::models::{InboxDB, InboxStatus};
 use crate::traits::InboxStore;
 use mongodb::{Client, Collection};
+use chrono::Utc;
 
 #[test]
 fn test_mongo_inbox_store_new() {
@@ -26,11 +27,18 @@ async fn test_mongo_inbox_store_insert_one() {
     let collection: Collection<InboxDB> = client.database(&db_name).collection("test_inboxes");
     let store = MongoInboxStore::new(collection);
     
+    let now = Utc::now();
     let inbox = InboxDB {
         id: None,
         name: "Test Inbox".to_string(),
         size: 100,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: "/test/path".to_string(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     };
     
     let result = store.insert_one(inbox).await;
@@ -55,11 +63,18 @@ async fn test_mongo_inbox_store_find_one() {
     let store = MongoInboxStore::new(collection);
     
     // First insert a document
+    let now = Utc::now();
     let inbox = InboxDB {
         id: None,
         name: "Find Test".to_string(),
         size: 200,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: "/test/find".to_string(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     };
     
     store.insert_one(inbox.clone()).await.unwrap();

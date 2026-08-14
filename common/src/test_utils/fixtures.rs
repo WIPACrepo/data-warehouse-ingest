@@ -1,23 +1,38 @@
-use crate::{MockInboxStore, models::{CreateInbox, InboxDB}};
+use crate::{MockInboxStore, models::{CreateInbox, InboxDB, InboxStatus}};
 use mongodb::bson::oid::ObjectId;
+use chrono::Utc;
 
 /// Creates a test inbox with the given name and size
 pub fn create_test_inbox(name: &str, size: u64) -> InboxDB {
+    let now = Utc::now();
     InboxDB {
         id: Some(ObjectId::new()),
         name: name.to_string(),
         size,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: format!("/test/warehouse/{}", name),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     }
 }
 
 /// Creates a test inbox with a specific ID
 pub fn create_test_inbox_with_id(id: ObjectId, name: &str, size: u64) -> InboxDB {
+    let now = Utc::now();
     InboxDB {
         id: Some(id),
         name: name.to_string(),
         size,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: format!("/test/warehouse/{}", name),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     }
 }
 
@@ -31,5 +46,9 @@ pub fn create_test_request(name: &str, size: u64) -> CreateInbox {
     CreateInbox {
         name: name.to_string(),
         size,
+        warehouse_path: format!("/test/warehouse/{}", name),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
     }
 }

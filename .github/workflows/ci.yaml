@@ -57,6 +57,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,7 +75,7 @@ jobs:
           key: lint-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - run: rustup update stable && rustup default stable
       - run: cargo build --verbose
-      - run: cargo test --verbose
+      - run: cargo test-integration --verbose
 
   coverage:
     name: Coverage

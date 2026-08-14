@@ -1,4 +1,4 @@
-use mongodb::{Client, Collection};
+use mongodb::{Client, Collection, Database};
 use tracing::info;
 
 /// Set up the database client
@@ -23,10 +23,15 @@ pub async fn db_setup() -> Client {
     client
 }
 
-/// Get a collection from the database
-pub fn db_collection<T: Send + Sync>(client: Client, name: &str) -> Collection<T> {
+/// Get database
+pub fn db_database(client: Client) -> Database {
     let db_name_str = std::env::var("DATABASE_NAME").unwrap_or_else(|_| {
         "data-warehouse-ingress".to_string()
     });
-    client.database(db_name_str.as_str()).collection(name)
+    client.database(db_name_str.as_str())
+}
+
+/// Get a collection from the database
+pub fn db_collection<T: Send + Sync>(client: Client, name: &str) -> Collection<T> {
+    db_database(client).collection(name)
 }

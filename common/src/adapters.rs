@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use mongodb::{
     bson::Document,
-    results::InsertOneResult,
+    results::{InsertOneResult, UpdateResult, DeleteResult},
     Collection,
 };
 
@@ -31,5 +31,20 @@ impl InboxStore for MongoInboxStore {
         filter: Document,
     ) -> Result<Option<InboxDB>, mongodb::error::Error> {
         self.collection.find_one(filter).await
+    }
+    
+    async fn update_one(
+        &self,
+        filter: Document,
+        update: Document,
+    ) -> Result<UpdateResult, mongodb::error::Error> {
+        self.collection.update_one(filter, update).await
+    }
+    
+    async fn delete_one(
+        &self,
+        filter: Document,
+    ) -> Result<DeleteResult, mongodb::error::Error> {
+        self.collection.delete_one(filter).await
     }
 }

@@ -2,8 +2,9 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
+use chrono::Utc;
 use mockall::predicate;
 use mongodb::bson::{doc, oid::ObjectId};
 use std::sync::Arc;
@@ -11,9 +12,9 @@ use tower::ServiceExt;
 
 use crate::{
     MockInboxStore,
-    CreateInbox, InboxDB,
+    CreateInbox, InboxDB, InboxStatus,
 };
-use crate::handlers::{create_inbox, get_inbox};
+use crate::handlers::{create_inbox, get_inbox, delete_inbox, publish_inbox};
 
 /// End-to-end test for full inbox lifecycle
 #[tokio::test]
@@ -21,19 +22,39 @@ async fn test_full_inbox_lifecycle() {
     let mut mock_store = MockInboxStore::new();
 
     let inbox_id = ObjectId::new();
+    let now = Utc::now();
+    
     let create_inbox_data = CreateInbox {
         name: "lifecycle-test".to_string(),
         size: 250,
+        warehouse_path: "/test/lifecycle".to_string(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
     };
+    
     let expected_inbox = InboxDB {
         id: Some(inbox_id),
         name: create_inbox_data.name.clone(),
         size: create_inbox_data.size,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: create_inbox_data.warehouse_path.clone(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     };
 
     // Setup mock expectations for create
-    // InsertOneResult is #[non_exhaustive], use default()
+    // First find_one to check for duplicates (returns None)
+    mock_store
+        .expect_find_one()
+        .with(predicate::eq(doc! { "warehouse_path": "/test/lifecycle" }))
+        .times(1)
+        .returning(move |_| Ok(None));
+    
+    // Then insert_one
     mock_store
         .expect_insert_one()
         .with(predicate::always())
@@ -90,98 +111,110 @@ async fn test_full_inbox_lifecycle() {
 
     assert_eq!(retrieved_inbox["name"], "lifecycle-test");
     assert_eq!(retrieved_inbox["size"], 250);
-    assert_eq!(retrieved_inbox["active"], true);
+    assert_eq!(retrieved_inbox["status"], "active");
 }
 
-/// Test concurrent operations
+/// Test delete operation
 #[tokio::test]
-async fn test_concurrent_operations() {
+async fn test_delete_inbox() {
     let mut mock_store = MockInboxStore::new();
 
-    let inbox_id_1 = ObjectId::new();
-    let inbox_id_2 = ObjectId::new();
-
-    // Setup mock for multiple creates (2 concurrent)
-    mock_store
-        .expect_insert_one()
-        .times(2)
-        .returning_st(move |_| Ok(mongodb::results::InsertOneResult::default()));
-
-    // Setup mock for multiple finds
-    let inbox_1 = InboxDB {
-        id: Some(inbox_id_1),
-        name: "concurrent-1".to_string(),
+    let inbox_id = ObjectId::new();
+    let now = Utc::now();
+    
+    let inbox = InboxDB {
+        id: Some(inbox_id),
+        name: "delete-test".to_string(),
         size: 100,
-        active: true,
-    };
-    let inbox_2 = InboxDB {
-        id: Some(inbox_id_2),
-        name: "concurrent-2".to_string(),
-        size: 200,
-        active: true,
+        status: InboxStatus::Active,
+        warehouse_path: "/test/delete".to_string(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     };
 
     mock_store
         .expect_find_one()
-        .with(predicate::eq(doc! { "_id": inbox_id_1 }))
+        .with(predicate::eq(doc! { "_id": inbox_id }))
         .times(1)
-        .returning(move |_| Ok(Some(inbox_1.clone())));
+        .returning(move |_| Ok(Some(inbox.clone())));
 
     mock_store
-        .expect_find_one()
-        .with(predicate::eq(doc! { "_id": inbox_id_2 }))
+        .expect_update_one()
+        .with(predicate::always(), predicate::always())
         .times(1)
-        .returning(move |_| Ok(Some(inbox_2.clone())));
+        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
 
     let store = Arc::new(mock_store);
     let app = Router::new()
-        .route("/api/v1/inbox", post(create_inbox))
-        .route("/api/v1/inbox/{id}", get(get_inbox))
+        .route("/api/v1/inbox/{id}", delete(delete_inbox))
         .with_state(store);
 
-    // Run concurrent requests
-    let create_req_1 = create_inbox_request("concurrent-1", 100);
-    let create_req_2 = create_inbox_request("concurrent-2", 200);
-
-    let (resp1, resp2) = tokio::join!(
-        app.clone().oneshot(create_req_1),
-        app.clone().oneshot(create_req_2)
-    );
-
-    assert_eq!(resp1.unwrap().status(), StatusCode::OK);
-    assert_eq!(resp2.unwrap().status(), StatusCode::OK);
-
-    // Verify retrieves work
-    let get_req_1 = Request::builder()
-        .method("GET")
-        .uri(&format!("/api/v1/inbox/{}", inbox_id_1.to_hex()))
-        .body(Body::empty())
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
         .unwrap();
 
-    let get_req_2 = Request::builder()
-        .method("GET")
-        .uri(&format!("/api/v1/inbox/{}", inbox_id_2.to_hex()))
-        .body(Body::empty())
-        .unwrap();
-
-    let (get_resp1, get_resp2) = tokio::join!(
-        app.clone().oneshot(get_req_1),
-        app.clone().oneshot(get_req_2)
-    );
-
-    assert_eq!(get_resp1.unwrap().status(), StatusCode::OK);
-    assert_eq!(get_resp2.unwrap().status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
-fn create_inbox_request(name: &str, size: u64) -> Request<Body> {
-    let create_data = CreateInbox {
-        name: name.to_string(),
-        size,
+/// Test publish operation
+#[tokio::test]
+async fn test_publish_inbox() {
+    let mut mock_store = MockInboxStore::new();
+
+    let inbox_id = ObjectId::new();
+    let now = Utc::now();
+    
+    let inbox = InboxDB {
+        id: Some(inbox_id),
+        name: "publish-test".to_string(),
+        size: 100,
+        status: InboxStatus::Active,
+        warehouse_path: "/test/publish".to_string(),
+        lifetime: None,
+        archive_enabled: false,
+        archive_sites: vec![],
+        created_at: now,
+        updated_at: now,
     };
-    Request::builder()
-        .method("POST")
-        .uri("/api/v1/inbox")
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&create_data).unwrap()))
-        .unwrap()
+
+    mock_store
+        .expect_find_one()
+        .with(predicate::eq(doc! { "_id": inbox_id }))
+        .times(1)
+        .returning(move |_| Ok(Some(inbox.clone())));
+
+    mock_store
+        .expect_update_one()
+        .with(predicate::always(), predicate::always())
+        .times(1)
+        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+
+    let store = Arc::new(mock_store);
+    let app = Router::new()
+        .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
+        .with_state(store);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
 }

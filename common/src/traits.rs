@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use mockall::automock;
 use mongodb::{
     bson::Document,
-    results::InsertOneResult,
+    results::{InsertOneResult, UpdateResult, DeleteResult},
 };
 
 use crate::models::InboxDB;
@@ -19,4 +19,15 @@ pub trait InboxStore: Send + Sync {
         &self,
         filter: Document,
     ) -> Result<Option<InboxDB>, mongodb::error::Error>;
+    
+    async fn update_one(
+        &self,
+        filter: Document,
+        update: Document,
+    ) -> Result<UpdateResult, mongodb::error::Error>;
+    
+    async fn delete_one(
+        &self,
+        filter: Document,
+    ) -> Result<DeleteResult, mongodb::error::Error>;
 }

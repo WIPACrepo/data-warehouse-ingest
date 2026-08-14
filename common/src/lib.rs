@@ -14,7 +14,7 @@ pub use db::{db_collection, db_setup};
 pub use error::{AppError, AppJson, log_app_errors};
 pub use metrics::{metrics_app, start_metrics_server, router_prometheus};
 pub use middleware::router_logging_layer;
-pub use models::{CreateInbox, InboxDB};
+pub use models::{CreateInbox, InboxDB, InboxStatus};
 pub use traits::{InboxStore, MockInboxStore};
 
 #[cfg(test)]

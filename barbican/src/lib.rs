@@ -6,9 +6,9 @@ pub mod test_utils;
 #[cfg(test)]
 pub mod tests;
 
-pub use common::{InboxDB, CreateInbox, InboxStore, MockInboxStore, MongoInboxStore};
+pub use common::{InboxDB, CreateInbox, InboxStore, MockInboxStore, InboxStatus, MongoInboxStore};
 
-use axum::{Router, middleware::from_fn, routing::{get, post}};
+use axum::{Router, middleware::from_fn, routing::{get, post, delete}};
 use common::{log_app_errors, db_collection};
 use mongodb::Collection;
 use std::sync::Arc;
@@ -17,7 +17,9 @@ use std::sync::Arc;
 pub fn create_app(store: Arc<dyn InboxStore>) -> Router {
     let mut router = Router::new()
         .route("/api/v1/inbox", post(handlers::create_inbox))
-        .route("/api/v1/inbox/{id}", get(handlers::get_inbox));
+        .route("/api/v1/inbox/{id}", get(handlers::get_inbox))
+        .route("/api/v1/inbox/{id}", delete(handlers::delete_inbox))
+        .route("/api/v1/inbox/{id}/publish", post(handlers::publish_inbox));
     router = common::router_logging_layer(router);
     router
         .layer(from_fn(log_app_errors))

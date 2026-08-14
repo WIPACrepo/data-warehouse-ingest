@@ -8,6 +8,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 axum-prometheus = { workspace = true }
 axum-test = { workspace = true }
+chrono = { workspace = true }
 common = { workspace = true }
 mockall = { workspace = true }
 mongodb = { workspace = true }

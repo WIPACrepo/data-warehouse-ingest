@@ -1,5 +1,6 @@
 use axum::{
     extract::FromRequest,
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -7,10 +8,17 @@ use serde::Serialize;
 // Create our own JSON extractor by wrapping `axum::Json`. This makes it easy to override the
 // rejection and provide our own which formats errors to match our application.
 //
-// `axum::Json` responds with plain text if the input is invalid.
+// `axum::Json` responds with with plain text if the the input is invalid.
 #[derive(FromRequest)]
 #[from_request(via(axum::Json), rejection(AppError))]
-pub struct AppJson<T>(T);
+pub struct AppJson<T>(pub T);
+
+impl<T> AppJson<T> {
+    /// Creates a new AppJson wrapper
+    pub fn new(value: T) -> Self {
+        AppJson(value)
+    }
+}
 
 impl<T> IntoResponse for AppJson<T>
 where
@@ -26,6 +34,14 @@ where
 pub enum AppError {
     // The request body contained invalid JSON
     JsonRejection(axum::extract::rejection::JsonRejection),
+    
+    // Barbican-specific errors
+    InboxNotFound(String),
+    InboxNotDeletable(String),
+    InboxAlreadyPublishing(String),
+    InvalidPublishParameters(String),
+    DatabaseError(String),
+    ValidationError(String),
 }
 
 // Tell axum how `AppError` should be converted into a response.
@@ -36,14 +52,23 @@ impl IntoResponse for AppError {
         struct ErrorResponse {
             message: String,
         }
-
+        
         let (status, message) = match &self {
             AppError::JsonRejection(rejection) => {
                 // This error is caused by bad user input so don't log it
                 (rejection.status(), rejection.body_text())
             }
+            AppError::InboxNotFound(_) => (StatusCode::NOT_FOUND, "Inbox not found".to_string()),
+            AppError::InboxNotDeletable(_) => (StatusCode::CONFLICT, "Inbox cannot be deleted".to_string()),
+            AppError::InboxAlreadyPublishing(_) => (StatusCode::CONFLICT, "Inbox is already publishing".to_string()),
+            AppError::InvalidPublishParameters(_) => (StatusCode::BAD_REQUEST, "Invalid publish parameters".to_string()),
+            AppError::DatabaseError(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)),
+            AppError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
         };
-
+        
+        // Log full error details at debug level
+        tracing::debug!(?self, "AppError");
+        
         let response = (status, AppJson(ErrorResponse { message })).into_response();
         response
     }

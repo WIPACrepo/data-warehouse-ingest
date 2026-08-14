@@ -87,7 +87,7 @@ mod tests {
 
         assert_eq!(inbox["name"], "full-inbox");
         assert_eq!(inbox["size"], 500);
-        assert_eq!(inbox["active"], true);
+        assert_eq!(inbox["status"], "active");
     }
 
     #[tokio::test]
