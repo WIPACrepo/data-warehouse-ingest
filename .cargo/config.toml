@@ -1,0 +1,2 @@
+[alias]
+test-integration = "test --features integration-tests"

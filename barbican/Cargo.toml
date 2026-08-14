@@ -4,3 +4,16 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+axum = { workspace = true }
+axum-test = { workspace = true }
+chrono = { workspace = true }
+common = { workspace = true }
+mockall = { workspace = true }
+mongodb = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tower = { workspace = true }

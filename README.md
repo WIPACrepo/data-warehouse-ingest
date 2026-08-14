@@ -26,7 +26,7 @@ MVP: An API allowing limited operations:
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| `POST` | `/api/v1/inbox` | Create a new  inbox |
+| `POST` | `/api/v1/inbox` | Create a new inbox |
 | `GET`  | `/api/v1/inbox/[id]` | Get info on inbox |
 | `DELETE` | `/api/v1/inbox/[id]` | Delete inbox |
 | `POST` | `/api/v1/inbox/[id]/publish` | Publish inbox to data warehouse |
@@ -56,4 +56,9 @@ An inbox is exclusive to a single user, and will not allow group writes.
 
 When all data has been uploaded to an inbox and it is ready to be moved into
 the data warehouse, the publish action will instruct the Citadel to proceed.
-This will lock the inbox while publishing, then delete the inbox.
+This will lock the inbox while publishing, which is an asynchronous operation.
+
+Publishing takes some time to complete. The inbox status will be updated
+as this progresses.
+
+After publishing is completed, the inbox will be automatically deleted by the Citadel.
