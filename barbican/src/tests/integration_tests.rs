@@ -10,10 +10,10 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::{
-    create_inbox, get_inbox,
     MockInboxStore,
     CreateInbox, InboxDB,
 };
+use crate::handlers::{create_inbox, get_inbox};
 
 /// End-to-end test for full inbox lifecycle
 #[tokio::test]

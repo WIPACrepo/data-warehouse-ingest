@@ -2,7 +2,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use mongodb::results::InsertOneResult;
 use std::sync::Arc;
 
-use crate::{db_trait::InboxStore, CreateInbox, InboxDB};
+use common::{InboxStore, CreateInbox, InboxDB};
 
 /// Handler to create a new inbox
 pub async fn create_inbox(

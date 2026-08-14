@@ -5,7 +5,7 @@ use mongodb::{
     results::InsertOneResult,
 };
 
-use crate::InboxDB;
+use crate::models::InboxDB;
 
 #[automock]
 #[async_trait]

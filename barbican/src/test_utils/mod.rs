@@ -1,6 +1,4 @@
-pub mod fixtures;
-
-pub use fixtures::*;
+pub use common::test_utils::*;
 
 #[cfg(test)]
-pub use crate::db_trait::MockInboxStore;
+pub use common::MockInboxStore;

@@ -15,4 +15,5 @@ See `README.md` for a project overview.
 * Each crate gets its own `src/tests/` directory
 * Test utilities live in `src/tests/test_utils/`
 * Tests mirror the source structure
+* For integration tests that require services like MongoDB, they should live in `tests/` and be gated behind the feature flag `integration-tests`. They will be run in CI, but may not run in a dev environment.
 * All tests run with standard `cargo test`

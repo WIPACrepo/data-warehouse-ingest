@@ -313,11 +313,14 @@ version = "0.0.0"
 name = "common"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "axum",
  "axum-prometheus",
  "axum-test",
+ "mockall",
  "mongodb",
  "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",

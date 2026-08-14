@@ -12,10 +12,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        db_trait::MockInboxStore,
         handlers::get_inbox,
-        tests::test_utils::create_test_inbox_with_id,
     };
+    use common::test_utils::create_test_inbox_with_id;
+    use common::MockInboxStore;
 
     #[tokio::test]
     async fn test_get_inbox_success() {

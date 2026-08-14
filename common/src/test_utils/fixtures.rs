@@ -1,4 +1,4 @@
-use crate::{InboxDB, db_trait::MockInboxStore};
+use crate::{MockInboxStore, models::{CreateInbox, InboxDB}};
 use mongodb::bson::oid::ObjectId;
 
 /// Creates a test inbox with the given name and size
@@ -27,8 +27,8 @@ pub fn create_test_store() -> MockInboxStore {
 }
 
 /// Creates a CreateInbox request body for testing
-pub fn create_test_request(name: &str, size: u64) -> crate::CreateInbox {
-    crate::CreateInbox {
+pub fn create_test_request(name: &str, size: u64) -> CreateInbox {
+    CreateInbox {
         name: name.to_string(),
         size,
     }

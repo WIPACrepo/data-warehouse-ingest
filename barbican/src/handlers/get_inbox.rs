@@ -2,7 +2,7 @@ use axum::{extract::{Path, State}, http::StatusCode, Json};
 use mongodb::{bson::oid::ObjectId, bson::doc};
 use std::sync::Arc;
 
-use crate::{db_trait::InboxStore, InboxDB};
+use common::{InboxStore, InboxDB};
 
 /// Handler to get an inbox by ID
 pub async fn get_inbox(

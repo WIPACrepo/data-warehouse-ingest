@@ -5,7 +5,7 @@ use mongodb::{
     Collection,
 };
 
-use crate::{db_trait::InboxStore, InboxDB};
+use crate::{models::InboxDB, traits::InboxStore};
 
 pub struct MongoInboxStore {
     collection: Collection<InboxDB>,
