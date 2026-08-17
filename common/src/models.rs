@@ -21,6 +21,8 @@ pub struct InboxDB {
     pub status: InboxStatus,
     pub warehouse_path: String,
     #[serde(default)]
+    pub inbox_path: Option<String>,
+    #[serde(default)]
     pub lifetime: Option<u64>,
     #[serde(default)]
     pub archive_enabled: bool,
