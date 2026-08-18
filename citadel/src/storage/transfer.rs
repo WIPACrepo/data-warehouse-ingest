@@ -212,8 +212,8 @@ pub async fn transfer_files(
 ) -> Result<TransferResult> {
     info!("Starting file transfer from {:?} to {:?}", inbox_path, warehouse_path);
     
-    // Step 1: Lock inbox directory (chmod 555)
-    let _lock = InboxLock::lock(inbox_path).await?;
+    // Step 1: Lock inbox directory (chmod 555) to prevent new writes
+    let lock = InboxLock::lock(inbox_path).await?;
     
     // Step 2: Collect all files to transfer
     let mut files_to_transfer = Vec::new();
@@ -310,7 +310,10 @@ pub async fn transfer_files(
     }
     
     let total_bytes: u64 = transferred.iter().map(|f| f.size).sum();
-    
+
+    // Drop the lock (restores directory permissions) so we can delete source files
+    drop(lock);
+
     // Step 6: Delete source files after successful verification
     for file in &transferred {
         fs::remove_file(&file.source_path).await

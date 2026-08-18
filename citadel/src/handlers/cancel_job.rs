@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::auth::AuthState;
 
 use crate::db::jobs_collection;
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 use crate::jobs::types::JobStatus;
 
 #[derive(Debug, Serialize)]
@@ -27,7 +27,7 @@ pub async fn cancel_job(
 ) -> Result<(StatusCode, Json<CancelJobResponse>)> {
     // Check authorization - admin role required for cancellation
     if !auth_state.claims.is_admin() {
-        return Err(CitadelError::Forbidden(
+        return Err(AppError::Forbidden(
             "Insufficient permissions to cancel jobs".to_string(),
         ));
     }
@@ -39,19 +39,19 @@ pub async fn cancel_job(
         .find_one(mongodb::bson::doc! { "job_id": &job_id })
         .await
         .map_err(|e| {
-            CitadelError::DatabaseError(format!("Failed to query job: {}", e))
+            AppError::DatabaseError(format!("Failed to query job: {}", e))
         })?
-        .ok_or_else(|| CitadelError::JobNotFound(job_id.clone()))?;
+        .ok_or_else(|| AppError::JobNotFound(job_id.clone()))?;
 
     // Check if job can be cancelled
     match job.status {
         JobStatus::Completed | JobStatus::Cancelled | JobStatus::Failed | JobStatus::TimedOut => {
-            return Err(CitadelError::JobCompleted(
+            return Err(AppError::Conflict(
                 format!("Job {} cannot be cancelled in status {:?}", job_id, job.status)
             ));
         }
         JobStatus::Cancelling => {
-            return Err(CitadelError::JobCompleted(
+            return Err(AppError::Conflict(
                 format!("Job {} is already being cancelled", job_id)
             ));
         }
@@ -67,7 +67,7 @@ pub async fn cancel_job(
         )
         .await
         .map_err(|e| {
-            CitadelError::DatabaseError(format!("Failed to update job status: {}", e))
+            AppError::DatabaseError(format!("Failed to update job status: {}", e))
         })?;
 
     // Cancel the job in the executor
@@ -82,7 +82,7 @@ pub async fn cancel_job(
         )
         .await
         .map_err(|e| {
-            CitadelError::DatabaseError(format!("Failed to update job status: {}", e))
+            AppError::DatabaseError(format!("Failed to update job status: {}", e))
         })?;
 
     Ok((

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use mockall::automock;
 use mongodb::{
     bson::Document,
+    options::FindOptions,
     results::{DeleteResult, InsertOneResult, UpdateResult},
 };
 
@@ -13,6 +14,12 @@ pub trait InboxStore: Send + Sync {
     async fn insert_one(&self, inbox: InboxDB) -> Result<InsertOneResult, mongodb::error::Error>;
 
     async fn find_one(&self, filter: Document) -> Result<Option<InboxDB>, mongodb::error::Error>;
+
+    async fn find_many(
+        &self,
+        filter: Document,
+        options: FindOptions,
+    ) -> Result<Vec<InboxDB>, mongodb::error::Error>;
 
     async fn update_one(
         &self,

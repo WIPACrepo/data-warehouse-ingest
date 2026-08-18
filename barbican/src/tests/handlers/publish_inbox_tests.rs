@@ -11,6 +11,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    use crate::test_utils::create_test_state;
     use crate::handlers::publish_inbox;
     use common::test_utils::create_test_inbox_with_id;
     use common::{InboxStatus, MockInboxStore};
@@ -21,7 +22,7 @@ mod tests {
 
         let inbox_id = ObjectId::new();
         let mut inbox = create_test_inbox_with_id(inbox_id, "test-inbox", 100);
-        inbox.status = InboxStatus::Active;
+        inbox.status = InboxStatus::Ready;
 
         mock_store
             .expect_find_one()
@@ -36,9 +37,10 @@ mod tests {
             .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -68,9 +70,10 @@ mod tests {
             .returning(move |_| Ok(None));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -102,9 +105,10 @@ mod tests {
             .returning(move |_| Ok(Some(inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -136,9 +140,10 @@ mod tests {
             .returning(move |_| Ok(Some(inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -152,7 +157,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // Deleted inbox: terminal state, returns 422 InvalidStateTransition
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
@@ -161,7 +167,7 @@ mod tests {
 
         let inbox_id = ObjectId::new();
         let mut inbox = create_test_inbox_with_id(inbox_id, "test-inbox", 100);
-        inbox.status = InboxStatus::Active;
+        inbox.status = InboxStatus::Ready;
         inbox.warehouse_path = "".to_string();
 
         mock_store
@@ -171,9 +177,10 @@ mod tests {
             .returning(move |_| Ok(Some(inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -204,9 +211,10 @@ mod tests {
             .returning(move |_| Err(db_error.clone()));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -227,9 +235,10 @@ mod tests {
     async fn test_publish_inbox_invalid_id() {
         let mock_store = MockInboxStore::new();
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(

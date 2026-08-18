@@ -11,6 +11,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    use crate::test_utils::create_test_state;
     use crate::handlers::get_inbox;
     use common::MockInboxStore;
     use common::test_utils::create_test_inbox_with_id;
@@ -29,9 +30,10 @@ mod tests {
             .returning(move |_| Ok(Some(expected_inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}", get(get_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -61,9 +63,10 @@ mod tests {
             .returning(move |_| Ok(Some(expected_inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}", get(get_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -101,9 +104,10 @@ mod tests {
             .returning(move |_| Ok(None));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}", get(get_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -123,9 +127,10 @@ mod tests {
     async fn test_get_inbox_invalid_id() {
         let mock_store = MockInboxStore::new();
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}", get(get_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -156,9 +161,10 @@ mod tests {
             .returning(move |_| Err(db_error.clone()));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox/{id}", get(get_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(

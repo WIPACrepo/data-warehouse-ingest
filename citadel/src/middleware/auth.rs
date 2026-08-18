@@ -7,11 +7,9 @@ use axum::{
     response::Response,
     body::Body,
 };
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::auth::{AuthState, Claims, JwksCache};
-use crate::config::CitadelConfig;
-use crate::error::{CitadelError, Result};
+use crate::auth::AuthState;
 use crate::AppState;
 
 /// Extract JWT from Authorization header

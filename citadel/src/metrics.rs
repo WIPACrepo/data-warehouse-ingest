@@ -1,7 +1,6 @@
 //! Prometheus metrics for Citadel
 
 use prometheus::{Counter, Histogram, HistogramOpts, Opts, Registry, IntGauge};
-use std::sync::Arc;
 
 /// Citadel metrics
 pub struct CitadelMetrics {

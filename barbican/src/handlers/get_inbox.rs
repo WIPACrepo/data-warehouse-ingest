@@ -2,14 +2,15 @@ use axum::extract::{Path, State};
 use mongodb::bson::{doc, oid::ObjectId};
 use std::sync::Arc;
 
-use common::{AppError, AppJson, InboxDB, InboxStore};
+use crate::AppState;
+use common::{AppError, AppJson, InboxDB};
 
 /// Handler to get an inbox by ID
 pub async fn get_inbox(
-    State(store): State<Arc<dyn InboxStore>>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<ObjectId>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let result = store
+    let result = state.store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;

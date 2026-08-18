@@ -13,7 +13,7 @@ use crate::AppState;
 use crate::auth::AuthState;
 
 use crate::db::jobs_collection;
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +51,7 @@ pub async fn list_jobs(
 ) -> Result<(StatusCode, Json<ListJobsResponse>)> {
     // Check authorization - read role is sufficient
     if !auth_state.claims.can_read() {
-        return Err(CitadelError::Forbidden(
+        return Err(AppError::Forbidden(
             "Insufficient permissions to list jobs".to_string(),
         ));
     }
@@ -71,17 +71,17 @@ pub async fn list_jobs(
         }
     }
     
-    let options = mongodb::options::FindOptions::builder()
+    let _options = mongodb::options::FindOptions::builder()
         .limit(params.limit as i64)
         .sort(doc! { "created_at": -1 })
         .build();
     
     let mut cursor = jobs_coll.find(filter).await
-        .map_err(|e| CitadelError::DatabaseError(format!("Failed to query jobs: {}", e)))?;
+        .map_err(|e| AppError::DatabaseError(format!("Failed to query jobs: {}", e)))?;
     
     let mut jobs = Vec::new();
     while let Some(job) = cursor.try_next().await
-        .map_err(|e| CitadelError::DatabaseError(format!("Failed to iterate cursor: {}", e)))? 
+        .map_err(|e| AppError::DatabaseError(format!("Failed to iterate cursor: {}", e)))? 
     {
         let job_type_str = match &job.job_type {
             JobType::PublishInbox { .. } => "publish",

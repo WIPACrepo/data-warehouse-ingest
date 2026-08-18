@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use crate::config::CitadelConfig;
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 use crate::models::TransferResult;
 use mongodb::bson::oid::ObjectId;
 use tracing::{info, error};
@@ -31,7 +31,7 @@ impl StorageManager {
         
         tokio::fs::create_dir_all(&inbox_path)
             .await
-            .map_err(|e| CitadelError::StorageError(format!("Failed to create inbox: {}", e)))?;
+            .map_err(|e| AppError::StorageError(format!("Failed to create inbox: {}", e)))?;
         
         info!("Created inbox directory: {:?}", inbox_path);
         Ok(inbox_path)
@@ -95,7 +95,7 @@ impl StorageManager {
         
         tokio::fs::remove_dir_all(&inbox_path)
             .await
-            .map_err(|e| CitadelError::StorageError(format!("Failed to delete inbox: {}", e)))?;
+            .map_err(|e| AppError::StorageError(format!("Failed to delete inbox: {}", e)))?;
         
         info!("Deleted inbox directory: {:?}", inbox_path);
         Ok(())
@@ -104,16 +104,30 @@ impl StorageManager {
     /// Validate path to prevent traversal attacks
     pub fn validate_path(&self, base: &Path, requested: &Path) -> Result<PathBuf> {
         let base_canonical = base.canonicalize()
-            .map_err(|_| CitadelError::InvalidBasePath)?;
-        
+            .map_err(|_| AppError::ValidationError("Invalid base path".to_string()))?;
+
         let full_path = base.join(requested);
-        let canonical: PathBuf = full_path.canonicalize()
-            .unwrap_or(full_path.clone());
-        
+        let canonical = if let Ok(c) = full_path.canonicalize() {
+            c
+        } else {
+            // File doesn't exist yet — canonicalize parent, then re-append leaf
+            let parent = full_path.parent().ok_or(AppError::ValidationError("Invalid base path".to_string()))?;
+            let parent_canonical = parent.canonicalize()
+                .map_err(|_| AppError::Forbidden("Path traversal attempt detected".to_string()))?;
+            if !parent_canonical.starts_with(&base_canonical) {
+                return Err(AppError::Forbidden("Path traversal attempt detected".to_string()));
+            }
+            // Re-append any remaining leaf components
+            let leaf = full_path
+                .strip_prefix(parent)
+                .unwrap_or(&full_path);
+            parent_canonical.join(leaf)
+        };
+
         if !canonical.starts_with(&base_canonical) {
-            return Err(CitadelError::PathTraversalAttempt);
+            return Err(AppError::Forbidden("Path traversal attempt detected".to_string()));
         }
-        
+
         Ok(canonical)
     }
 }

@@ -4,10 +4,25 @@
 //! It consists of two binaries:
 //! - `citadel`: Long-running HTTP service
 //! - `citadel-job`: Job executor for file transfers (runs as K8s Job or local process)
+//!
+//! # Documentation
+//!
+//! For comprehensive documentation, see the [`docs`] module, which links to the
+//! markdown files in `src/docs`:
+//!
+//! - `README.md` - Main index and quick start
+//! - `architecture.md` - System architecture and design
+//! - `api-reference.md` - Complete API documentation
+//! - `state-machine.md` - Job lifecycle and inbox coordination
+//! - `authentication.md` - JWT auth, RBAC, and callback security
+//! - `barbican-integration.md` - Frontend coordination
+//! - `configuration.md` - Environment variables
+//! - `development.md` - Development guide
 
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod docs;
 pub mod error;
 pub mod handlers;
 pub mod integrations;
@@ -16,13 +31,18 @@ pub mod metrics;
 pub mod middleware;
 pub mod models;
 pub mod polling;
+pub mod secret_reloader;
 pub mod storage;
 
+#[cfg(test)]
+pub mod tests;
+
 pub use config::CitadelConfig;
-pub use error::{CitadelError, Result};
+pub use error::{AppError, Result};
 
 use std::sync::Arc;
 use mongodb::Client;
+use tokio::sync::RwLock;
 use crate::auth::JwksCache;
 use crate::storage::manager::StorageManager;
 use crate::integrations::barbican::BarbicanClient;
@@ -43,4 +63,6 @@ pub struct AppState {
     pub lta_notifier: Arc<dyn LtaNotifier>,
     pub metrics: Arc<CitadelMetrics>,
     pub db_client: Arc<Client>,
+    /// Callback secret stored with hot-reload support
+    pub callback_secret: Arc<RwLock<Option<String>>>,
 }

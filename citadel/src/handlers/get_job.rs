@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::auth::AuthState;
 
 use crate::db::jobs_collection;
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
 
 #[derive(Debug, Serialize)]
@@ -32,7 +32,7 @@ pub async fn get_job(
 ) -> Result<(StatusCode, Json<GetJobResponse>)> {
     // Check authorization - read role is sufficient
     if !auth_state.claims.can_read() {
-        return Err(CitadelError::Forbidden(
+        return Err(AppError::Forbidden(
             "Insufficient permissions to view job status".to_string(),
         ));
     }
@@ -43,9 +43,9 @@ pub async fn get_job(
         .find_one(mongodb::bson::doc! { "job_id": &job_id })
         .await
         .map_err(|e| {
-            CitadelError::DatabaseError(format!("Failed to query job: {}", e))
+            AppError::DatabaseError(format!("Failed to query job: {}", e))
         })?
-        .ok_or_else(|| CitadelError::JobNotFound(job_id.clone()))?;
+        .ok_or_else(|| AppError::JobNotFound(job_id.clone()))?;
 
     let job_type_str = match &job.job_type {
         JobType::PublishInbox { .. } => "publish",

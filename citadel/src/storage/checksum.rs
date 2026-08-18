@@ -3,22 +3,22 @@
 use sha2::{Digest, Sha512};
 use std::path::Path;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 
 /// Compute SHA-512 checksum of a file in chunks
 pub async fn compute_checksum(path: &Path, chunk_size: usize) -> Result<String> {
     let mut file = File::open(path)
         .await
-        .map_err(|e| CitadelError::FileNotFound(format!("Failed to open file {:?}: {}", path, e)))?;
+        .map_err(|e| AppError::FileNotFound(format!("Failed to open file {:?}: {}", path, e)))?;
     
     let mut hasher = Sha512::new();
     let mut buffer = vec![0u8; chunk_size];
     
     loop {
         let bytes_read = file.read(&mut buffer).await
-            .map_err(|e| CitadelError::StorageError(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| AppError::StorageError(format!("Failed to read file: {}", e)))?;
         
         if bytes_read == 0 {
             break;

@@ -5,21 +5,22 @@ use axum::{
 use mongodb::bson::{doc, oid::ObjectId};
 use std::sync::Arc;
 
-use common::{AppError, AppJson, InboxDB, InboxStatus, InboxStore};
+use crate::AppState;
+use common::{AppError, AppJson, InboxDB, InboxStatus};
 use serde::{Deserialize, Serialize};
 
 /// Request body for publish operation (currently empty, reserved for future use)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PublishRequest {}
 
-/// Handler to publish an inbox to the data warehouse
+/// Handler to publish an inbox
 pub async fn publish_inbox(
-    State(store): State<Arc<dyn InboxStore>>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<ObjectId>,
     Json(_input): Json<PublishRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
     // Find the inbox first
-    let mut inbox = store
+    let mut inbox = state.store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -32,11 +33,20 @@ pub async fn publish_inbox(
         ));
     }
 
-    // Check if inbox is deleted
-    if matches!(inbox.status, InboxStatus::Deleted) {
-        return Err(AppError::InboxNotFound(
-            "Inbox has been deleted".to_string(),
-        ));
+    // Check if inbox is in a terminal state
+    if matches!(inbox.status, InboxStatus::Published | InboxStatus::Deleted) {
+        return Err(AppError::InvalidStateTransition(format!(
+            "Cannot publish inbox in state {:?}",
+            inbox.status
+        )));
+    }
+
+    // Must be Ready to publish
+    if !matches!(inbox.status, InboxStatus::Ready) {
+        return Err(AppError::InvalidStateTransition(format!(
+            "Cannot publish inbox in state {:?}; must be Ready",
+            inbox.status
+        )));
     }
 
     // Validate publish parameters (warehouse_path must exist)
@@ -58,14 +68,22 @@ pub async fn publish_inbox(
         }
     };
 
-    store
+    state.store
         .update_one(doc! { "_id": id }, update)
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
-    // Return immediately with updated inbox
-    // Note: In a full implementation, this would trigger an async job
-    // that updates status to "published" or "failed" when complete
+    // Trigger Citadel publish operation
+    if let Some(ref citadel) = state.citadel_client {
+        let citadel_clone = citadel.clone();
+        let inbox_id_str = id.to_hex();
+        tokio::spawn(async move {
+            match citadel_clone.trigger_publish(&inbox_id_str).await {
+                Ok(resp) => tracing::info!("Citadel publish triggered: job_id={}", resp.job_id),
+                Err(e) => tracing::error!("Failed to trigger Citadel publish: {}", e),
+            }
+        });
+    }
 
     Ok(AppJson::new(inbox))
 }

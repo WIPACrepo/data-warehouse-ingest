@@ -1,0 +1,215 @@
+# Documentation Structure
+
+This directory contains comprehensive documentation for the Citadel crate, organized by topic for easy navigation.
+
+## File Organization
+
+### Core Documentation
+
+| File | Size | Purpose |
+|------|------|---------|
+| [`README.md`](README.md) | ~8.5 KB | Main index with quick start guide and overview |
+| [`architecture.md`](architecture.md) | ~22 KB | System architecture, component diagram, module structure |
+| [`api-reference.md`](api-reference.md) | ~12 KB | Complete HTTP API endpoint documentation |
+| [`state-machine.md`](state-machine.md) | ~11 KB | Job lifecycle, statuses, and inbox state coordination |
+| [`authentication.md`](authentication.md) | ~14 KB | JWT validation, roles, and callback security |
+| [`barbican-integration.md`](barbican-integration.md) | ~10 KB | Frontend service coordination |
+| [`configuration.md`](configuration.md) | ~14 KB | Environment variables and settings |
+| [`development.md`](development.md) | ~11 KB | Building, testing, and extending Citadel |
+
+### Module Files
+
+| File | Purpose |
+|------|---------|
+| [`mod.rs`](mod.rs) | Rust module documentation |
+| [`STRUCTURE.md`](STRUCTURE.md) | This file - documentation organization |
+
+### Design Documents
+
+| File | Location | Purpose |
+|------|----------|---------|
+| [`PLAN.md`](../PLAN.md) | `citadel/PLAN.md` | Complete architecture and API specification |
+| [`HANDOFF.md`](../HANDOFF.md) | `citadel/HANDOFF.md` | Implementation status and handoff notes |
+
+## Documentation Hierarchy
+
+```
+citadel/src/docs/
+│
+├── README.md                    # Main entry point
+│   ├── Quick Start
+│   ├── Architecture Overview
+│   ├── Module Structure
+│   └── Links to all other docs
+│
+├── architecture.md              # System design
+│   ├── High-Level Architecture
+│   ├── Component Flow
+│   ├── Module Structure
+│   ├── Data Flow
+│   └── Key Design Decisions
+│
+├── api-reference.md             # API documentation
+│   ├── Inbox Endpoints
+│   ├── Job Endpoints
+│   ├── Callback Endpoint
+│   ├── Health Endpoints
+│   ├── Error Responses
+│   └── Authorization
+│
+├── state-machine.md             # Job lifecycle
+│   ├── Job Statuses
+│   ├── Lifecycle Diagram
+│   ├── Job Type Checklist
+│   ├── Inbox State Coordination
+│   └── Failure Handling
+│
+├── authentication.md            # Security
+│   ├── JWT Authentication
+│   ├── Token Validation
+│   ├── JWKS Management
+│   ├── Role-Based Access Control
+│   ├── Callback Security
+│   └── Security Considerations
+│
+├── barbican-integration.md      # Frontend coordination
+│   ├── Coordination Model
+│   ├── Barbican API Client
+│   ├── Retry Strategy
+│   ├── Inbox State Ownership
+│   └── Error Handling
+│
+├── configuration.md             # Settings
+│   ├── Required Configuration
+│   ├── Environment Variables
+│   ├── Example Configurations
+│   └── Validation Rules
+│
+├── development.md               # Developer guide
+│   ├── Building & Running
+│   ├── Testing
+│   ├── Code Style
+│   ├── Adding Features
+│   └── Debugging
+│
+└── mod.rs                       # Rust module documentation
+```
+
+## How to Use This Documentation
+
+### For New Developers
+
+1. Start with [`README.md`](README.md) for overview
+2. Read [`architecture.md`](architecture.md) to understand system design
+3. Read [`state-machine.md`](state-machine.md) to understand the job lifecycle
+4. Follow [`development.md`](development.md) to set up your environment
+5. Reference [`api-reference.md`](api-reference.md) for endpoint details
+
+### For API Consumers / Integrators
+
+1. Review [`api-reference.md`](api-reference.md) for endpoint documentation
+2. Understand [`authentication.md`](authentication.md) for JWT requirements
+3. Review [`barbican-integration.md`](barbican-integration.md) for service coordination
+4. Study [`state-machine.md`](state-machine.md) for job and inbox lifecycles
+
+### For Operators
+
+1. Consult [`configuration.md`](configuration.md) for environment setup
+2. Review [`barbican-integration.md`](barbican-integration.md) for service coordination
+3. Read [`state-machine.md`](state-machine.md) for operational state handling
+4. Reference [`development.md`](development.md) for deployment guidance
+
+### For Architects
+
+1. Read [`architecture.md`](architecture.md) for system design
+2. Review [`../PLAN.md`](../PLAN.md) for original specifications
+3. Study [`state-machine.md`](state-machine.md) for lifecycle design
+
+## Cross-References
+
+### Related Topics
+
+- **Authentication** → See [`authentication.md`](authentication.md) and [`api-reference.md`](api-reference.md#authentication)
+- **Job Lifecycle** → See [`state-machine.md`](state-machine.md) and [`api-reference.md`](api-reference.md#job-endpoints)
+- **Barbican Coordination** → See [`barbican-integration.md`](barbican-integration.md) and [`architecture.md`](architecture.md#component-flow)
+- **Configuration** → See [`configuration.md`](configuration.md) and [`development.md`](development.md#running-locally)
+- **Barbican's view of this integration** → [`barbican/src/docs/citadel-integration.md`](../../barbican/src/docs/citadel-integration.md)
+
+### Design Documents
+
+- **Design Plan** → [`../PLAN.md`](../PLAN.md)
+- **Implementation Status** → [`../HANDOFF.md`](../HANDOFF.md)
+- **Architecture Decisions** → [`architecture.md`](architecture.md#key-design-decisions)
+
+## Documentation Standards
+
+### Markdown Format
+
+- Use ATX-style headers (`#`, `##`, `###`)
+- Include table of contents for documents > 50 lines
+- Use fenced code blocks with language specification
+- Include relative links to other documentation files
+- Add "See also" sections at the end of each document
+- Use **"Planned / per PLAN.md"** callouts to distinguish planned behavior from the current implementation
+
+### Code Examples
+
+- Show complete, working examples when possible
+- Include error handling
+- Use realistic data values
+- Annotate complex sections with comments
+
+### Diagrams
+
+- Use ASCII art for simple flow diagrams
+- Include state transition diagrams
+- Show component relationships
+- Provide sequence diagrams for interactions
+
+## Maintaining Documentation
+
+### When to Update
+
+- Adding new endpoints → Update [`api-reference.md`](api-reference.md)
+- Changing configuration → Update [`configuration.md`](configuration.md)
+- Modifying job lifecycle → Update [`state-machine.md`](state-machine.md)
+- Adding features → Update [`development.md`](development.md) and relevant docs
+- Changing architecture → Update [`architecture.md`](architecture.md)
+
+### Review Process
+
+1. Make changes to relevant documentation file
+2. Update `README.md` if adding new files
+3. Run `cargo doc --package citadel` to verify Rustdoc links
+4. Test any code examples
+5. Update cross-references if needed
+
+## Generating Documentation
+
+### Rust Documentation
+
+```bash
+# Generate HTML documentation
+cargo doc --package citadel --no-deps
+
+# Open in browser
+cargo doc --package citadel --no-deps --open
+```
+
+### Markdown Documentation
+
+The markdown files in this directory can be:
+- Viewed directly in GitHub/GitLab
+- Converted to HTML with pandoc
+- Included in a larger documentation site
+
+## Version Information
+
+- **Documentation Version**: 1.0
+- **Last Updated**: 2026-08-18
+- **Citadel Version**: 0.0.0
+- **Rust Edition**: 2024
+
+---
+
+*For questions or issues with documentation, please refer to the project's AGENTS.md or open an issue in the repository.*

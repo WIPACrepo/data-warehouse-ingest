@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::config::CitadelConfig;
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 
 /// Custom JWKS structure that we can deserialize
 #[derive(Debug, Clone, Deserialize)]
@@ -137,10 +137,10 @@ impl JwksCache {
             .get(&self.config.jwks_url())
             .send()
             .await
-            .map_err(|e| CitadelError::AuthError(format!("Failed to fetch JWKS: {}", e)))?;
+            .map_err(|e| AppError::AuthError(format!("Failed to fetch JWKS: {}", e)))?;
         
         if !response.status().is_success() {
-            return Err(CitadelError::AuthError(format!(
+            return Err(AppError::AuthError(format!(
                 "JWKS endpoint returned status: {}",
                 response.status()
             )));
@@ -149,7 +149,7 @@ impl JwksCache {
         let jwks: CustomJwks = response
             .json()
             .await
-            .map_err(|e| CitadelError::AuthError(format!("Failed to parse JWKS: {}", e)))?;
+            .map_err(|e| AppError::AuthError(format!("Failed to parse JWKS: {}", e)))?;
         
   
         Ok(jwks)
@@ -167,58 +167,58 @@ impl JwksCache {
                 "ES256" => Algorithm::ES256,
                 "ES384" => Algorithm::ES384,
                 "EdDSA" => Algorithm::EdDSA,
-                other => return Err(CitadelError::AuthError(format!("Unsupported algorithm: {}", other))),
+                other => return Err(AppError::AuthError(format!("Unsupported algorithm: {}", other))),
             };
             
             // Build decoding key based on key type
             let decoding_key = if jwk.kty == "RSA" {
-                let n = jwk.n.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'n' in RSA JWK".to_string()))?;
-                let e = jwk.e.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'e' in RSA JWK".to_string()))?;
+                let n = jwk.n.as_ref().ok_or_else(|| AppError::AuthError("Missing 'n' in RSA JWK".to_string()))?;
+                let e = jwk.e.as_ref().ok_or_else(|| AppError::AuthError("Missing 'e' in RSA JWK".to_string()))?;
                 DecodingKey::from_rsa_components(n, e)
-                    .map_err(|e| CitadelError::AuthError(format!("Invalid RSA key: {}", e)))?
+                    .map_err(|e| AppError::AuthError(format!("Invalid RSA key: {}", e)))?
             } else if jwk.kty == "EC" {
-                let x = jwk.x.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'x' in EC JWK".to_string()))?;
-                let y = jwk.y.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'y' in EC JWK".to_string()))?;
-                let crv = jwk.crv.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'crv' in EC JWK".to_string()))?;
+                let x = jwk.x.as_ref().ok_or_else(|| AppError::AuthError("Missing 'x' in EC JWK".to_string()))?;
+                let y = jwk.y.as_ref().ok_or_else(|| AppError::AuthError("Missing 'y' in EC JWK".to_string()))?;
+                let crv = jwk.crv.as_ref().ok_or_else(|| AppError::AuthError("Missing 'crv' in EC JWK".to_string()))?;
                 if crv == "P-256" {
                     DecodingKey::from_ec_components(x, y)
-                        .map_err(|e| CitadelError::AuthError(format!("Invalid EC key: {}", e)))?
+                        .map_err(|e| AppError::AuthError(format!("Invalid EC key: {}", e)))?
                 } else {
-                    return Err(CitadelError::AuthError(format!("Unsupported EC curve: {}", crv)));
+                    return Err(AppError::AuthError(format!("Unsupported EC curve: {}", crv)));
                 }
             } else if jwk.kty == "OKP" {
-                let x = jwk.x.as_ref().ok_or_else(|| CitadelError::AuthError("Missing 'x' in OKP JWK".to_string()))?;
+                let x = jwk.x.as_ref().ok_or_else(|| AppError::AuthError("Missing 'x' in OKP JWK".to_string()))?;
                 DecodingKey::from_ed_components(x)
-                    .map_err(|e| CitadelError::AuthError(format!("Invalid OKP key: {}", e)))?
+                    .map_err(|e| AppError::AuthError(format!("Invalid OKP key: {}", e)))?
             } else {
-                return Err(CitadelError::AuthError(format!("Unsupported key type: {}", jwk.kty)));
+                return Err(AppError::AuthError(format!("Unsupported key type: {}", jwk.kty)));
             };
             
             Ok((decoding_key, alg))
         } else {
-            Err(CitadelError::AuthError(format!("Key ID '{}' not found in JWKS", kid)))
+            Err(AppError::AuthError(format!("Key ID '{}' not found in JWKS", kid)))
         }
     }
 }
 
 pub async fn validate_jwt(token: &str, jwks_cache: &JwksCache, config: &CitadelConfig) -> Result<Claims> {
     let header = decode_header(token)
-        .map_err(|e| CitadelError::InvalidJwt(format!("Failed to decode JWT header: {}", e)))?;
+        .map_err(|e| AppError::AuthError(format!("Failed to decode JWT header: {}", e)))?;
     
     let alg_str = format!("{:?}", header.alg);
     if alg_str == "none" || alg_str == "None" {
-        return Err(CitadelError::InvalidJwt("Algorithm 'none' is not allowed".to_string()));
+        return Err(AppError::AuthError("Algorithm 'none' is not allowed".to_string()));
     }
     
     if !config.allowed_algorithms.contains(&alg_str) {
-        return Err(CitadelError::InvalidJwt(format!(
+        return Err(AppError::AuthError(format!(
             "Algorithm '{}' is not in the allowed list",
             alg_str
         )));
     }
     
     let kid = header.kid
-        .ok_or_else(|| CitadelError::InvalidJwt("Missing key ID (kid) in JWT header".to_string()))?;
+        .ok_or_else(|| AppError::AuthError("Missing key ID (kid) in JWT header".to_string()))?;
     
     let (decoding_key, alg) = jwks_cache.get_decoding_key(&kid).await?;
     
@@ -233,7 +233,7 @@ pub async fn validate_jwt(token: &str, jwks_cache: &JwksCache, config: &CitadelC
         &decoding_key,
         &validation,
     )
-    .map_err(|e| CitadelError::InvalidJwt(format!("JWT validation failed: {}", e)))?;
+    .map_err(|e| AppError::AuthError(format!("JWT validation failed: {}", e)))?;
     
     Ok(token_data.claims)
 }

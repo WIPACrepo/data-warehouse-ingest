@@ -13,6 +13,7 @@ path = "src/job_main.rs"
 
 [dependencies]
 async-trait = { workspace = true }
+maplit = "1.0"
 axum = { workspace = true }
 chrono = { workspace = true }
 futures = "0.3"
@@ -28,6 +29,7 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
+tempfile = "3.0"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

@@ -11,7 +11,21 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::handlers::{create_inbox, delete_inbox, get_inbox, publish_inbox};
-use crate::{CreateInbox, InboxDB, InboxStatus, MockInboxStore};
+use crate::{AppState, Config, CreateInbox, InboxDB, InboxStatus};
+use common::MockInboxStore;
+use crate::auth::JwtValidator;
+
+/// Helper to create test AppState
+fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
+    let config = Config::default();
+    let jwt_validator = Arc::new(JwtValidator::new(config.clone()));
+    Arc::new(AppState {
+        store,
+        citadel_client: None,
+        config,
+        jwt_validator,
+    })
+}
 
 /// End-to-end test for full inbox lifecycle
 #[tokio::test]
@@ -34,11 +48,16 @@ async fn test_full_inbox_lifecycle() {
         id: Some(inbox_id),
         name: create_inbox_data.name.clone(),
         size: create_inbox_data.size,
-        status: InboxStatus::Active,
+        status: InboxStatus::Creating,
         warehouse_path: create_inbox_data.warehouse_path.clone(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -66,10 +85,11 @@ async fn test_full_inbox_lifecycle() {
         .returning(move |_| Ok(Some(expected_inbox.clone())));
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox", post(create_inbox))
         .route("/api/v1/inbox/{id}", get(get_inbox))
-        .with_state(store);
+        .with_state(state);
 
     // Step 1: Create inbox
     let create_response = app
@@ -110,7 +130,7 @@ async fn test_full_inbox_lifecycle() {
 
     assert_eq!(retrieved_inbox["name"], "lifecycle-test");
     assert_eq!(retrieved_inbox["size"], 250);
-    assert_eq!(retrieved_inbox["status"], "active");
+    assert_eq!(retrieved_inbox["status"], "creating");
 }
 
 /// Test delete operation
@@ -125,11 +145,16 @@ async fn test_delete_inbox() {
         id: Some(inbox_id),
         name: "delete-test".to_string(),
         size: 100,
-        status: InboxStatus::Active,
+        status: InboxStatus::Ready,
         warehouse_path: "/test/delete".to_string(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -147,9 +172,10 @@ async fn test_delete_inbox() {
         .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox/{id}", delete(delete_inbox))
-        .with_state(store);
+        .with_state(state);
 
     let response = app
         .oneshot(
@@ -177,11 +203,16 @@ async fn test_publish_inbox() {
         id: Some(inbox_id),
         name: "publish-test".to_string(),
         size: 100,
-        status: InboxStatus::Active,
+        status: InboxStatus::Ready,
         warehouse_path: "/test/publish".to_string(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -199,9 +230,10 @@ async fn test_publish_inbox() {
         .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-        .with_state(store);
+        .with_state(state);
 
     let response = app
         .oneshot(

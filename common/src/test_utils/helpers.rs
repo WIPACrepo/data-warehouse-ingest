@@ -15,6 +15,10 @@ pub fn create_default_test_inbox() -> InboxDB {
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     }
@@ -33,6 +37,10 @@ pub fn create_test_inbox_with_status(name: &str, size: u64, status: InboxStatus)
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     }
@@ -51,6 +59,10 @@ pub fn create_test_inbox_no_id(name: &str, size: u64) -> InboxDB {
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     }

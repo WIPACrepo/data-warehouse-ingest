@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use mongodb::{
     Collection,
     bson::Document,
+    options::FindOptions,
     results::{DeleteResult, InsertOneResult, UpdateResult},
 };
 
@@ -25,6 +26,16 @@ impl InboxStore for MongoInboxStore {
 
     async fn find_one(&self, filter: Document) -> Result<Option<InboxDB>, mongodb::error::Error> {
         self.collection.find_one(filter).await
+    }
+
+    async fn find_many(
+        &self,
+        filter: Document,
+        options: FindOptions,
+    ) -> Result<Vec<InboxDB>, mongodb::error::Error> {
+        let cursor = self.collection.find(filter).with_options(options).await?;
+        use futures_util::TryStreamExt;
+        cursor.try_collect().await
     }
 
     async fn update_one(

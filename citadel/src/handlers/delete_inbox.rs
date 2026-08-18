@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthState;
 
-use crate::error::{CitadelError, Result};
+use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
 use crate::models::JobDB;
 
@@ -32,13 +32,13 @@ pub async fn delete_inbox(
 ) -> Result<(StatusCode, Json<DeleteInboxResponse>)> {
     // Check authorization
     if !auth_state.claims.can_write() {
-        return Err(CitadelError::Forbidden(
+        return Err(AppError::Forbidden(
             "Insufficient permissions to delete inbox".to_string(),
         ));
     }
 
     let object_id = ObjectId::parse_str(&inbox_id)
-        .map_err(|_| CitadelError::InboxNotFound(inbox_id))?;
+        .map_err(|_| AppError::InboxNotFound(inbox_id))?;
 
     // Get inbox metadata from Barbican to validate state
     let inbox = app_state.barbican_client
@@ -51,7 +51,7 @@ pub async fn delete_inbox(
 
     // Validate inbox must exist and have a path to be deleted
     if inbox.inbox_path.is_none() {
-        return Err(CitadelError::InvalidInboxState(
+        return Err(AppError::InvalidStateTransition(
             "Inbox must be created before deletion".to_string(),
         ));
     }
@@ -78,25 +78,25 @@ pub async fn delete_inbox(
         .await
         .map_err(|e| {
             error!("Failed to insert job into MongoDB: {}", e);
-            CitadelError::DatabaseError(format!("Failed to create job: {}", e))
+            AppError::DatabaseError(format!("Failed to create job: {}", e))
         })?;
 
-    // Transition inbox state to deleting via Barbican
+    // Transition inbox state via Barbican delete_start action
     app_state.barbican_client
-        .transition_inbox_state(&object_id, "deleting")
+        .delete_start(&object_id, &job_id)
         .await
         .map_err(|e| {
-            error!("Failed to update inbox state in Barbican: {}", e);
+            error!("Failed to signal delete start to Barbican: {}", e);
             e
         })?;
 
     // Submit job to executor (Kubernetes or Mock)
     let executor_id = app_state.executor.submit(&job).await?;
-    
+
     // Update job with executor info
     job.executor.executor_id = Some(executor_id);
     job.status = crate::jobs::types::JobStatus::Running;
-    
+
     let jobs_coll = crate::db::jobs_collection(&app_state.db_client, &app_state.config);
     jobs_coll
         .replace_one(
@@ -106,7 +106,7 @@ pub async fn delete_inbox(
         .await
         .map_err(|e| {
             error!("Failed to update job in MongoDB: {}", e);
-            CitadelError::DatabaseError(format!("Failed to update job: {}", e))
+            AppError::DatabaseError(format!("Failed to update job: {}", e))
         })?;
 
     info!("Created delete job {} for inbox {}", job_id, object_id);

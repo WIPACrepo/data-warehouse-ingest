@@ -1,8 +1,8 @@
 //! File locking during transfer operations
 
 use std::path::Path;
-use crate::error::{CitadelError, Result};
-use tracing::{info, warn};
+use crate::error::{AppError, Result};
+use tracing::info;
 
 /// Lock guard for inbox directory
 pub struct InboxLock {
@@ -17,13 +17,13 @@ impl InboxLock {
         {
             use std::os::unix::fs::PermissionsExt;
             let metadata = tokio::fs::metadata(path).await
-                .map_err(|e| CitadelError::StorageError(format!("Failed to get metadata: {}", e)))?;
+                .map_err(|e| AppError::StorageError(format!("Failed to get metadata: {}", e)))?;
             
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o555);
             
             tokio::fs::set_permissions(path, permissions).await
-                .map_err(|e| CitadelError::StorageError(format!("Failed to set permissions: {}", e)))?;
+                .map_err(|e| AppError::StorageError(format!("Failed to set permissions: {}", e)))?;
             
             info!("Locked inbox directory: {:?}", path);
         }

@@ -2,7 +2,6 @@
 
 use crate::config::CitadelConfig;
 use crate::error::Result;
-use crate::jobs::types::Job;
 use tokio::sync::Semaphore;
 use std::sync::Arc;
 
@@ -24,11 +23,11 @@ impl JobQueue {
     
     pub async fn acquire_publish_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
         self.publish_semaphore.acquire().await
-            .map_err(|e| crate::error::CitadelError::InternalError(format!("Semaphore error: {}", e)))
+            .map_err(|e| crate::error::AppError::InternalError(format!("Semaphore error: {}", e)))
     }
     
     pub async fn acquire_delete_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
         self.delete_semaphore.acquire().await
-            .map_err(|e| crate::error::CitadelError::InternalError(format!("Semaphore error: {}", e)))
+            .map_err(|e| crate::error::AppError::InternalError(format!("Semaphore error: {}", e)))
     }
 }
