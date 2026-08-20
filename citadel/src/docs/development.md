@@ -246,7 +246,7 @@ cargo clippy --package citadel -- -D warnings
    ```rust
    tracing::info!(job_id = %job.job_id, "Submitting job");
    ```
-2. **Handle errors with `thiserror`**: `CitadelError` in [`src/error.rs`](../src/error.rs)
+2. **Handle errors with `thiserror`**: `common::AppError` in [`src/error.rs`](../src/error.rs)
 3. **Use async/await consistently** (tokio)
 4. **Document public items** with `///` doc comments
 5. **Return `crate::error::Result<T>`** from fallible operations

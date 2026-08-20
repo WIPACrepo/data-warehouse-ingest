@@ -5,13 +5,14 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use mongodb::bson::oid::ObjectId;
+use mongodb::bson::{doc, oid::ObjectId};
 use serde::Serialize;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::AuthState;
+use crate::db::inboxes_collection;
 
 use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
@@ -38,16 +39,18 @@ pub async fn delete_inbox(
     }
 
     let object_id = ObjectId::parse_str(&inbox_id)
-        .map_err(|_| AppError::InboxNotFound(inbox_id))?;
+        .map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
 
-    // Get inbox metadata from Barbican to validate state
-    let inbox = app_state.barbican_client
-        .get_inbox(&object_id)
+    // Get inbox metadata directly from MongoDB (shared collection, read-only for Citadel)
+    let inboxes_coll = inboxes_collection(&app_state.db_client, &app_state.config);
+    let inbox = inboxes_coll
+        .find_one(doc! { "_id": object_id })
         .await
         .map_err(|e| {
-            error!("Failed to get inbox from Barbican: {}", e);
-            e
-        })?;
+            error!("Failed to get inbox from MongoDB: {}", e);
+            AppError::DatabaseError(format!("Failed to query inbox: {}", e))
+        })?
+        .ok_or_else(|| AppError::InboxNotFound(inbox_id.clone()))?;
 
     // Validate inbox must exist and have a path to be deleted
     if inbox.inbox_path.is_none() {

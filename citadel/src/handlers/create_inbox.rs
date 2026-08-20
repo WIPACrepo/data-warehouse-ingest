@@ -5,11 +5,12 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use mongodb::bson::oid::ObjectId;
+use mongodb::bson::{doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use crate::auth::AuthState;
+use crate::db::inboxes_collection;
 use crate::error::{AppError, Result};
 use crate::AppState;
 
@@ -41,14 +42,16 @@ pub async fn create_inbox(
     let object_id = ObjectId::parse_str(&inbox_id)
         .map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
 
-    // Get inbox metadata from Barbican
-    let inbox = state.barbican_client
-        .get_inbox(&object_id)
+    // Get inbox metadata directly from MongoDB (shared collection, read-only for Citadel)
+    let inboxes_coll = inboxes_collection(&state.db_client, &state.config);
+    let inbox = inboxes_coll
+        .find_one(doc! { "_id": object_id })
         .await
         .map_err(|e| {
-            error!("Failed to get inbox from Barbican: {}", e);
-            e
-        })?;
+            error!("Failed to get inbox from MongoDB: {}", e);
+            AppError::DatabaseError(format!("Failed to query inbox: {}", e))
+        })?
+        .ok_or_else(|| AppError::InboxNotFound(inbox_id.clone()))?;
 
     // Validate inbox state - should be Active with no inbox_path
     if inbox.inbox_path.is_some() {

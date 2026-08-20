@@ -101,7 +101,7 @@ citadel/src/
 ├── job_main.rs          # citadel-job binary entry point (file transfer worker)
 ├── lib.rs               # Library exports and AppState
 ├── config.rs            # CITADEL_* environment configuration loading
-├── error.rs             # CitadelError, status-code mapping, sanitized responses
+├── error.rs             # Error types using common::AppError, status-code mapping, sanitized responses
 ├── db.rs                # MongoDB client setup and collection helpers
 ├── models.rs            # JobDB, CallbackNonceDB, TransferResult, FileInfo
 ├── metrics.rs           # Prometheus metrics registry and collectors

@@ -110,8 +110,8 @@ The client is created in `main.rs` and shared through `AppState.barbican_client`
 
 `do_transition` posts to the transition endpoint and interprets responses:
 
-- **409 Conflict** → returns `CitadelError::BarbicanConflict` — fail immediately, no retry
-- **Other non-success** → returns `CitadelError::BarbicanApiError`
+- **409 Conflict** → fails immediately, no retry (returns `AppError::Conflict`)
+- **Other non-success** → returns `AppError::BadGateway`
 - **Success** → parses and returns the updated `InboxDB`
 
 ---
