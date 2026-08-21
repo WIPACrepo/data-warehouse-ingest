@@ -43,7 +43,7 @@ pub mod traits;
 
 pub use adapters::MongoInboxStore;
 pub use config::{logging_setup, shutdown_signal};
-pub use db::{db_collection, db_database, db_setup};
+pub use db::{db_collection, db_database, db_setup, db_setup_with_shutdown};
 pub use error::{AppError, AppJson, log_app_errors};
 pub use metrics::{metrics_app, router_prometheus, start_metrics_server, start_metrics_server_with_router};
 pub use middleware::router_logging_layer;

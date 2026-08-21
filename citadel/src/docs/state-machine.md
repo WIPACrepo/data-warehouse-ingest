@@ -173,7 +173,7 @@ Citadel does **not** own inbox state. It coordinates through the Barbican API.
 
 ### Where Citadel Reads Inbox State
 
-- `create_inbox` / `publish_inbox` / `delete_inbox` fetch inbox metadata via `barbican_client.get_inbox` and validate preconditions (e.g., `inbox_path` presence) before acting.
+- `create_inbox` / `publish_inbox` / `delete_inbox` read inbox metadata directly from the shared MongoDB `inboxes` collection and validate preconditions (e.g., `inbox_path` presence) before acting.
 
 ### Shared Inbox Statuses (from `common`)
 

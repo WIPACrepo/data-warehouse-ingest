@@ -144,34 +144,6 @@ impl BarbicanClient {
     }
 
     // -----------------------------------------------------------------------
-    // GET
-    // -----------------------------------------------------------------------
-
-    /// Get inbox metadata from Barbican
-    pub async fn get_inbox(&self, inbox_id: &ObjectId) -> Result<InboxDB> {
-        let url = format!("{}/api/v1/inbox/{}", self.config.barbican_api_url, inbox_id);
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::BadGateway(format!("Request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(AppError::BadGateway(format!(
-                "Barbican returned status {}",
-                response.status()
-            )));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|e| AppError::BadGateway(format!("Failed to parse response: {}", e)))
-    }
-
-    // -----------------------------------------------------------------------
     // CREATE actions
     // -----------------------------------------------------------------------
 

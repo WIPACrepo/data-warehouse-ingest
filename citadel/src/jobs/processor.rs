@@ -10,15 +10,14 @@ use tracing::{info, error};
 
 /// Job processor that manages job lifecycle
 pub struct JobProcessor {
-    config: CitadelConfig,
     queue: JobQueue,
     executor: Box<dyn JobExecutor>,
 }
 
 impl JobProcessor {
     pub fn new(config: CitadelConfig, executor: Box<dyn JobExecutor>) -> Self {
-        let queue = JobQueue::new(config.clone());
-        Self { config, queue, executor }
+        let queue = JobQueue::new(config);
+        Self { queue, executor }
     }
     
     pub async fn process_job(&self, job: JobDB) -> Result<()> {

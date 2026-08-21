@@ -26,8 +26,8 @@ Citadel and Barbican work together to manage the complete inbox lifecycle:
 | **Citadel** | Backend: physical directories, file transfers, jobs, downstream notifications |
 
 **Key Integration Points (Citadel's side):**
-1. Citadel reads inbox metadata via the Barbican API (`get_inbox`)
-2. Citadel requests inbox state transitions via the Barbican API (`transition_inbox_state`)
+1. Citadel reads inbox metadata directly from the shared MongoDB `inboxes` collection (read-only)
+2. Citadel requests inbox state transitions via the Barbican API (write operations)
 3. Both services share the MongoDB inbox collection (Citadel reads only; Barbican owns writes)
 
 > The mirror document on the Barbican side is [`barbican/src/docs/citadel-integration.md`](../../barbican/src/docs/citadel-integration.md).
@@ -84,7 +84,8 @@ The client lives at [`integrations/barbican.rs`](../src/integrations/barbican.rs
 | Method | API call | Purpose |
 |--------|----------|---------|
 | `transition_inbox_state(&id, new_state)` | `POST /api/v1/inbox/{id}/transition` | Request a state transition (retry + backoff) |
-| `get_inbox(&id)` | `GET /api/v1/inbox/{id}` | Fetch inbox metadata |
+
+**Note:** Citadel reads inbox metadata directly from MongoDB using `inboxes_collection()` rather than calling the Barbican API. This is more efficient since both services share the same MongoDB database.
 
 ### Construction
 
@@ -179,10 +180,12 @@ Barbican validates + applies (optimistic lock on version)
 
 ### Reading Inbox State
 
-Handlers call `barbican_client.get_inbox` before acting to validate preconditions:
+Handlers read inbox metadata directly from the shared MongoDB `inboxes` collection using `inboxes_collection()` before acting to validate preconditions:
 
 - `create_inbox`: rejects if `inbox_path.is_some()`
 - `publish_inbox` / `delete_inbox`: rejects if `inbox_path.is_none()`
+
+This direct read approach is more efficient than calling the Barbican API and aligns with the architecture decision that Citadel can read the `inboxes` collection directly while Barbican retains exclusive write ownership.
 
 ---
 
@@ -195,7 +198,7 @@ User ──POST /api/v1/inbox──► Barbican (status: Active)
                                  │ auto-trigger
                                  ▼
 User ──POST /inbox/{id}/create──► Citadel
-                                 │ get_inbox → validate no path
+                                 │ read inbox from MongoDB → validate no path
                                  │ StorageManager::create_inbox
                                  │ transition("active") via Barbican
                                  ▼
@@ -208,7 +211,7 @@ User ──POST /inbox/{id}/create──► Citadel
 User uploads files (out of band)
   │
 User ──POST /inbox/{id}/publish──► Citadel
-  │  validate inbox_path present (get_inbox)
+  │  read inbox from MongoDB → validate inbox_path present
   │  create PublishInbox JobDB (jobs collection)
   │  transition("publishing") via Barbican
   │  executor.submit(job) → Running

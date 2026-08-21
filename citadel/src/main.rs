@@ -10,6 +10,8 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use futures::future::Shared;
+use futures::FutureExt;
 use tokio::net::TcpListener;
 use tracing::{info, error};
 
@@ -32,6 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // P1.2: Initialize logging via common
     common::logging_setup(env!("CARGO_CRATE_NAME"));
 
+    // Create shutdown signal early so Ctrl+C works during startup
+    let shutdown_fut = common::shutdown_signal();
+    let shutdown_shared: Shared<_> = shutdown_fut.shared();
+    let shutdown_clone = shutdown_shared.clone();
+
     // Load configuration
     let config = CitadelConfig::from_env()
         .map_err(|e| {
@@ -44,13 +51,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Prometheus port: {}", config.prometheus_port);
     info!("Job executor: {:?}", config.job_executor);
 
-    // P1.1: Set up database connection via common
-    let db_client = common::db_setup(&config.mongodb_uri, &config.mongodb_database)
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to database: {}", e);
-            e
-        })?;
+    // P1.1: Set up database connection via common with shutdown support
+    let db_client = common::db_setup_with_shutdown(
+        &config.mongodb_uri,
+        &config.mongodb_database,
+        move || shutdown_clone.clone(),
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to connect to database: {}", e);
+        e
+    })?;
 
     // Set up JWKS cache
     let jwks_cache = JwksCache::new(config.clone());
@@ -182,9 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         });
 
-    // P1.3: Use common::shutdown_signal
+    // P1.3: Use the shared shutdown signal (created early for Ctrl+C during startup)
     axum::serve(listener, app)
-        .with_graceful_shutdown(common::shutdown_signal())
+        .with_graceful_shutdown(async move { shutdown_shared.await })
         .await
         .unwrap_or_else(|e| {
             error!("Server error: {}", e);

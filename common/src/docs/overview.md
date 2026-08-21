@@ -153,7 +153,7 @@ Citadel is the physical operator. It reads the shared model and works against th
 pub fn inboxes_collection(client: &Client, config: &CitadelConfig) -> Collection<common::models::InboxDB>
 ```
 
-It uses `common::models::InboxDB` in its integrations (`barbican.rs`, `catalog.rs`, `lta.rs`) whenever it fetches or passes around inbox metadata. Citadel transitions inbox state **only** through the Barbican API, but it shares the same `InboxStatus` vocabulary and `InboxDB` shape via `common`.
+It uses `common::models::InboxDB` in its integrations (`barbican.rs`, `catalog.rs`, `lta.rs`) whenever it fetches or passes around inbox metadata. Citadel reads inbox metadata directly from the shared MongoDB `inboxes` collection (using `common::db::db_collection`), but transitions inbox state **only** through the Barbican API. Both services share the same `InboxStatus` vocabulary and `InboxDB` shape via `common`.
 
 ### The Shared MongoDB Collection
 

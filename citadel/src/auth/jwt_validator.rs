@@ -12,15 +12,16 @@ use crate::error::{AppError, Result};
 
 /// Custom JWKS structure that we can deserialize
 #[derive(Debug, Clone, Deserialize)]
-struct CustomJwks {
+pub struct CustomJwks {
     pub keys: Vec<CustomJwk>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CustomJwk {
+pub struct CustomJwk {
     pub kty: String,
     pub kid: Option<String>,
     #[serde(rename = "use")]
+    #[allow(dead_code)] // JWKS "use" parameter (sig/enc) - kept for spec compliance
     pub use_: Option<String>,
     pub alg: Option<String>,
     pub n: Option<String>,

@@ -9,7 +9,6 @@ use std::sync::Arc;
 pub struct JobQueue {
     publish_semaphore: Arc<Semaphore>,
     delete_semaphore: Arc<Semaphore>,
-    config: CitadelConfig,
 }
 
 impl JobQueue {
@@ -17,7 +16,6 @@ impl JobQueue {
         Self {
             publish_semaphore: Arc::new(Semaphore::new(config.queue_publish_rate_limit)),
             delete_semaphore: Arc::new(Semaphore::new(config.queue_delete_rate_limit)),
-            config,
         }
     }
     

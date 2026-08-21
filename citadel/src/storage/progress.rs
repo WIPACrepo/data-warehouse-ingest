@@ -1,6 +1,6 @@
 //! Progress tracking for file transfers
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use crate::jobs::types::JobProgress;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -8,12 +8,10 @@ use tokio::sync::RwLock;
 /// Progress tracker for file transfers
 pub struct ProgressTracker {
     progress: Arc<RwLock<JobProgress>>,
-    last_update: DateTime<Utc>,
-    update_interval_secs: u64,
 }
 
 impl ProgressTracker {
-    pub fn new(total_files: usize, update_interval_secs: u64) -> Self {
+    pub fn new(total_files: usize, _update_interval_secs: u64) -> Self {
         Self {
             progress: Arc::new(RwLock::new(JobProgress {
                 total_files,
@@ -23,8 +21,6 @@ impl ProgressTracker {
                 phase: "initializing".to_string(),
                 last_updated: Utc::now(),
             })),
-            last_update: Utc::now(),
-            update_interval_secs,
         }
     }
     

@@ -261,6 +261,7 @@ dependencies = [
  "axum-test",
  "chrono",
  "common",
+ "futures",
  "jsonwebtoken",
  "jwks",
  "mockall",

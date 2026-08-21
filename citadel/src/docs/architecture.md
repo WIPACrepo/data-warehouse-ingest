@@ -106,7 +106,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 1. Barbican creates inbox metadata (`status: active`) and triggers Citadel
 2. Client calls `POST /api/v1/inbox/{id}/create` with a `warehouse_path`
 3. Citadel auth middleware validates the JWT and `write` role
-4. Handler fetches inbox metadata via the Barbican API
+4. Handler reads inbox metadata directly from MongoDB
 5. Handler validates the inbox has no `inbox_path` yet
 6. `StorageManager::create_inbox` creates the physical directory
 7. Handler transitions the inbox state via the Barbican API
@@ -116,7 +116,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 
 1. Files are uploaded to the inbox directory out of band
 2. Client calls `POST /api/v1/inbox/{id}/publish` with a `write` JWT
-3. Handler fetches inbox metadata and validates `inbox_path` is set
+3. Handler reads inbox metadata from MongoDB and validates `inbox_path` is set
 4. Handler creates a `PublishInbox` job record in MongoDB (`queued`)
 5. Handler transitions the inbox to `publishing` via Barbican
 6. Handler submits the job to the executor (`KubernetesExecutor` or `MockExecutor`)
@@ -130,7 +130,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 ### Delete Flow
 
 1. Client calls `POST /api/v1/inbox/{id}/delete` with a `write` JWT
-2. Handler fetches inbox metadata and validates `inbox_path` is set
+2. Handler reads inbox metadata from MongoDB and validates `inbox_path` is set
 3. Handler creates a `DeleteInbox` job record in MongoDB (`queued`)
 4. Handler transitions the inbox to `deleting` via Barbican
 5. Handler submits the job to the executor
@@ -219,7 +219,7 @@ citadel/src/
 │   └── progress.rs      # Transfer progress tracking
 ├── integrations/        # External integrations
 │   ├── mod.rs           # Module exports
-│   ├── barbican.rs      # BarbicanClient: transition_inbox_state, get_inbox (retry/backoff)
+│   ├── barbican.rs      # BarbicanClient: transition_inbox_state (retry/backoff); inbox reads via MongoDB
 │   ├── catalog.rs       # CatalogNotifier trait + NoOpCatalogNotifier
 │   ├── lta.rs           # LtaNotifier trait + NoOpLtaNotifier
 │   └── kubernetes.rs    # K8s job integration (stub: create_job_spec not implemented)
