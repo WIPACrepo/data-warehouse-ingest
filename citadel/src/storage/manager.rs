@@ -12,7 +12,7 @@ pub struct StorageManager {
     inbox_base: PathBuf,
     protected_base: PathBuf,
     max_parallel: usize,
-    chunk_size_bytes: usize,
+    chunk_size_mb: usize,
 }
 
 impl StorageManager {
@@ -21,13 +21,13 @@ impl StorageManager {
             inbox_base: config.inbox_base_path.clone(),
             protected_base: config.protected_base_path.clone(),
             max_parallel: config.transfer_parallelism,
-            chunk_size_bytes: config.transfer_chunk_size_mb * 1024 * 1024,
+            chunk_size_mb: config.transfer_chunk_size_mb,
         }
     }
     
     /// Create inbox directory
     pub async fn create_inbox(&self, inbox_id: &ObjectId) -> Result<PathBuf> {
-        let inbox_path = self.inbox_base.join(inbox_id.to_string());
+        let inbox_path = self.inbox_base.join(inbox_id.to_hex());
         
         tokio::fs::create_dir_all(&inbox_path)
             .await
@@ -43,7 +43,7 @@ impl StorageManager {
         inbox_id: &ObjectId,
         warehouse_path: &str,
     ) -> Result<TransferResult> {
-        let inbox_path = self.inbox_base.join(inbox_id.to_string());
+        let inbox_path = self.inbox_base.join(inbox_id.to_hex());
         let protected_path = self.protected_base.join(warehouse_path.trim_start_matches('/'));
         
         // Use the transfer module for copy-verify-delete pattern
@@ -51,7 +51,7 @@ impl StorageManager {
             &inbox_path,
             &protected_path,
             self.max_parallel,
-            self.chunk_size_bytes / (1024 * 1024), // Convert back to MB
+            self.chunk_size_mb,
         ).await {
             Ok(storage_result) => {
                 Ok(TransferResult {
@@ -91,7 +91,7 @@ impl StorageManager {
     
     /// Delete inbox directory after successful transfer
     pub async fn delete_inbox(&self, inbox_id: &ObjectId) -> Result<()> {
-        let inbox_path = self.inbox_base.join(inbox_id.to_string());
+        let inbox_path = self.inbox_base.join(inbox_id.to_hex());
         
         tokio::fs::remove_dir_all(&inbox_path)
             .await

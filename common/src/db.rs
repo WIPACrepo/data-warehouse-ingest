@@ -10,7 +10,7 @@ use crate::error::AppError;
 /// Takes explicit connection string and database name so each service can
 /// supply its own configuration without coupling to environment variables.
 pub async fn db_setup(uri: &str, name: &str) -> Result<Client, AppError> {
-    db_setup_with_shutdown(uri, name, || async {}).await
+    db_setup_with_shutdown(uri, name, || std::future::pending()).await
 }
 
 /// Set up the database client with shutdown signal support
