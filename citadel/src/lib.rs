@@ -19,7 +19,6 @@
 //! - `configuration.md` - Environment variables
 //! - `development.md` - Development guide
 
-pub mod auth;
 pub mod config;
 pub mod db;
 pub mod docs;
@@ -37,13 +36,13 @@ pub mod storage;
 #[cfg(test)]
 pub mod tests;
 
+pub use common::{AuthConfig, AuthMiddlewareState, Claims, ClaimsExtractor, JwksCache, JwtValidator, auth_middleware};
 pub use config::CitadelConfig;
 pub use error::{AppError, Result};
 
 use std::sync::Arc;
 use mongodb::Client;
 use tokio::sync::RwLock;
-use crate::auth::JwksCache;
 use crate::storage::manager::StorageManager;
 use crate::integrations::barbican::BarbicanClient;
 use crate::jobs::executor::JobExecutor;
@@ -55,7 +54,7 @@ use crate::metrics::CitadelMetrics;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<CitadelConfig>,
-    pub jwks_cache: Arc<JwksCache>,
+    pub auth_state: Arc<AuthMiddlewareState>,
     pub storage_manager: Arc<StorageManager>,
     pub barbican_client: Arc<BarbicanClient>,
     pub executor: Arc<dyn JobExecutor>,

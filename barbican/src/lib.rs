@@ -77,7 +77,6 @@
 //! }
 //! ```
 
-pub mod auth;
 pub mod clients;
 pub mod config;
 pub mod docs;
@@ -90,7 +89,7 @@ pub mod test_utils;
 #[cfg(test)]
 pub mod tests;
 
-pub use common::{CreateInbox, InboxDB, InboxStatus, InboxStore, MongoInboxStore};
+pub use common::{AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, Jwk, Jwks, JwksCache, JwtValidator, auth_middleware, CreateInbox, InboxDB, InboxStatus, InboxStore, MongoInboxStore};
 pub use config::Config;
 
 use axum::{
@@ -101,7 +100,6 @@ use common::{db_collection, log_app_errors};
 use mongodb::Collection;
 use std::sync::Arc;
 use crate::clients::CitadelClient;
-use crate::auth::JwtValidator;
 
 /// Application state shared across all handlers
 #[derive(Clone)]
@@ -109,19 +107,32 @@ pub struct AppState {
     pub store: Arc<dyn InboxStore>,
     pub citadel_client: Option<CitadelClient>,
     pub config: Config,
-    pub jwt_validator: Arc<JwtValidator>,
+    pub auth_state: Arc<AuthMiddlewareState>,
 }
 
 impl AppState {
     pub fn new(store: Arc<dyn InboxStore>, config: Config) -> Self {
         let citadel_client = CitadelClient::new(&config).ok();
-        let jwt_validator = Arc::new(JwtValidator::new(config.clone()));
+        
+        // Initialize common auth components
+        let auth_config = AuthConfig::from_env()
+            .expect("Failed to load auth config from environment");
+        let jwks_cache = Arc::new(JwksCache::new(
+            auth_config.jwks_url(),
+            auth_config.jwks_refresh_secs,
+        ));
+        let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config.clone()));
+        let auth_state = Arc::new(AuthMiddlewareState {
+            validator,
+            required_roles: config.required_roles.clone(),
+            service_name: "barbican".to_string(),
+        });
         
         Self {
             store,
             citadel_client,
             config,
-            jwt_validator,
+            auth_state,
         }
     }
 }
@@ -155,8 +166,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 
     // Apply auth middleware to API routes
     let api_routes_with_auth = api_routes.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        middleware::auth::validate_auth,
+        state.auth_state.clone(),
+        common::auth_middleware,
     ));
 
     // Public routes (no auth required)

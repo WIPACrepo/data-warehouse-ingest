@@ -7,7 +7,7 @@ edition = "2024"
 axum = { workspace = true }
 axum-test = { workspace = true }
 chrono = { workspace = true }
-common = { workspace = true, features = ["test-utils"] }
+common = { workspace = true, features = ["auth", "test-utils"] }
 futures = { workspace = true }
 jsonwebtoken = { workspace = true }
 jwks = { workspace = true }

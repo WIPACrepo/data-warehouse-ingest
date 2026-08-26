@@ -1,3 +1,2 @@
-pub mod auth;
-
-pub use auth::{validate_auth, ClaimsExtractor};
+pub use common::auth_middleware;
+pub use common::ClaimsExtractor;

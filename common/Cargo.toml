@@ -9,9 +9,14 @@ axum = { workspace = true }
 axum-prometheus = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
+jsonwebtoken = { workspace = true, optional = true }
 mockall = { workspace = true }
 mongodb = { workspace = true }
+once_cell = { workspace = true, optional = true }
+prometheus = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 reqwest = { workspace = true }
+rsa = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -22,5 +27,6 @@ tracing-subscriber = { workspace = true }
 
 [features]
 default = []
+auth = ["dep:jsonwebtoken", "dep:prometheus", "dep:once_cell"]
 integration-tests = []
-test-utils = []
+test-utils = ["auth", "dep:rsa", "dep:rand"]

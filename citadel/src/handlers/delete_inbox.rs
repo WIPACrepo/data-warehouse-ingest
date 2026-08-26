@@ -11,7 +11,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::auth::AuthState;
+use common::Claims;
 use crate::db::inboxes_collection;
 
 use crate::error::{AppError, Result};
@@ -28,11 +28,11 @@ pub struct DeleteInboxResponse {
 
 pub async fn delete_inbox(
     State(app_state): State<AppState>,
-    Extension(auth_state): Extension<AuthState>,
+    Extension(claims): Extension<Claims>,
     Path(inbox_id): Path<String>,
 ) -> Result<(StatusCode, Json<DeleteInboxResponse>)> {
     // Check authorization
-    if !auth_state.claims.can_write() {
+    if !claims.can_write("citadel") {
         return Err(AppError::Forbidden(
             "Insufficient permissions to delete inbox".to_string(),
         ));

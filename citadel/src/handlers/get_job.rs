@@ -8,7 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::AppState;
-use crate::auth::AuthState;
+use common::Claims;
 
 use crate::db::jobs_collection;
 use crate::error::{AppError, Result};
@@ -27,11 +27,11 @@ pub struct GetJobResponse {
 
 pub async fn get_job(
     State(app_state): State<AppState>,
-    Extension(auth_state): Extension<AuthState>,
+    Extension(claims): Extension<Claims>,
     Path(job_id): Path<String>,
 ) -> Result<(StatusCode, Json<GetJobResponse>)> {
     // Check authorization - read role is sufficient
-    if !auth_state.claims.can_read() {
+    if !claims.can_read("citadel") {
         return Err(AppError::Forbidden(
             "Insufficient permissions to view job status".to_string(),
         ));

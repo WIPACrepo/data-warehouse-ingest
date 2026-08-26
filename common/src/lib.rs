@@ -30,6 +30,8 @@
 //!   [`metrics_app`], [`router_prometheus`], [`start_metrics_server`], [`router_logging_layer`]
 
 pub mod adapters;
+#[cfg(feature = "auth")]
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod docs;
@@ -42,9 +44,13 @@ pub mod test_utils;
 pub mod traits;
 
 pub use adapters::MongoInboxStore;
+#[cfg(feature = "auth")]
+pub use auth::{AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, Jwk, Jwks, JwksCache, JwtValidator, auth_middleware};
 pub use config::{logging_setup, shutdown_signal};
 pub use db::{db_collection, db_database, db_setup, db_setup_with_shutdown};
 pub use error::{AppError, AppJson, log_app_errors};
+#[cfg(feature = "auth")]
+pub use metrics::init_auth_metrics;
 pub use metrics::{metrics_app, router_prometheus, start_metrics_server, start_metrics_server_with_router};
 pub use middleware::router_logging_layer;
 pub use models::{CreateInbox, InboxDB, InboxError, InboxProgress, InboxStatus};

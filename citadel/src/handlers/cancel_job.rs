@@ -8,7 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::AppState;
-use crate::auth::AuthState;
+use common::Claims;
 
 use crate::db::jobs_collection;
 use crate::error::{AppError, Result};
@@ -22,11 +22,11 @@ pub struct CancelJobResponse {
 
 pub async fn cancel_job(
     State(app_state): State<AppState>,
-    Extension(auth_state): Extension<AuthState>,
+    Extension(claims): Extension<Claims>,
     Path(job_id): Path<String>,
 ) -> Result<(StatusCode, Json<CancelJobResponse>)> {
     // Check authorization - admin role required for cancellation
-    if !auth_state.claims.is_admin() {
+    if !claims.is_admin("citadel") {
         return Err(AppError::Forbidden(
             "Insufficient permissions to cancel jobs".to_string(),
         ));

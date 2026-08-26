@@ -1,4 +1,5 @@
 mod adapters_tests;
+mod auth;
 mod config_tests;
 mod db_tests;
 mod error_tests;

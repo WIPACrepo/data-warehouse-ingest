@@ -16,7 +16,6 @@ use tokio::net::TcpListener;
 use tracing::{info, error};
 
 use citadel::config::CitadelConfig;
-use citadel::auth::JwksCache;
 use citadel::middleware::auth::auth_middleware;
 use citadel::handlers;
 use citadel::integrations::barbican::BarbicanClient;
@@ -27,7 +26,7 @@ use citadel::polling::job_status::JobStatusPoller;
 use citadel::secret_reloader::{load_callback_secret, start_secret_watcher};
 use citadel::storage::manager::StorageManager;
 use citadel::metrics::CitadelMetrics;
-use citadel::AppState;
+use citadel::{AppState, AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,8 +62,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
-    // Set up JWKS cache
-    let jwks_cache = JwksCache::new(config.clone());
+    // Set up JWKS cache and auth components
+    let auth_config = AuthConfig::from_env()
+        .map_err(|e| {
+            error!("Failed to load auth config: {}", e);
+            e
+        })?;
+    let jwks_cache = Arc::new(JwksCache::new(
+        auth_config.jwks_url(),
+        auth_config.jwks_refresh_secs,
+    ));
+    let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config.clone()));
+    let auth_state = Arc::new(AuthMiddlewareState {
+        validator,
+        required_roles: config.required_roles.clone(),
+        service_name: "citadel".to_string(),
+    });
 
     // Set up storage manager
     let storage_manager = StorageManager::new(&config);
@@ -101,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shared application state
     let app_state = AppState {
         config: Arc::new(config.clone()),
-        jwks_cache: Arc::new(jwks_cache),
+        auth_state,
         storage_manager: Arc::new(storage_manager),
         barbican_client: Arc::new(barbican_client),
         executor,
@@ -121,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/jobs", get(handlers::list_jobs::list_jobs))
         .route("/job/{job_id}/cancel", post(handlers::cancel_job::cancel_job))
         .route("/job/callback", post(handlers::job_callback::job_callback))
-        .layer(axum::middleware::from_fn_with_state(app_state.clone(), auth_middleware));
+        .layer(axum::middleware::from_fn_with_state(app_state.auth_state.clone(), auth_middleware));
 
     // Combine routes
     let app = Router::new()

@@ -10,7 +10,7 @@ use mongodb::bson::doc;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::auth::AuthState;
+use common::Claims;
 
 use crate::db::jobs_collection;
 use crate::error::{AppError, Result};
@@ -46,11 +46,11 @@ pub struct ListJobsResponse {
 
 pub async fn list_jobs(
     State(app_state): State<AppState>,
-    Extension(auth_state): Extension<AuthState>,
+    Extension(claims): Extension<Claims>,
     Query(params): Query<ListJobsParams>,
 ) -> Result<(StatusCode, Json<ListJobsResponse>)> {
     // Check authorization - read role is sufficient
-    if !auth_state.claims.can_read() {
+    if !claims.can_read("citadel") {
         return Err(AppError::Forbidden(
             "Insufficient permissions to list jobs".to_string(),
         ));

@@ -1,0 +1,103 @@
+//! Authentication middleware
+
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::Response,
+};
+use std::sync::Arc;
+
+use crate::auth::JwtValidator;
+use crate::auth::claims::Claims;
+use crate::auth::error::AuthError;
+use crate::metrics;
+
+#[derive(Clone)]
+pub struct AuthMiddlewareState {
+    pub validator: Arc<JwtValidator>,
+    pub required_roles: Vec<String>,
+    pub service_name: String,
+}
+
+pub async fn auth_middleware(
+    State(state): State<Arc<AuthMiddlewareState>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth_header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+
+    let token = match auth_header {
+        Some(header) if header.starts_with("Bearer ") => &header[7..],
+        _ => {
+            tracing::warn!("Missing or invalid authorization header");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    };
+
+    let claims = match state.validator.validate(token).await {
+        Ok(claims) => claims,
+        Err(e) => {
+            tracing::warn!("JWT validation failed: {}", redact_auth_error(&e));
+            return Err(match e {
+                AuthError::JwksNotAvailable | AuthError::JwksFetchFailed(_) | AuthError::JwksParseFailed(_) => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                _ => StatusCode::UNAUTHORIZED,
+            });
+        }
+    };
+
+    let has_required_role = state.required_roles.iter().any(|role| {
+        claims.has_role(&state.service_name, role) || claims.is_admin(&state.service_name)
+    });
+
+    if !has_required_role {
+        // Track which specific role was missing for denied requests
+        for role in &state.required_roles {
+            if !claims.has_role(&state.service_name, role) && !claims.is_admin(&state.service_name) {
+                metrics::AUTHZ_DENIED_BY_ROLE
+                    .with_label_values(&[role, &state.service_name])
+                    .inc();
+            }
+        }
+        tracing::warn!("User [REDACTED] lacks required roles for service '{}'", state.service_name);
+        metrics::AUTHZ_CHECK_TOTAL
+            .with_label_values(&["denied", &state.service_name])
+            .inc();
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    metrics::AUTHZ_CHECK_TOTAL
+        .with_label_values(&["allowed", &state.service_name])
+        .inc();
+    request.extensions_mut().insert(claims);
+
+    Ok(next.run(request).await)
+}
+
+fn redact_auth_error(err: &AuthError) -> String {
+    match err {
+        AuthError::InvalidToken(_) => "Invalid token".to_string(),
+        AuthError::TokenExpired => "Token expired".to_string(),
+        AuthError::InvalidIssuer => "Invalid issuer".to_string(),
+        AuthError::InvalidAudience => "Invalid audience".to_string(),
+        AuthError::MissingKeyId => "Missing key ID".to_string(),
+        AuthError::UnknownKeyId(_) => "Unknown key ID".to_string(),
+        AuthError::AlgorithmNotAllowed(_) => "Algorithm not allowed".to_string(),
+        _ => "Authentication failed".to_string(),
+    }
+}
+
+pub trait ClaimsExtractor {
+    fn claims(&self) -> Option<&Claims>;
+}
+
+impl ClaimsExtractor for Request {
+    fn claims(&self) -> Option<&Claims> {
+        self.extensions().get::<Claims>()
+    }
+}

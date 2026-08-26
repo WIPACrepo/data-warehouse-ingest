@@ -9,7 +9,7 @@ use mongodb::bson::{doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use crate::auth::AuthState;
+use common::Claims;
 use crate::db::inboxes_collection;
 use crate::error::{AppError, Result};
 use crate::AppState;
@@ -28,12 +28,12 @@ pub struct CreateInboxResponse {
 
 pub async fn create_inbox(
     State(state): State<AppState>,
-    Extension(auth_state): Extension<AuthState>,
+    Extension(claims): Extension<Claims>,
     Path(inbox_id): Path<String>,
     Json(_params): Json<CreateInboxParams>,
 ) -> Result<(StatusCode, Json<CreateInboxResponse>)> {
     // Check authorization
-    if !auth_state.claims.can_write() {
+    if !claims.can_write("citadel") {
         return Err(AppError::Forbidden(
             "Insufficient permissions to create inbox".to_string(),
         ));
