@@ -1,6 +1,6 @@
 //! Prometheus metrics for Citadel
 
-use prometheus::{Counter, Histogram, HistogramOpts, Opts, Registry, IntGauge};
+use prometheus::{Counter, CounterVec, Histogram, HistogramOpts, Opts, Registry, IntGauge};
 
 /// Citadel metrics
 pub struct CitadelMetrics {
@@ -9,6 +9,9 @@ pub struct CitadelMetrics {
     pub jobs_duration: Histogram,
     pub transfer_bytes_total: Counter,
     pub transfer_files_total: Counter,
+    pub transfer_errors_total: CounterVec,
+    pub transfer_atomic_rollbacks_total: Counter,
+    pub security_events_total: CounterVec,
     pub barbican_api_errors_total: Counter,
     pub callback_errors_total: Counter,
     pub circuit_breaker_state: IntGauge,
@@ -42,6 +45,30 @@ impl CitadelMetrics {
         ))?;
         registry.register(Box::new(transfer_files_total.clone()))?;
         
+        let transfer_errors_total = CounterVec::new(
+            Opts::new(
+                "citadel_transfer_errors_total",
+                "Transfer errors by type (no paths)",
+            ),
+            &["error_type"],
+        )?;
+        registry.register(Box::new(transfer_errors_total.clone()))?;
+        
+        let transfer_atomic_rollbacks_total = Counter::with_opts(Opts::new(
+            "citadel_transfer_atomic_rollbacks_total",
+            "Total atomic rollback operations",
+        ))?;
+        registry.register(Box::new(transfer_atomic_rollbacks_total.clone()))?;
+        
+        let security_events_total = CounterVec::new(
+            Opts::new(
+                "citadel_security_events_total",
+                "Security audit events by type",
+            ),
+            &["event_type"],
+        )?;
+        registry.register(Box::new(security_events_total.clone()))?;
+        
         let barbican_api_errors_total = Counter::with_opts(Opts::new(
             "citadel_barbican_api_errors_total",
             "Barbican API errors",
@@ -66,6 +93,9 @@ impl CitadelMetrics {
             jobs_duration,
             transfer_bytes_total,
             transfer_files_total,
+            transfer_errors_total,
+            transfer_atomic_rollbacks_total,
+            security_events_total,
             barbican_api_errors_total,
             callback_errors_total,
             circuit_breaker_state,

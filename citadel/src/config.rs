@@ -3,6 +3,38 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Inbox-specific transfer configuration with security-hardened defaults.
+#[derive(Debug, Clone)]
+pub struct InboxConfig {
+    pub allow_external_symlinks: bool,
+    pub max_recursion_depth: u32,
+    pub max_errors_before_fail: u32,
+    pub max_path_length: Option<usize>,
+    pub max_total_files: Option<u64>,
+    pub max_total_symlinks: Option<u32>,
+    pub max_symlink_depth: Option<u32>,
+    pub max_symlink_references: Option<u32>,
+    pub atomic_transfer: bool,
+    pub pre_transfer_integrity_scan: bool,
+}
+
+impl Default for InboxConfig {
+    fn default() -> Self {
+        Self {
+            allow_external_symlinks: false,
+            max_recursion_depth: 25,
+            max_errors_before_fail: 1,
+            max_path_length: Some(4096),
+            max_total_files: Some(100_000),
+            max_total_symlinks: Some(1_000),
+            max_symlink_depth: Some(10),
+            max_symlink_references: Some(10),
+            atomic_transfer: true,
+            pre_transfer_integrity_scan: true,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Missing required environment variable: {0}")]
@@ -36,7 +68,6 @@ pub struct CitadelConfig {
     
     // Storage paths
     pub inbox_base_path: PathBuf,
-    pub protected_base_path: PathBuf,
     
     // MongoDB
     pub mongodb_uri: String,
@@ -63,8 +94,14 @@ pub struct CitadelConfig {
     pub transfer_parallelism: usize,
     pub transfer_chunk_size_mb: usize,
     
+    // Inbox security settings (nested)
+    pub inbox: InboxConfig,
+    
     // Callback authentication
     pub job_callback_secret_file: PathBuf,
+    
+    // Warehouse protection
+    pub protected_base_path: PathBuf,
     
     // Barbican API coordination
     pub barbican_api_url: String,
@@ -117,6 +154,7 @@ impl Default for CitadelConfig {
             job_max_duration_secs: 86400,
             transfer_parallelism: 4,
             transfer_chunk_size_mb: 16,
+            inbox: InboxConfig::default(),
             job_callback_secret_file: PathBuf::from("/etc/citadel/secrets/callback-secret"),
             barbican_api_url: "http://barbican:8080".to_string(),
             barbican_api_retry_max: 5,
@@ -288,6 +326,50 @@ impl CitadelConfig {
                 .map_err(|_| ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_TIMEOUT_SECS".to_string(), val))?;
         }
         
+        // Inbox security settings
+        if let Ok(val) = std::env::var("CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS") {
+            config.inbox.allow_external_symlinks = parse_bool(&val)?;
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_RECURSION_DEPTH") {
+            config.inbox.max_recursion_depth = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_RECURSION_DEPTH".to_string(), val))?;
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL") {
+            config.inbox.max_errors_before_fail = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL".to_string(), val))?;
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_PATH_LENGTH") {
+            let len: usize = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_PATH_LENGTH".to_string(), val))?;
+            config.inbox.max_path_length = if len == 0 { None } else { Some(len) };
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_TOTAL_FILES") {
+            let count: u64 = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_FILES".to_string(), val))?;
+            config.inbox.max_total_files = if count == 0 { None } else { Some(count) };
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_TOTAL_SYMLINKS") {
+            let count: u32 = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_SYMLINKS".to_string(), val))?;
+            config.inbox.max_total_symlinks = if count == 0 { None } else { Some(count) };
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_SYMLINK_DEPTH") {
+            let depth: u32 = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_DEPTH".to_string(), val))?;
+            config.inbox.max_symlink_depth = if depth == 0 { None } else { Some(depth) };
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_SYMLINK_REFERENCES") {
+            let refs: u32 = val.parse()
+                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_REFERENCES".to_string(), val))?;
+            config.inbox.max_symlink_references = if refs == 0 { None } else { Some(refs) };
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_ATOMIC_TRANSFER") {
+            config.inbox.atomic_transfer = parse_bool(&val)?;
+        }
+        if let Ok(val) = std::env::var("CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN") {
+            config.inbox.pre_transfer_integrity_scan = parse_bool(&val)?;
+        }
+        
         Ok(config)
     }
     
@@ -302,5 +384,13 @@ impl CitadelConfig {
     /// Get the issuer for JWT validation
     pub fn jwt_issuer(&self) -> String {
         format!("{}/auth/realms/{}", self.keycloak_url, self.keycloak_realm)
+    }
+}
+
+fn parse_bool(val: &str) -> Result<bool, ConfigError> {
+    match val.to_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::InvalidValue("boolean".to_string(), val.to_string())),
     }
 }

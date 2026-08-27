@@ -20,4 +20,4 @@ See `README.md` for a project overview.
 
 ## Documentation
 
-Detailed documentation for each crate is written in `src/docs`.
+Detailed documentation for each crate is written in `src/docs`. Documentation is a first-class output, and should be considered just as valuable as code. Document all design decisions and other important features.

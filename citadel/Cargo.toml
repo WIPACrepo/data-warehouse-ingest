@@ -24,6 +24,7 @@ k8s-openapi = { workspace = true }
 kube = { workspace = true }
 maplit = { workspace = true }
 mongodb = { workspace = true }
+nix = { workspace = true }
 notify = { workspace = true }
 prometheus = { workspace = true }
 reqwest = { workspace = true }
@@ -33,6 +34,7 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
