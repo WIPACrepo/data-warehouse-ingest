@@ -8,14 +8,17 @@ This directory contains comprehensive documentation for the Citadel crate, organ
 
 | File | Size | Purpose |
 |------|------|---------|
-| [`README.md`](README.md) | ~8.5 KB | Main index with quick start guide and overview |
-| [`architecture.md`](architecture.md) | ~22 KB | System architecture, component diagram, module structure |
-| [`api-reference.md`](api-reference.md) | ~12 KB | Complete HTTP API endpoint documentation |
-| [`state-machine.md`](state-machine.md) | ~11 KB | Job lifecycle, statuses, and inbox state coordination |
-| [`authentication.md`](authentication.md) | ~14 KB | JWT validation, roles, and callback security |
-| [`barbican-integration.md`](barbican-integration.md) | ~10 KB | Frontend service coordination |
-| [`configuration.md`](configuration.md) | ~14 KB | Environment variables and settings |
-| [`development.md`](development.md) | ~11 KB | Building, testing, and extending Citadel |
+| [`README.md`](README.md) | ~8.9 KB | Main index with quick start guide and overview |
+| [`architecture.md`](architecture.md) | ~25.4 KB | System architecture, component diagram, module structure |
+| [`api-reference.md`](api-reference.md) | ~15.0 KB | Complete HTTP API endpoint documentation |
+| [`state-machine.md`](state-machine.md) | ~12.3 KB | Job lifecycle, statuses, and inbox state coordination |
+| [`authentication.md`](authentication.md) | ~14.8 KB | JWT validation, roles, and callback security |
+| [`barbican-integration.md`](barbican-integration.md) | ~10.3 KB | Frontend service coordination |
+| [`configuration.md`](configuration.md) | ~18.5 KB | Environment variables and settings |
+| [`development.md`](development.md) | ~13.7 KB | Building, testing, and extending Citadel |
+| [`recursive-transfer.md`](recursive-transfer.md) | ~21.0 KB | Recursive transfer engine, symlink safety, atomic commit, error collection |
+| [`symlink-limitations.md`](symlink-limitations.md) | ~9.2 KB | Symlink edge cases, bind mounts, TOCTOU, accepted risks |
+| [`security-considerations.md`](security-considerations.md) | ~15.4 KB | Threat model, hardening guide, incident response, compliance |
 
 ### Module Files
 
@@ -92,6 +95,29 @@ citadel/src/docs/
 │   ├── Adding Features
 │   └── Debugging
 │
+├── recursive-transfer.md        # Transfer engine
+│   ├── Symlink Handling
+│   ├── Loop Detection
+│   ├── Transfer Pipeline
+│   ├── Atomic Transfer Pattern
+│   ├── Error Collection & Cancellation
+│   └── Configuration Examples
+│
+├── symlink-limitations.md       # Symlink edge cases
+│   ├── Platform Specificity
+│   ├── Bind Mount Detection
+│   ├── TOCTOU Vulnerabilities
+│   ├── Symlink Farm Attacks
+│   └── Other Edge Cases
+│
+├── security-considerations.md   # Threat model & hardening
+│   ├── Threat Model
+│   ├── Symlink Attack Vectors
+│   ├── Mitigations
+│   ├── Configuration Hardening Guide
+│   ├── Observability & Audit Logging
+│   └── Incident Response
+│
 └── mod.rs                       # Rust module documentation
 ```
 
@@ -133,6 +159,8 @@ citadel/src/docs/
 - **Job Lifecycle** → See [`state-machine.md`](state-machine.md) and [`api-reference.md`](api-reference.md#job-endpoints)
 - **Barbican Coordination** → See [`barbican-integration.md`](barbican-integration.md) and [`architecture.md`](architecture.md#component-flow)
 - **Configuration** → See [`configuration.md`](configuration.md) and [`development.md`](development.md#running-locally)
+- **Recursive Transfer** → See [`recursive-transfer.md`](recursive-transfer.md) and [`architecture.md`](architecture.md#key-design-decisions)
+- **Symlink Security** → See [`symlink-limitations.md`](symlink-limitations.md) and [`security-considerations.md`](security-considerations.md)
 - **Barbican's view of this integration** → [`barbican/src/docs/citadel-integration.md`](../../barbican/src/docs/citadel-integration.md)
 
 ### Design Documents
@@ -175,6 +203,8 @@ citadel/src/docs/
 - Modifying job lifecycle → Update [`state-machine.md`](state-machine.md)
 - Adding features → Update [`development.md`](development.md) and relevant docs
 - Changing architecture → Update [`architecture.md`](architecture.md)
+- Changing the transfer engine or symlink handling → Update [`recursive-transfer.md`](recursive-transfer.md), [`symlink-limitations.md`](symlink-limitations.md), and [`security-considerations.md`](security-considerations.md)
+- Changing security posture / hardening defaults → Update [`security-considerations.md`](security-considerations.md) and [`configuration.md`](configuration.md)
 
 ### Review Process
 
@@ -205,8 +235,8 @@ The markdown files in this directory can be:
 
 ## Version Information
 
-- **Documentation Version**: 1.0
-- **Last Updated**: 2026-08-18
+- **Documentation Version**: 1.1
+- **Last Updated**: 2026-08-26
 - **Citadel Version**: 0.0.0
 - **Rust Edition**: 2024
 
