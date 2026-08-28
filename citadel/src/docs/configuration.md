@@ -151,7 +151,7 @@ CITADEL_JOB_BINARY=citadel-job
 CITADEL_JOB_MAX_DURATION_SECS=86400
 ```
 
-> **Status**: both executors are functional — `KubernetesExecutor` creates real K8s Jobs (`submit`/`cancel`/`status`), and `MockExecutor` spawns local `citadel-job` processes. See [Handoff Notes](../HANDOFF.md).
+> **Status**: both executors are functional — `KubernetesExecutor` creates real K8s Jobs (`submit`/`cancel`/`status`), and `MockExecutor` spawns local `citadel-job` processes. See [Implementation Status](architecture.md#implementation-status).
 
 ---
 
@@ -497,4 +497,3 @@ Transfer security events surface two ways:
 - [Authentication](authentication.md) - Keycloak/JWT settings
 - [Barbican Integration](barbican-integration.md) - Barbican coordination settings
 - [Development Guide](development.md) - Building and running locally
-- [Design Plan](../PLAN.md) Section 2 - Full configuration spec

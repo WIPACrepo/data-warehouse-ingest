@@ -16,10 +16,5 @@
 //! - [`symlink-limitations.md`](docs/symlink-limitations.md) - Symlink edge cases and accepted limits
 //! - [`security-considerations.md`](docs/security-considerations.md) - Threat model, hardening, and incident response
 //!
-//! # Design Documents
-//!
-//! - [`../PLAN.md`](../PLAN.md) - Complete architecture specification (upstream of these docs)
-//! - [`../HANDOFF.md`](../HANDOFF.md) - Implementation status and handoff notes
-//!
 //! This module exists primarily to provide documentation references.
 //! See the `src/docs` directory for comprehensive documentation.

@@ -195,7 +195,7 @@ To reduce load on Keycloak:
 CITADEL_JWKS_REFRESH_SECS=60
 ```
 
-> **Planned / per PLAN.md**: immediate refresh when a new/unknown `kid` is seen (rate-limited to 1/min). The current code refreshes on cache expiry only.
+> **Planned**: immediate refresh when a new/unknown `kid` is seen (rate-limited to 1/min). The current code refreshes on cache expiry only.
 
 ---
 
@@ -453,4 +453,3 @@ export CITADEL_JOB_CALLBACK_SECRET_FILE="/etc/citadel/secrets/callback-secret"
 - [API Reference](api-reference.md) - Endpoint role requirements
 - [Architecture](architecture.md) - Security architecture
 - [Configuration](configuration.md) - All environment variables
-- [Design Plan](../PLAN.md) Section 3 - Full auth spec

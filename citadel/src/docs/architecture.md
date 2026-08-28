@@ -167,7 +167,7 @@ Both binaries are built from the same `citadel` crate (see [`Cargo.toml`](../Car
 - Executes the file transfer via the shared `storage::transfer` module
 - Sends a completion callback to the Citadel API (`CITADEL_CALLBACK_URL`)
 - Exits `0` on success, `1` on failure
-- In production runs as a Kubernetes Job (see [`PLAN.md`](../PLAN.md) Section 5.3); in development it can be run directly or by the mock executor
+- In production runs as a Kubernetes Job; in development it can be run directly or by the mock executor
 
 ---
 
@@ -407,7 +407,7 @@ Update job: Completed / Failed / TimedOut
 
 **Rationale**: Inboxes are an untrusted-content boundary; symlinks are the primary attack vector (loops, exfiltration, farms, races). Security-hardened defaults deny external links and bound all resources. See [Recursive Transfer](recursive-transfer.md), [Symlink Limitations](symlink-limitations.md), and [Security Considerations](security-considerations.md).
 
-See [`PLAN.md`](../PLAN.md) Section 14 (Success Criteria) for the full decision ledger.
+The full decision ledger lives in [Implementation Status](#implementation-status) and the per-topic documents above.
 
 ---
 
@@ -465,8 +465,8 @@ today.
 - **Metadata polling during transfer**: not present in the transfer path
   (the background poller reconciles after the fact instead).
 
-> See [`HANDOFF.md`](../HANDOFF.md) for the authoritative implementation-status
-> log and next steps.
+The list above is the authoritative implementation-status log; keep it in
+sync with the code.
 
 ---
 
@@ -533,4 +533,3 @@ today.
 - [Recursive Transfer](recursive-transfer.md) - Transfer engine and symlink safety
 - [Symlink Limitations](symlink-limitations.md) - Edge cases and accepted limits
 - [Security Considerations](security-considerations.md) - Threat model and hardening
-- [Design Plan](../PLAN.md) - Complete specification

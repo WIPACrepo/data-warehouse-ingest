@@ -2,21 +2,106 @@
 
 Data warehouse ingestion services.
 
-![whiteboard](whiteboard_mvp.jpg)
+**Rust Version Requirement**: 1.85+ (edition 2024)
 
+![Architecture Diagram](whiteboard_mvp.jpg)
 
-## Citadel
+## Quick Navigation
 
-Controls the protected data areas of the data warehouse. This is a backend
-service that should not be called by users.
+| Component | Documentation | API Reference | Architecture |
+|-----------|---------------|---------------|--------------|
+| Barbican (Frontend) | [Docs](barbican/src/docs/README.md) | [API](barbican/src/docs/api-reference.md) | [Architecture](barbican/src/docs/architecture.md) |
+| Citadel (Backend) | [Docs](citadel/src/docs/README.md) | [API](citadel/src/docs/api-reference.md) | [Architecture](citadel/src/docs/architecture.md) |
+| Common (Shared Lib) | [Docs](common/src/docs/README.md) | N/A | [Overview](common/src/docs/overview.md) |
 
-Some available operations:
-1. Create a temporary inbox for new data.
-2. Move data from an inbox into a protected area.
-3. Delete / cleanup an inbox.
-4. Inform a file catalog of the newly controlled files.
-5. Inform the Long Term Archive of new data that should be archived.
+## Project Overview
 
+This is a Rust workspace containing three crates:
+
+- **Barbican**: User-facing frontend service managing inbox metadata.
+- **Citadel**: Backend service controlling protected data areas. Ships two
+  binaries — `citadel` (long-running HTTP service) and `citadel-job` (one-shot
+  job executor, using Kubernetes in production).
+- **Common**: Shared library with data models, storage abstractions, and
+  infrastructure utilities.
+
+Both services share the `common` crate via workspace dependencies.
+
+## Build & Development
+
+### Workspace Structure
+
+```toml
+[workspace]
+members = ["citadel", "barbican", "common"]
+resolver = "3"
+```
+
+### Rust Version
+
+Requires **Rust 1.85+** — all crates use `edition = "2024"`, which mandates
+`resolver = "3"` in the workspace root.
+
+### Building
+
+```bash
+# Build all crates
+cargo build --workspace
+
+# Build specific crate
+cargo build -p barbican
+cargo build -p citadel
+cargo build -p common
+
+# Build Citadel binaries separately
+cargo build -p citadel --bin citadel
+cargo build -p citadel --bin citadel-job
+```
+
+### Testing
+
+```bash
+# Run unit + integration tests (uses the `test-integration` alias from .cargo/config.toml)
+cargo test-integration
+cargo test-integration --workspace   # runs all crates with the integration-tests feature
+
+# Equivalent explicit form
+cargo test -p citadel --features integration-tests
+cargo test -p common --features integration-tests
+```
+
+> ⚠️ **Known issue**: `common::tests::auth::config_tests::test_from_env_with_custom_values`
+> currently fails (it asserts `allowed_algorithms.contains("RS384")` but
+> `AuthConfig::from_env` only yields the default `RS256`). Fix the test or the
+> config parser before relying on a green run.
+
+### Feature Flags
+
+- `common`:
+  - `auth` (enables JWT authentication: `jsonwebtoken`, `prometheus`, `once_cell`)
+  - `integration-tests` (enables integration test suite)
+  - `test-utils` (enables `auth` plus RSA key generation for testing)
+- `citadel`:
+  - `integration-tests` (enables integration test suite)
+- `barbican`:
+  - No local features; depends on `common` with `auth` and `test-utils` features
+
+### Dependencies
+
+- **MongoDB** — required for integration tests (CI provides a `mongo:8.0` service container) and at runtime.
+- **Kubernetes** — required for the Citadel job executor in production.
+
+## Architecture
+
+Both services are coordinated around the shared `common` crate: Barbican
+exposes the user-facing inbox API, and Citadel performs the protected-area
+operations behind the scenes.
+
+See detailed architecture docs:
+
+- [Barbican Architecture](barbican/src/docs/architecture.md)
+- [Citadel Architecture](citadel/src/docs/architecture.md)
+- [Common Overview](common/src/docs/overview.md)
 
 ## Barbican
 
@@ -39,7 +124,7 @@ Creating an inbox takes various parameters:
 * Estimated size
 * Expected lifetime of inbox
 * Should data be archived via LTA?
-  * If so, which sites to archive the data at 
+  * If so, which sites to archive the data at
 
 Additional metadata may be added here in the future.
 
@@ -62,3 +147,81 @@ Publishing takes some time to complete. The inbox status will be updated
 as this progresses.
 
 After publishing is completed, the inbox will be automatically deleted by the Citadel.
+
+See full documentation: [Barbican Docs](barbican/src/docs/README.md)
+
+## Citadel
+
+Controls the protected data areas of the data warehouse. This is a backend
+service that should not be called by users.
+
+Some available operations:
+1. Create a temporary inbox for new data.
+2. Move data from an inbox into a protected area.
+3. Delete / cleanup an inbox.
+4. Inform a file catalog of the newly controlled files.
+5. Inform the Long Term Archive of new data that should be archived.
+
+Citadel provides two binaries:
+
+- `citadel`: Long-running HTTP service.
+- `citadel-job`: One-shot job executor for file transfers (uses Kubernetes in production).
+
+See full documentation: [Citadel Docs](citadel/src/docs/README.md)
+
+## Common Library
+
+The `common` crate provides shared types and utilities:
+
+- Inbox data model (`InboxDB`, `InboxStatus`, `InboxProgress`, `InboxError`)
+- Storage abstraction (`InboxStore` trait)
+- Error handling (`AppError`, `AppJson`)
+- Infrastructure utilities (logging, metrics, shutdown signals)
+
+See full documentation: [Common Docs](common/src/docs/README.md)
+
+## Configuration
+
+Key environment variables by service:
+
+- **Barbican**: See [Configuration](barbican/src/docs/configuration.md)
+- **Citadel**: See [Configuration](citadel/src/docs/configuration.md)
+- **Common**: See [Infrastructure](common/src/docs/infrastructure.md)
+
+## Testing
+
+- Unit tests: `cargo test`
+- Integration tests: `cargo test-integration` (alias defined in `.cargo/config.toml`; requires MongoDB)
+- Test utilities: available in `common` with the `test-utils` feature
+
+See [Testing Guide](common/src/docs/testing.md).
+
+## CI/CD
+
+The CI pipeline (`.github/workflows/ci.yaml`) runs:
+`cargo machete`, `cargo fmt -- --check`, `cargo clippy -- --deny warnings`,
+`cargo verify-project`, `cargo doc --no-deps`, `cargo build`,
+`cargo test-integration`, and `cargo tarpaulin`
+(with a `mongo:8.0` service container for tests).
+
+## Health & Readiness Endpoints
+
+| Service | Health | Readiness |
+|---------|--------|-----------|
+| Barbican | `GET /health` | `GET /ready` |
+| Citadel | `GET /health` | `GET /ready` |
+
+## Contributing
+
+See [AGENTS.md](AGENTS.md) for development conventions.
+
+## Additional Resources
+
+- [Barbican Design Plan](barbican/src/docs/01-design-plan.md)
+- [Barbican Completion Report](barbican/src/docs/02-completion-report.md)
+- [Barbican State Machine](barbican/src/docs/state-machine.md)
+- [Citadel State Machine](citadel/src/docs/state-machine.md)
+- [Citadel Recursive Transfer](citadel/src/docs/recursive-transfer.md)
+- [Citadel Security Considerations](citadel/src/docs/security-considerations.md)
+- [Citadel Symlink Limitations](citadel/src/docs/symlink-limitations.md)
+- [Common Data Model](common/src/docs/models.md)

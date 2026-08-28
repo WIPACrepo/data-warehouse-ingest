@@ -27,13 +27,6 @@ This directory contains comprehensive documentation for the Citadel crate, organ
 | [`mod.rs`](mod.rs) | Rust module documentation |
 | [`STRUCTURE.md`](STRUCTURE.md) | This file - documentation organization |
 
-### Design Documents
-
-| File | Location | Purpose |
-|------|----------|---------|
-| [`PLAN.md`](../PLAN.md) | `citadel/PLAN.md` | Complete architecture and API specification |
-| [`HANDOFF.md`](../HANDOFF.md) | `citadel/HANDOFF.md` | Implementation status and handoff notes |
-
 ## Documentation Hierarchy
 
 ```
@@ -148,7 +141,7 @@ citadel/src/docs/
 ### For Architects
 
 1. Read [`architecture.md`](architecture.md) for system design
-2. Review [`../PLAN.md`](../PLAN.md) for original specifications
+2. Study the key design decisions in [`architecture.md#key-design-decisions`](architecture.md#key-design-decisions)
 3. Study [`state-machine.md`](state-machine.md) for lifecycle design
 
 ## Cross-References
@@ -162,11 +155,6 @@ citadel/src/docs/
 - **Recursive Transfer** → See [`recursive-transfer.md`](recursive-transfer.md) and [`architecture.md`](architecture.md#key-design-decisions)
 - **Symlink Security** → See [`symlink-limitations.md`](symlink-limitations.md) and [`security-considerations.md`](security-considerations.md)
 - **Barbican's view of this integration** → [`barbican/src/docs/citadel-integration.md`](../../barbican/src/docs/citadel-integration.md)
-
-### Design Documents
-
-- **Design Plan** → [`../PLAN.md`](../PLAN.md)
-- **Implementation Status** → [`../HANDOFF.md`](../HANDOFF.md)
 - **Architecture Decisions** → [`architecture.md`](architecture.md#key-design-decisions)
 
 ## Documentation Standards
@@ -178,7 +166,7 @@ citadel/src/docs/
 - Use fenced code blocks with language specification
 - Include relative links to other documentation files
 - Add "See also" sections at the end of each document
-- Use **"Planned / per PLAN.md"** callouts to distinguish planned behavior from the current implementation
+- Use **"Planned"** callouts to distinguish planned behavior from the current implementation
 
 ### Code Examples
 

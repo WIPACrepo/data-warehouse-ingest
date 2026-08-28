@@ -142,7 +142,7 @@ Attempt N: +... up to 30s max  (CITADEL_BARBICAN_API_RETRY_BACKOFF_MS, doubling,
 | Retries exhausted | Return error (job/operation fails) |
 | **409 Conflict** | Fail immediately — no retry |
 
-> **Planned / per PLAN.md**: circuit breaker for the Barbican client (open after 10 consecutive failures, 5-minute cooldown). The `citadel_circuit_breaker_state` gauge exists in metrics but no breaker logic is wired in yet.
+> **Planned**: circuit breaker for the Barbican client (open after 10 consecutive failures, 5-minute cooldown). The `citadel_circuit_breaker_state` gauge exists in metrics but no breaker logic is wired in yet.
 
 ---
 
@@ -289,7 +289,7 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 
 ### Best Practice
 
-- Keep retries bounded (never indefinite) — PLAN.md mandates failing the job after `CITADEL_BARBICAN_API_RETRY_MAX`
+- Keep retries bounded (never indefinite) — the job must fail after `CITADEL_BARBICAN_API_RETRY_MAX` attempts
 - Distinguish transient retryable errors from conflicts (409)
 - Log correlation/state transition results via `tracing`
 
@@ -315,4 +315,3 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 - [State Machine](state-machine.md) - Coordinated lifecycles
 - [Configuration](configuration.md) - Environment variables
 - [Barbican's Citadel Integration](../../barbican/src/docs/citadel-integration.md) - The other side
-- [Design Plan](../PLAN.md) Section 6 - MongoDB integration and coordination

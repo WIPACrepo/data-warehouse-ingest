@@ -298,7 +298,7 @@ mod builder_tests {
 /// Comprehensive recursive transfer tests: symlink handling, loop detection,
 /// security limits, error collection, atomic rollback, cleanup semantics.
 ///
-/// These require Unix symlink support (Linux dev/CI per PLAN.md).
+/// These require Unix symlink support (the dev/CI environments are Linux).
 #[cfg(unix)]
 mod recursive_transfer_tests {
     use std::collections::HashMap;
@@ -711,7 +711,7 @@ mod recursive_transfer_tests {
             fs::read_to_string(warehouse.join("ext_link")).unwrap(),
             "external content"
         );
-        // REGRESSION (handoff fix #4): the external source file must survive.
+        // REGRESSION: the external source file must survive the transfer.
         assert!(
             external.path().join("ext_file.txt").exists(),
             "external source file was deleted — data loss"

@@ -49,7 +49,7 @@ http://<citadel-host>:8081
 
 All operational endpoints are versioned under `/api/v1/`.
 
-> **Note**: This endpoint set reflects the current source code. The design in [`PLAN.md`](../PLAN.md) Section 1 describes the same set; the paths and roles match.
+> **Note**: This endpoint set reflects the current source code (handlers in [`src/handlers/`](../src/handlers/)).
 
 ---
 

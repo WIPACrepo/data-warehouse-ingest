@@ -19,13 +19,6 @@ Welcome to the Citadel crate documentation. This directory contains comprehensiv
 | [Symlink Limitations](symlink-limitations.md) | Edge cases, bind mounts, TOCTOU, accepted risks |
 | [Security Considerations](security-considerations.md) | Threat model, hardening guide, incident response, compliance |
 
-### Design Documents
-
-| Document | Description |
-|----------|-------------|
-| [Design Plan](../PLAN.md) | Complete architecture and API specification |
-| [Handoff Notes](../HANDOFF.md) | Implementation status and remaining tasks |
-
 ---
 
 ## Quick Start
@@ -173,8 +166,6 @@ See [API Reference](api-reference.md) for detailed endpoint documentation and [S
 
 ## Additional Resources
 
-- [Design Plan](../PLAN.md) - Complete architecture and API specification
-- [Handoff Notes](../HANDOFF.md) - Implementation status and remaining tasks
 - [Barbican Documentation](../../barbican/src/docs/README.md) - Frontend service documentation
 - [Common Crate Documentation](../../common/src/docs/README.md) - Shared types and utilities
 

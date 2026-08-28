@@ -89,7 +89,7 @@ All copies done, no fatal errors?
              delete sources + remove inbox, return TransferResult
 ```
 
-**Difference from PLAN.md**: the producer (tree walk) is driven **inline**
+**Implementation note**: the producer (tree walk) is driven **inline**
 in the transfer task via a `tokio::select!` loop rather than a spawned
 task, because the `Collector` borrows stack-local state (tracking sets,
 audit buffer). The bounded channel still provides backpressure: the
@@ -221,7 +221,7 @@ documented in [Security Considerations](security-considerations.md).
 ## External Symlink Validation
 
 A resolved symlink target is "external" if **either** layer trips
-(defense in depth, per plan §9):
+(defense in depth):
 
 1. **Canonical path prefix** — `canonical(target)` does not start with
    `canonical(inbox_root)`.
@@ -465,7 +465,7 @@ to job containers via `CitadelConfig::inbox_env_vars()`.
 
 ## Test Examples
 
-The P5 suite in [`tests/mod.rs`](../tests/mod.rs) (`recursive_transfer_tests`)
+The test suite in [`tests/mod.rs`](../tests/mod.rs) (`recursive_transfer_tests`)
 covers all of the above. Representative fixtures:
 
 ```rust

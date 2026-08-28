@@ -220,7 +220,7 @@ failure cause — only the underlying errors are.
 
 - `barbican_client.transition_inbox_state` retries with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` (default 5), maximum backoff 30s
 - A **409 conflict** fails immediately (no retry)
-- The `jobs` record is updated before Ken Barbican transition in publish/delete; if coordination fails the job is left in a partial state (see [PLAN.md](../PLAN.md) Section 6.5 for the target "fail job immediately" behavior)
+- The `jobs` record is updated before Ken Barbican transition in publish/delete; if coordination fails the job is left in a partial state (the target behavior is to "fail job immediately" — not yet implemented)
 
 ### Callback Handling
 
@@ -246,7 +246,7 @@ Once a job reaches `Completed`, `Failed`, `Cancelled`, or `TimedOut`, it is term
 
 - Callbacks for terminal jobs are still acknowledged (idempotent) but ignored for state changes
 - `POST /job/{id}/cancel` rejects terminal jobs with `409`
-- No automatic re-queue of failed jobs (see [PLAN.md](../PLAN.md) Section 9.3: "Failed jobs require operator intervention to re-submit")
+- No automatic re-queue of failed jobs: failed jobs require operator intervention to re-submit
 
 > **Planned**: `Failed` and `TimedOut` jobs will be flagged in metrics for alerting (`citadel_jobs_total{status="failed"}` etc.).
 
@@ -257,4 +257,3 @@ Once a job reaches `Completed`, `Failed`, `Cancelled`, or `TimedOut`, it is term
 - [Architecture](architecture.md) - System design
 - [Barbican State Machine](../../barbican/src/docs/state-machine.md) - Inbox lifecycle (authoritative)
 - [Barbican Integration](barbican-integration.md) - Coordination details
-- [Design Plan](../PLAN.md) - Complete specification

@@ -380,7 +380,7 @@ pub async fn create_inbox(
 
 - **JWT 401s** → Verify Keycloak is reachable, `CITADEL_KEYCLOAK_*` is right, and JWKS URL resolves
 - **MongoDB connection** → Check `mongod` is running; `GET /ready` reports `disconnected`
-- **K8s executor not working** → Use `CITADEL_JOB_EXECUTOR=mock` locally; the K8s executor is a stub
+- **K8s executor not working** → Use `CITADEL_JOB_EXECUTOR=mock` locally
 - **Port already in use** → Change `CITADEL_BIND_ADDRESS` / `CITADEL_PROMETHEUS_PORT`
 
 ---
@@ -409,7 +409,7 @@ pub async fn create_inbox(
 **Problem**: `KubernetesExecutor not fully implemented`
 **Solutions**:
 - For local development use `CITADEL_JOB_EXECUTOR=mock`
-- This is a known stub — see [Handoff Notes](../HANDOFF.md)
+- This error should no longer occur; both executors are fully implemented (see [Architecture → Implementation Status](architecture.md#implementation-status)). If it does, check the executor logs.
 
 ### Compilation Errors
 
@@ -425,7 +425,7 @@ cargo check --package citadel
 
 ### Docker
 
-The repository [`Dockerfile`](../../Dockerfile) builds both `citadel` and `citadel-job` into one image (see [`PLAN.md`](../PLAN.md) Section 11 for the equivalent Dockerfile):
+The repository [`Dockerfile`](../../Dockerfile) builds both `citadel` and `citadel-job` into one image:
 
 ```bash
 docker build -t citadel:latest .
@@ -438,7 +438,7 @@ The image tag doubles as the version for both binaries. Set `CITADEL_JOB_IMAGE` 
 - The service is intended to run as a Deployment with `/health` and `/ready` probes
 - Jobs are executed as Kubernetes Jobs in `CITADEL_KUBE_NAMESPACE`
 - Secrets (Keycloak client secret, callback secret) are mounted from Kubernetes Secrets
-- Callback endpoint is intended to be restricted by a NetworkPolicy (per PLAN.md Section 7.7)
+- Callback endpoint is intended to be restricted by a NetworkPolicy (deployment-level, not yet wired)
 
 ### Health Checks
 
@@ -487,5 +487,3 @@ development) and link it from lib.rs via the docs module.
 *See also:*
 - [Architecture](architecture.md) - System design
 - [Configuration](configuration.md) - Environment variables
-- [Design Plan](../PLAN.md) - Complete specification
-- [Handoff Notes](../HANDOFF.md) - Implementation status and next steps
