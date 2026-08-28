@@ -78,75 +78,88 @@ impl KubernetesExecutor {
         requests.insert("cpu".to_string(), Quantity("500m".to_string()));
         requests.insert("memory".to_string(), Quantity("512Mi".to_string()));
 
+        // Build the job environment: static job coordinates plus the
+        // warehouse base and inbox security settings forwarded from this
+        // Citadel instance (so citadel-job validates and transfers with the
+        // same configuration).
+        let mut env = vec![
+            EnvVar {
+                name: "JOB_ID".to_string(),
+                value: Some(job.job_id.clone()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "JOB_TYPE".to_string(),
+                value: Some(job_type_str.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "INBOX_ID".to_string(),
+                value: Some(job.inbox_id.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "INBOX_PATH".to_string(),
+                value: Some(format!("/data/inboxes/{}", job.inbox_id)),
+                value_from: None,
+            },
+            EnvVar {
+                name: "WAREHOUSE_PATH".to_string(),
+                value: Some(format!("/data/protected/{}", job.inbox_id)),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_CALLBACK_URL".to_string(),
+                value: Some(format!(
+                    "http://citadel.citadel.svc.cluster.local:{}/api/v1/job/callback",
+                    config.bind_address.split(':').nth(1).unwrap_or("8081")
+                )),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_CALLBACK_SECRET_FILE".to_string(),
+                value: Some("/etc/citadel/secrets/callback-secret".to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_CALLBACK_TIMESTAMP".to_string(),
+                value: Some(timestamp.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_CALLBACK_NONCE".to_string(),
+                value: Some(nonce.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_TRANSFER_PARALLELISM".to_string(),
+                value: Some(config.transfer_parallelism.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_TRANSFER_CHUNK_SIZE_MB".to_string(),
+                value: Some(config.transfer_chunk_size_mb.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_JOB_METADATA_POLL_INTERVAL_SECS".to_string(),
+                value: Some(config.job_metadata_poll_interval_secs.to_string()),
+                value_from: None,
+            },
+        ];
+        for (name, value) in config.inbox_env_vars() {
+            env.push(EnvVar {
+                name,
+                value: Some(value),
+                value_from: None,
+            });
+        }
+
         let container = Container {
             name: "citadel-job".to_string(),
             image: Some(config.job_image.clone()),
             command: Some(vec!["citadel-job".to_string()]),
-            env: Some(vec![
-                EnvVar {
-                    name: "JOB_ID".to_string(),
-                    value: Some(job.job_id.clone()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "JOB_TYPE".to_string(),
-                    value: Some(job_type_str.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "INBOX_ID".to_string(),
-                    value: Some(job.inbox_id.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "INBOX_PATH".to_string(),
-                    value: Some(format!("/data/inboxes/{}", job.inbox_id)),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "WAREHOUSE_PATH".to_string(),
-                    value: Some(format!("/data/protected/{}", job.inbox_id)),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_CALLBACK_URL".to_string(),
-                    value: Some(format!(
-                        "http://citadel.citadel.svc.cluster.local:{}/api/v1/job/callback",
-                        config.bind_address.split(':').nth(1).unwrap_or("8081")
-                    )),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_CALLBACK_SECRET_FILE".to_string(),
-                    value: Some("/etc/citadel/secrets/callback-secret".to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_CALLBACK_TIMESTAMP".to_string(),
-                    value: Some(timestamp.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_CALLBACK_NONCE".to_string(),
-                    value: Some(nonce.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_TRANSFER_PARALLELISM".to_string(),
-                    value: Some(config.transfer_parallelism.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_TRANSFER_CHUNK_SIZE_MB".to_string(),
-                    value: Some(config.transfer_chunk_size_mb.to_string()),
-                    value_from: None,
-                },
-                EnvVar {
-                    name: "CITADEL_JOB_METADATA_POLL_INTERVAL_SECS".to_string(),
-                    value: Some(config.job_metadata_poll_interval_secs.to_string()),
-                    value_from: None,
-                },
-            ]),
+            env: Some(env),
             resources: Some(ResourceRequirements {
                 limits: Some(limits),
                 requests: Some(requests),

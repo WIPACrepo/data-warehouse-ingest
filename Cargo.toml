@@ -13,7 +13,6 @@ axum-prometheus = "0.10.0"
 axum-test = "18.7.0"
 chrono = { version = "0.4", features = ["serde"] }
 common = { path = "common" }
-const-oid = "0.10"
 futures = "0.3"
 futures-util = "0.3"
 hex = "0.4"

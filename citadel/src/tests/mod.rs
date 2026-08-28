@@ -6,6 +6,11 @@ pub mod test_utils;
 #[cfg(test)]
 mod transfer_tests {
     use super::test_utils::TestFixture;
+    use crate::storage::transfer::AuditContext;
+
+    fn default_audit() -> AuditContext {
+        AuditContext::new(None, None)
+    }
 
     #[tokio::test]
     async fn test_transfer_files_empty_dir() {
@@ -22,8 +27,10 @@ mod transfer_tests {
         let result = crate::storage::transfer::transfer_files(
             &inbox_path,
             &protected_path,
+            &fixture.config,
             4,
             16,
+            default_audit(),
         ).await;
 
         assert!(result.is_ok());
@@ -50,8 +57,10 @@ mod transfer_tests {
         let result = crate::storage::transfer::transfer_files(
             &inbox_path,
             &protected_path,
+            &fixture.config,
             4,
             16,
+            default_audit(),
         ).await;
 
         assert!(result.is_ok(), "transfer failed: {:?}", result.err());
@@ -88,8 +97,10 @@ mod transfer_tests {
         let result = crate::storage::transfer::transfer_files(
             &inbox_path,
             &protected_path,
+            &fixture.config,
             2,
             16,
+            default_audit(),
         ).await;
 
         assert!(result.is_ok());

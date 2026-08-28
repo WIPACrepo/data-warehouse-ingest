@@ -74,6 +74,7 @@ async fn validate_and_store_nonce(
 /// Authenticate callback request
 async fn authenticate_callback(
     app_state: &AppState,
+    headers: &axum::http::HeaderMap,
     request: &JobCallbackRequest,
 ) -> Result<()> {
     // Check timestamp
@@ -81,8 +82,8 @@ async fn authenticate_callback(
         return Err(AppError::CallbackTimestampExpired);
     }
 
-    // Validate callback secret (via X-Callback-Secret header or Authorization)
-    validate_callback_secret(app_state, request).await?;
+    // Validate callback secret (X-Callback-Secret header, constant-time compare)
+    validate_callback_secret(app_state, headers).await?;
 
     // Check nonce
     validate_and_store_nonce(app_state, &request.nonce).await?;
@@ -90,22 +91,46 @@ async fn authenticate_callback(
     Ok(())
 }
 
-/// Validate the callback secret from the request
-async fn validate_callback_secret(app_state: &AppState, _request: &JobCallbackRequest) -> Result<()> {
-    let secret_store = app_state.callback_secret.read().await;
+/// Constant-time byte comparison to prevent timing side channels when
+/// validating the shared callback secret.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b)
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
 
-    // If no secret is configured, skip validation (dev mode)
-    match &*secret_store {
-        Some(_configured_secret) => {
-            // Callback sends secret in the request body via a dedicated field or header.
-            // For compatibility with citadel-job which sends via X-Callback-Secret header
-            // (handled by the reqwest client), we accept the nonce+timestamp as the
-            // primary auth mechanism. The shared secret is an additional layer.
-            // If a secret header is provided, validate it.
-            // Note: In production, the callback endpoint is protected by K8s NetworkPolicy,
-            // so the nonce+timestamp validation is the primary defense.
-            drop(secret_store);
-            Ok(())
+/// Validate the callback secret from the X-Callback-Secret header.
+///
+/// - Secret configured + header present: constant-time comparison; mismatch
+///   is rejected with [`AppError::InvalidCallbackSecret`].
+/// - Secret configured + header missing: rejected.
+/// - No secret configured: dev-mode passthrough (warning is logged).
+async fn validate_callback_secret(app_state: &AppState, headers: &axum::http::HeaderMap) -> Result<()> {
+    let configured_secret = app_state
+        .callback_secret
+        .read()
+        .await
+        .clone();
+
+    match configured_secret {
+        Some(configured) => {
+            let provided = headers
+                .get("X-Callback-Secret")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string());
+
+            match provided {
+                Some(value) if ct_eq(value.as_bytes(), configured.as_bytes()) => Ok(()),
+                _ => {
+                    warn!("Callback rejected: missing or invalid X-Callback-Secret");
+                    app_state.metrics.callback_errors_total.inc();
+                    Err(AppError::InvalidCallbackSecret)
+                }
+            }
         }
         None => {
             // No secret configured — log warning in production
@@ -119,10 +144,11 @@ async fn validate_callback_secret(app_state: &AppState, _request: &JobCallbackRe
 
 pub async fn job_callback(
     State(app_state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<JobCallbackRequest>,
 ) -> Result<(StatusCode, Json<JobCallbackResponse>)> {
     // Authenticate the callback
-    authenticate_callback(&app_state, &request).await?;
+    authenticate_callback(&app_state, &headers, &request).await?;
 
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
 

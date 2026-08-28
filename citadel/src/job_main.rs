@@ -18,6 +18,8 @@
 //! - `CITADEL_TRANSFER_PARALLELISM` - 4
 //! - `CITADEL_TRANSFER_CHUNK_SIZE_MB` - 16
 //! - `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` - 15
+//! - `CITADEL_PROTECTED_BASE_PATH` - warehouse validation base (from CitadelConfig)
+//! - `CITADEL_INBOX_*` - inbox security settings (see citadel/src/docs/configuration.md)
 
 use std::env;
 use std::path::PathBuf;
@@ -241,11 +243,29 @@ async fn main() {
 
 /// Execute a publish (transfer) job
 async fn execute_publish(config: &JobConfig) -> TransferResult {
+    // Load the full Citadel configuration (protected base path + inbox
+    // security settings). `from_env` only fails on malformed values; the
+    // deployment forwards the relevant variables via the job environment.
+    let citadel_config = match citadel::config::CitadelConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load Citadel config for transfer: {}; using defaults", e);
+            citadel::config::CitadelConfig::default()
+        }
+    };
+
+    let audit_context = citadel::storage::transfer::AuditContext::new(
+        mongodb::bson::oid::ObjectId::parse_str(&config.inbox_id).ok(),
+        Some(config.job_id.clone()),
+    );
+
     match citadel::storage::transfer::transfer_files(
         &config.inbox_path,
         &config.warehouse_path,
+        &citadel_config,
         config.transfer_parallelism,
         config.transfer_chunk_size_mb,
+        audit_context,
     ).await {
         Ok(r) => {
             info!(

@@ -192,7 +192,7 @@ pub struct FileInfo {
 }
 
 /// Transfer result
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TransferResult {
     pub success: bool,
     pub files_transferred: Vec<FileInfo>,
@@ -373,18 +373,6 @@ pub async fn compute_checksum(path: &Path, chunk_size: usize) -> Result<String> 
     Ok(hex::encode(checksum))
 }
 
-fn file_type_name(meta: &std::fs::Metadata) -> &'static str {
-    if meta.is_dir() {
-        "directory"
-    } else if meta.is_file() {
-        "file"
-    } else if meta.file_type().is_symlink() {
-        "symlink"
-    } else {
-        "other"
-    }
-}
-
 #[cfg(unix)]
 fn dev_ino(meta: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
@@ -508,7 +496,7 @@ fn count_symlink_reference(
 
 /// Send an error through the channel and record it in the transfer context.
 async fn emit_error(
-    tx: &mpsc::Sender<Result<(PathBuf, PathBuf), TransferError>>,
+    tx: &mpsc::Sender<Result<(PathBuf, PathBuf)>>,
     err: TransferError,
     context: &TransferContext,
 ) {
@@ -523,7 +511,7 @@ async fn copy_file_worker(
     chunk_size: usize,
     context: Arc<TransferContext>,
     counters: Arc<TransferCounters>,
-    metrics: Option<&CitadelMetrics>,
+    metrics: Option<Arc<CitadelMetrics>>,
 ) -> Result<FileInfo> {
     if context.is_cancelled() {
         return Err(TransferError::Cancelled("worker cancelled before copy".to_string()));
@@ -583,7 +571,7 @@ async fn copy_file_worker(
     })?;
 
     counters.add_bytes(total_bytes);
-    if let Some(m) = metrics {
+    if let Some(m) = metrics.as_ref() {
         m.transfer_files_total.inc();
         m.transfer_bytes_total.inc_by(total_bytes as f64);
     }
@@ -599,12 +587,16 @@ async fn copy_file_worker(
 }
 
 /// Directory tree collector that feeds the worker pipeline.
+///
+/// The collector borrows local state from the transfer call. The producer
+/// phase is driven inline (never `tokio::spawn`ed), so these borrows never
+/// escape the enclosing function.
 struct Collector<'a> {
     target_base: &'a Path,
     inbox_root: &'a Path,
     inbox_root_id: (u64, u64),
     config: &'a InboxConfig,
-    tx: &'a mpsc::Sender<Result<(PathBuf, PathBuf), TransferError>>,
+    tx: &'a mpsc::Sender<Result<(PathBuf, PathBuf)>>,
     context: &'a TransferContext,
     counters: &'a TransferCounters,
     metrics: Option<&'a CitadelMetrics>,
@@ -614,7 +606,7 @@ struct Collector<'a> {
 
 impl<'a> Collector<'a> {
     fn collect<'b>(
-        &'b self,
+        &'b mut self,
         source_dir: &'b Path,
         rel_prefix: &'b Path,
         active_chain: &'b mut HashSet<(u64, u64)>,
@@ -672,7 +664,7 @@ impl<'a> Collector<'a> {
     }
 
     async fn collect_entries(
-        &self,
+        &mut self,
         source_dir: &Path,
         rel_prefix: &Path,
         active_chain: &mut HashSet<(u64, u64)>,
@@ -708,7 +700,7 @@ impl<'a> Collector<'a> {
                 continue;
             }
 
-            let meta = match entry.symlink_metadata().await {
+            let meta = match fs::symlink_metadata(&entry_path).await {
                 Ok(m) => m,
                 Err(e) => {
                     emit_error(self.tx, TransferError::IoError(e), self.context).await;
@@ -898,7 +890,7 @@ impl<'a> Collector<'a> {
 async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -> Result<PathBuf> {
     let protected_canonical = fs::canonicalize(protected_base)
         .await
-        .map_err(|e| TransferError::InvalidWarehousePath(protected_base.to_path_buf()))?;
+        .map_err(|_e| TransferError::InvalidWarehousePath(protected_base.to_path_buf()))?;
 
     let warehouse_canonical = if warehouse_path.exists() {
         fs::canonicalize(warehouse_path).await
@@ -908,7 +900,7 @@ async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -
         let leaf = warehouse_path.file_name().unwrap_or_default();
         fs::canonicalize(parent).await.map(|p| p.join(leaf))
     }
-    .map_err(|e| TransferError::InvalidWarehousePath(warehouse_path.to_path_buf()))?;
+    .map_err(|_e| TransferError::InvalidWarehousePath(warehouse_path.to_path_buf()))?;
 
     if !warehouse_canonical.starts_with(&protected_canonical) {
         return Err(TransferError::InvalidWarehousePath(warehouse_canonical));
@@ -919,7 +911,7 @@ async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -
 
 /// Check available disk space on the warehouse filesystem.
 #[cfg(unix)]
-fn check_disk_space(target_dir: &Path, required_bytes: u64) -> Result<u64> {
+fn check_disk_space(target_dir: &Path, _required_bytes: u64) -> Result<u64> {
     use nix::sys::statvfs::statvfs;
 
     let stat = statvfs(target_dir).map_err(|e| {
@@ -973,7 +965,7 @@ async fn pre_transfer_integrity_scan(
 
         while let Some(entry) = entries.next_entry().await? {
             let entry_path = entry.path();
-            let entry_meta = entry.symlink_metadata().await?;
+            let entry_meta = fs::symlink_metadata(&entry_path).await?;
 
             if entry_meta.file_type().is_symlink() {
                 symlink_count += 1;
@@ -1062,11 +1054,13 @@ pub async fn transfer_files(
     chunk_size_mb: usize,
     audit_context: AuditContext,
 ) -> Result<TransferResult> {
-    let metrics_ref: Option<&CitadelMetrics> = None; // Metrics are injected by callers if available.
-    transfer_files_with_metrics(inbox_path, warehouse_path, config, parallelism, chunk_size_mb, audit_context, metrics_ref).await
+    transfer_files_with_metrics(inbox_path, warehouse_path, config, parallelism, chunk_size_mb, audit_context, None).await
 }
 
-/// Internal variant that accepts an optional metrics reference.
+/// Variant that accepts an optional metrics handle for observability.
+///
+/// Pass `Some(metrics)` (an `Arc<CitadelMetrics>` from the application state)
+/// to record transfer metrics; pass `None` to skip metrics recording.
 pub async fn transfer_files_with_metrics(
     inbox_path: &Path,
     warehouse_path: &Path,
@@ -1074,7 +1068,7 @@ pub async fn transfer_files_with_metrics(
     parallelism: usize,
     chunk_size_mb: usize,
     audit_context: AuditContext,
-    metrics: Option<&CitadelMetrics>,
+    metrics: Option<Arc<CitadelMetrics>>,
 ) -> Result<TransferResult> {
     info!("Starting file transfer from {:?} to {:?}", inbox_path, warehouse_path);
 
@@ -1096,15 +1090,8 @@ pub async fn transfer_files_with_metrics(
         match pre_transfer_integrity_scan(&inbox_canonical, &config.inbox, &inbox_canonical).await {
             Ok(size_count) => size_count,
             Err(e) => {
-                let mut result = TransferResult::empty(false);
-                result.errors.push(e.clone());
-                result.audit_events.push(SecurityAuditEvent::new(
-                    SecurityEventType::InboxIntegrityCheckFailed,
-                    AuditSeverity::Error,
-                    &audit_context,
-                    serde_json::json!({ "reason": e.to_string() }),
-                ));
-                if let Some(m) = metrics {
+                tracing::error!("Pre-transfer integrity scan failed: {}", e);
+                if let Some(m) = metrics.as_ref() {
                     m.transfer_errors_total.with_label_values(&["inbox_integrity_failed"]).inc();
                     m.security_events_total.with_label_values(&["inbox_integrity_check_failed"]).inc();
                 }
@@ -1122,16 +1109,12 @@ pub async fn transfer_files_with_metrics(
         let target_dir = warehouse_canonical.parent().unwrap_or_else(|| Path::new("/"));
         let available = check_disk_space(target_dir, required_with_buffer)?;
         if available < required_with_buffer {
-            let event = SecurityAuditEvent::new(
-                SecurityEventType::InsufficientDiskSpace,
-                AuditSeverity::Error,
-                &audit_context,
-                serde_json::json!({
-                    "required": required_with_buffer,
-                    "available": available,
-                }),
+            tracing::error!(
+                "Insufficient disk space: required {} bytes, available {} bytes",
+                required_with_buffer,
+                available
             );
-            if let Some(m) = metrics {
+            if let Some(m) = metrics.as_ref() {
                 m.transfer_errors_total.with_label_values(&["insufficient_disk_space"]).inc();
                 m.security_events_total.with_label_values(&["insufficient_disk_space"]).inc();
             }
@@ -1151,83 +1134,135 @@ pub async fn transfer_files_with_metrics(
         (warehouse_canonical.clone(), None)
     };
 
-    // Step 7: Set up producer-consumer pipeline.
+    // Step 7: Set up the producer-consumer pipeline.
     let channel_capacity = (parallelism * 2).max(1);
-    let (tx, mut rx) = mpsc::channel::<Result<(PathBuf, PathBuf), TransferError>>(channel_capacity);
+    let (sender, mut receiver) = mpsc::channel::<Result<(PathBuf, PathBuf)>>(channel_capacity);
 
-    let context = TransferContext::new(config.inbox.max_errors_before_fail.max(1));
+    let context = Arc::new(TransferContext::new(config.inbox.max_errors_before_fail.max(1)));
     let counters = Arc::new(TransferCounters::new());
-    let chunk_size = chunk_size_mb * 1024 * 1024;
+    let chunk_size = chunk_size_mb.max(1) * 1024 * 1024;
+    let start = std::time::Instant::now();
 
     let mut active_chain: HashSet<(u64, u64)> = HashSet::new();
-    active_chain.insert(inbox_root_id);
+    // Note: the inbox root is intentionally NOT pre-inserted here. The top
+    // level `collect()` call inserts it on entry (and removes it on return),
+    // which is what allows symlinks pointing back at the inbox root itself to
+    // be detected as loops while avoiding a false positive on first entry.
     let mut global_inodes: HashMap<(u64, u64), u32> = HashMap::new();
     let mut audit_events: Vec<SecurityAuditEvent> = Vec::new();
-
-    let collector = Collector {
+    let mut collector = Collector {
         target_base: &target_base,
         inbox_root: &inbox_canonical,
         inbox_root_id,
         config: &config.inbox,
-        tx: &tx,
+        tx: &sender,
         context: &context,
         counters: &counters,
-        metrics,
+        metrics: metrics.as_deref(),
         audit_context: &audit_context,
         audit_events: &mut audit_events,
     };
 
-    // Producer task.
-    let producer_handle = {
-        let inbox = inbox_canonical.clone();
-        tokio::spawn(async move {
-            let mut chain = active_chain;
-            let mut inodes = global_inodes;
-            collector.collect(&inbox, Path::new(""), &mut chain, &mut inodes, 0).await
-        })
-    };
-
-    // Worker tasks.
-    let semaphore = Arc::new(Semaphore::new(parallelism));
+    // Copy workers are spawned from the pipeline loop below; the semaphore
+    // bounds in-flight copies to `parallelism` (the permit is held inside the
+    // spawned task for the duration of the copy).
+    let semaphore = Arc::new(Semaphore::new(parallelism.max(1)));
     let mut join_set = JoinSet::new();
-    let context_arc = Arc::new(context);
+    let mut manifest: Vec<PathBuf> = Vec::new();
+    let mut transferred: Vec<FileInfo> = Vec::new();
+    let mut collected_errors: Vec<TransferError> = Vec::new();
 
-    let worker_loop = {
-        let context = context_arc.clone();
-        let counters = counters.clone();
-        async move {
-            let mut manifest: Vec<PathBuf> = Vec::new();
-            while let Some(item) = rx.recv().await {
-                if context.is_cancelled() {
-                    break;
-                }
-                match item {
-                    Ok((source, target)) => {
-                        let _permit = semaphore.clone().acquire_owned().await.unwrap();
-                        let ctx = context.clone();
-                        let cnt = counters.clone();
-                        join_set.spawn(async move {
-                            copy_file_worker(source, target.clone(), chunk_size, ctx, cnt, metrics).await
-                        });
-                        manifest.push(target);
+    /// Dispatch a (source, target) pair to a spawned copy worker unless the
+    /// transfer has been cancelled.
+    macro_rules! dispatch_copy {
+        ($source:expr, $target:expr) => {
+            if !context.is_cancelled() {
+                let target_path = $target.clone();
+                let sem = semaphore.clone();
+                let ctx = context.clone();
+                let cnt = counters.clone();
+                let m = metrics.clone();
+                join_set.spawn(async move {
+                    let _permit = sem
+                        .acquire_owned()
+                        .await
+                        .expect("transfer semaphore was closed");
+                    match copy_file_worker($source, target_path, chunk_size, ctx.clone(), cnt, m).await {
+                        Ok(info) => Ok(info),
+                        Err(e) => {
+                            // Record here so the producer observes the
+                            // cancellation promptly (workers fail-fast).
+                            ctx.record_error();
+                            Err(e)
+                        }
                     }
-                    Err(e) => {
-                        context.record_error();
-                        // Errors are collected below via the context counter.
-                        let _ = e;
-                    }
-                }
+                });
+                manifest.push($target);
             }
-            manifest
+        };
+    }
+
+    // Drive the producer (tree walk) and the dispatcher concurrently on this
+    // task. The producer is never spawned: it borrows local state, and the
+    // bounded channel provides backpressure. Either side finishing or the
+    // error threshold cancelling the token unwinds the other.
+    let mut producer = collector.collect(
+        &inbox_canonical,
+        Path::new(""),
+        &mut active_chain,
+        &mut global_inodes,
+        0,
+    );
+    let mut producer_status: Option<Result<()>> = 'pipeline: loop {
+        tokio::select! {
+            status = producer.as_mut() => {
+                break 'pipeline Some(status);
+            }
+            item = receiver.recv() => match item {
+                Some(Ok((source, target))) => {
+                    dispatch_copy!(source, target);
+                }
+                Some(Err(e)) => {
+                    // Already recorded in the TransferContext at the error
+                    // origin (emit_error); collect it for the final report.
+                    warn!("Transfer error during collection: {}", e);
+                    collected_errors.push(e);
+                }
+                None => {
+                    // All senders dropped without the producer completing on
+                    // this task (should not happen, but fail safely).
+                    break 'pipeline Some(Err(TransferError::Cancelled(
+                        "producer channel closed".to_string(),
+                    )));
+                }
+            },
         }
     };
 
-    // Drive the worker loop and producer to completion.
-    let manifest = worker_loop.await;
+    // Drain items still buffered after the producer completed.
+    while let Ok(item) = receiver.try_recv() {
+        match item {
+            Ok((source, target)) => {
+                if matches!(&producer_status, Some(Ok(_))) {
+                    dispatch_copy!(source, target);
+                }
+            }
+            Err(e) => {
+                warn!("Transfer error during collection: {}", e);
+                collected_errors.push(e);
+            }
+        }
+    }
+    drop(receiver);
+    drop(producer); // ends the collector's borrow of audit_events & co.
+
+    // Record the producer's own failure (loops, depth/count limits, ...).
+    if let Some(Err(e)) = producer_status.take() {
+        error!("Directory collection failed: {}", e);
+        collected_errors.push(e);
+    }
 
     // Wait for all in-flight copies to finish.
-    let mut transferred: Vec<FileInfo> = Vec::new();
-    let mut failed: Vec<FileInfo> = Vec::new();
     while let Some(res) = join_set.join_next().await {
         match res {
             Ok(Ok(info)) => {
@@ -1235,42 +1270,34 @@ pub async fn transfer_files_with_metrics(
             }
             Ok(Err(e)) => {
                 error!("File transfer failed: {}", e);
-                if context_arc.record_error() {
-                    // Cancellation already triggered.
-                }
-                if let Some(m) = metrics {
+                collected_errors.push(e);
+                if let Some(m) = metrics.as_ref() {
                     m.transfer_errors_total.with_label_values(&["file_transfer_failed"]).inc();
                 }
             }
             Err(e) => {
-                error!("Worker join error: {}", e);
-                context_arc.record_error();
+                error!("Worker task panicked: {}", e);
+                context.record_error();
+                collected_errors.push(TransferError::FileTransferFailed(format!(
+                    "worker task panicked: {}",
+                    e
+                )));
             }
         }
     }
 
-    // Wait for producer to finish.
-    let producer_result = producer_handle.await.map_err(|e| {
-        TransferError::StorageError(format!("Producer task failed: {}", e))
-    })?;
-
-    // Collect any errors from the channel that arrived after workers drained.
-    while let Ok(Some(item)) = tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv()).await {
-        if let Err(e) = item {
-            context_arc.record_error();
-            let _ = e;
-        }
-    }
-
-    let success = !context_arc.is_cancelled() && producer_result.is_ok();
+    // The cancellation token is triggered by `record_error` at the exact point
+    // each error is observed (producer errors via `emit_error`, worker errors
+    // in the dispatched task), so a non-empty error list implies cancellation.
+    let success = collected_errors.is_empty() && !context.is_cancelled();
 
     if !success {
-        // Rollback.
+        // Rollback: no partial data exposure.
         if let Some(temp) = temp_dir {
             if let Err(e) = fs::remove_dir_all(&temp).await {
                 warn!("Failed to remove temp transfer directory {:?}: {}", temp, e);
             }
-            if let Some(m) = metrics {
+            if let Some(m) = metrics.as_ref() {
                 m.transfer_atomic_rollbacks_total.inc();
             }
             audit_events.push(SecurityAuditEvent::new(
@@ -1285,20 +1312,29 @@ pub async fn transfer_files_with_metrics(
 
         drop(lock);
 
-        let mut result = TransferResult::empty(false);
-        result.files_failed = failed;
-        result.audit_events = audit_events;
-        result.partial_cleanup_completed = true;
-        return Err(TransferError::MultipleErrors(vec![TransferError::FileTransferFailed(
+        error!(
+            "Transfer failed: {} file(s) collected, {} error(s) recorded",
+            transferred.len(),
+            context.error_count()
+        );
+
+        // Surface the most specific errors collected during the run.
+        if collected_errors.len() > 1 {
+            return Err(TransferError::MultipleErrors(collected_errors));
+        }
+        if let Some(e) = collected_errors.into_iter().next() {
+            return Err(e);
+        }
+        return Err(TransferError::FileTransferFailed(
             "one or more files failed to transfer".to_string(),
-        )]));
+        ));
     }
 
     // Step 8: Commit atomic transfer.
     if let Some(temp) = temp_dir {
         // Remove an existing empty warehouse directory if present so rename succeeds.
         if warehouse_canonical.exists() {
-            let existing = fs::read_dir(&warehouse_canonical).await.map_err(|e| {
+            let mut existing = fs::read_dir(&warehouse_canonical).await.map_err(|e| {
                 TransferError::StorageError(format!("Failed to inspect existing warehouse path: {}", e))
             })?;
             let has_entries = existing.next_entry().await?.is_some();
@@ -1324,10 +1360,15 @@ pub async fn transfer_files_with_metrics(
     drop(lock);
     cleanup_source(inbox_path, &transferred).await?;
 
+    if let Some(m) = metrics.as_ref() {
+        m.transfer_duration.observe(start.elapsed().as_secs_f64());
+    }
+
     info!(
-        "Successfully transferred {} files ({} bytes)",
+        "Successfully transferred {} files ({} bytes) in {:.2}s",
         transferred.len(),
-        total_bytes
+        total_bytes,
+        start.elapsed().as_secs_f64()
     );
 
     let mut result = TransferResult::empty(true);

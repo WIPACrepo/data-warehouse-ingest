@@ -7,6 +7,7 @@ pub struct CitadelMetrics {
     pub registry: Registry,
     pub jobs_total: Counter,
     pub jobs_duration: Histogram,
+    pub transfer_duration: Histogram,
     pub transfer_bytes_total: Counter,
     pub transfer_files_total: Counter,
     pub transfer_errors_total: CounterVec,
@@ -32,6 +33,12 @@ impl CitadelMetrics {
             "Job execution duration",
         ))?;
         registry.register(Box::new(jobs_duration.clone()))?;
+        
+        let transfer_duration = Histogram::with_opts(HistogramOpts::new(
+            "citadel_transfer_duration_seconds",
+            "File transfer duration",
+        ))?;
+        registry.register(Box::new(transfer_duration.clone()))?;
         
         let transfer_bytes_total = Counter::with_opts(Opts::new(
             "citadel_transfer_bytes_total",
@@ -91,6 +98,7 @@ impl CitadelMetrics {
             registry,
             jobs_total,
             jobs_duration,
+            transfer_duration,
             transfer_bytes_total,
             transfer_files_total,
             transfer_errors_total,

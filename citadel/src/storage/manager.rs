@@ -13,6 +13,7 @@ pub struct StorageManager {
     protected_base: PathBuf,
     max_parallel: usize,
     chunk_size_mb: usize,
+    config: CitadelConfig,
 }
 
 impl StorageManager {
@@ -22,6 +23,7 @@ impl StorageManager {
             protected_base: config.protected_base_path.clone(),
             max_parallel: config.transfer_parallelism,
             chunk_size_mb: config.transfer_chunk_size_mb,
+            config: config.clone(),
         }
     }
     
@@ -47,11 +49,14 @@ impl StorageManager {
         let protected_path = self.protected_base.join(warehouse_path.trim_start_matches('/'));
         
         // Use the transfer module for copy-verify-delete pattern
+        let audit_context = crate::storage::transfer::AuditContext::new(Some(*inbox_id), None);
         match crate::storage::transfer::transfer_files(
             &inbox_path,
             &protected_path,
+            &self.config,
             self.max_parallel,
             self.chunk_size_mb,
+            audit_context,
         ).await {
             Ok(storage_result) => {
                 Ok(TransferResult {

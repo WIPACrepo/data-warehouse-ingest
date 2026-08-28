@@ -105,6 +105,13 @@ impl MockExecutor {
             ));
         }
 
+        // Forward the protected base path and inbox security settings so the
+        // job validates and transfers with the same configuration as this
+        // Citadel instance.
+        for (name, value) in self.config.inbox_env_vars() {
+            env.push((name, value));
+        }
+
         env
     }
 }

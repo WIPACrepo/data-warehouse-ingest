@@ -385,6 +385,77 @@ impl CitadelConfig {
     pub fn jwt_issuer(&self) -> String {
         format!("{}/auth/realms/{}", self.keycloak_url, self.keycloak_realm)
     }
+
+    /// Environment variables that carry the warehouse base path and inbox
+    /// security settings to job executors (citadel-job).
+    ///
+    /// Executors should forward these to spawned jobs so that the transfer
+    /// runs against the same protected base and security limits as the
+    /// Citadel service itself.
+    pub fn inbox_env_vars(&self) -> Vec<(String, String)> {
+        let inbox = &self.inbox;
+        vec![
+            (
+                "CITADEL_PROTECTED_BASE_PATH".to_string(),
+                self.protected_base_path.to_string_lossy().to_string(),
+            ),
+            (
+                "CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS".to_string(),
+                inbox.allow_external_symlinks.to_string(),
+            ),
+            (
+                "CITADEL_INBOX_MAX_RECURSION_DEPTH".to_string(),
+                inbox.max_recursion_depth.to_string(),
+            ),
+            (
+                "CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL".to_string(),
+                inbox.max_errors_before_fail.to_string(),
+            ),
+            (
+                "CITADEL_INBOX_MAX_PATH_LENGTH".to_string(),
+                inbox
+                    .max_path_length
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "CITADEL_INBOX_MAX_TOTAL_FILES".to_string(),
+                inbox
+                    .max_total_files
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "CITADEL_INBOX_MAX_TOTAL_SYMLINKS".to_string(),
+                inbox
+                    .max_total_symlinks
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "CITADEL_INBOX_MAX_SYMLINK_DEPTH".to_string(),
+                inbox
+                    .max_symlink_depth
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "CITADEL_INBOX_MAX_SYMLINK_REFERENCES".to_string(),
+                inbox
+                    .max_symlink_references
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "CITADEL_INBOX_ATOMIC_TRANSFER".to_string(),
+                inbox.atomic_transfer.to_string(),
+            ),
+            (
+                "CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN".to_string(),
+                inbox.pre_transfer_integrity_scan.to_string(),
+            ),
+        ]
+    }
 }
 
 fn parse_bool(val: &str) -> Result<bool, ConfigError> {
