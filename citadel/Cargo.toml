@@ -27,6 +27,7 @@ mongodb = { workspace = true }
 nix = { workspace = true }
 notify = { workspace = true }
 prometheus = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
