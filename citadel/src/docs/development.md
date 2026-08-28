@@ -177,7 +177,7 @@ echo "hello" > /tmp/citadel-test/inbox/a.txt
 
 # Run the worker (JOB_ID, JOB_TYPE, INBOX_ID, INBOX_PATH, WAREHOUSE_PATH required)
 JOB_ID=test-1 \
-JOB_TYPE=publish \
+JOB_TYPE=publish_inbox \
 INBOX_ID=507f1f77bcf86cd799439011 \
 INBOX_PATH=/tmp/citadel-test/inbox \
 WAREHOUSE_PATH=/tmp/citadel-test/protected/example \
@@ -189,8 +189,8 @@ CITADEL_TRANSFER_CHUNK_SIZE_MB=16 \
 ```
 
 The worker:
-1. Loads config from the environment
-2. Runs `storage::transfer::transfer_files` (lock → parallel copy+verify → delete sources)
+1. Loads config from the environment (including `CITADEL_PROTECTED_BASE_PATH` and the `CITADEL_INBOX_*` security settings)
+2. Runs `storage::transfer::transfer_files` (lock → integrity scan → recursive symlink-safe collect → parallel copy+verify → atomic commit → delete sources)
 3. Sends a callback with the result
 4. Exits `0` on success / `1` on failure
 
@@ -225,8 +225,66 @@ cargo test --package citadel -- --nocapture
 ### Current State
 
 - `mockall` and `axum-test` are available as dev-dependencies for unit tests
-- No `src/tests/` or `src/tests/test_utils/` directories exist yet; the `integration-tests` feature is declared but no gated tests are present
-- The storage transfer engine is a good target for unit tests (temp dirs, checksum verification, partial-failure cleanup)
+- A full unit-test suite lives in [`src/tests/`](../src/tests/) with helpers in `src/tests/test_utils/`
+- The **recursive transfer engine** has a dedicated suite (`tests::recursive_transfer_tests`) covering symlink loops, external symlinks, depth/count limits, error thresholds, atomic rollback, and cleanup — all pure filesystem tests (no services), gated `#[cfg(unix)]` because they use symlinks
+
+### Transfer Test Suite
+
+```bash
+# Run just the recursive-transfer tests
+cargo test --package citadel --lib recursive_transfer_tests
+
+# A single scenario
+cargo test --package citadel --lib test_directory_symlink_loop_detected
+```
+
+The suite builds real inbox/warehouse trees in `tempfile::TempDir`s and
+exercises the full `storage::transfer::transfer_files` path. When adding a
+scenario:
+
+1. Build the fixture tree **before** calling `transfer_files` (the inbox is
+   locked chmod 555 at start — you cannot add symlinks mid-run).
+2. Create symlinks with `std::os::unix::fs::symlink` (relative targets are
+   fine and more realistic).
+3. Override only the config knobs under test via `cfg.inbox.*` (the
+   `TestFixture` gives security-hardened defaults).
+4. On **failure**, assert: the specific error variant is present
+   (`TransferError::TransferFailed { errors, .. }`), the inbox is untouched
+   (use `fs::symlink_metadata`, **not** `Path::exists` — the latter follows
+   links and reports `false` for broken symlinks), and no `*.transfer-*`
+   temp dirs leaked into the protected base.
+5. On **success**, assert the warehouse structure/content, `total_bytes`,
+   and that the inbox directory was removed.
+
+### Security Testing Procedures
+
+The symlink-security behaviors are unit-testable without any network:
+
+```bash
+# Symlink loop (dir link back to ancestor)
+mkdir -p /tmp/sec/inbox/sub
+ln -s /tmp/sec/inbox /tmp/sec/inbox/sub/loop          # active-chain loop
+
+# Chain cycle (a -> b -> a)
+ln -s /tmp/sec/inbox/b /tmp/sec/inbox/a
+ln -s /tmp/sec/inbox/a /tmp/sec/inbox/b               # visited-link loop
+
+# External symlink (default deny)
+ln -s /etc/hostname /tmp/sec/inbox/ext                # rejected unless allowed
+
+# Symlink farm (same inode, many links)
+for i in 1 2 3 4 5; do ln -s /tmp/sec/inbox/target /tmp/sec/inbox/link$i; done
+
+# Invalid target (traversal)
+ln -s ../../etc/passwd /tmp/sec/inbox/traverse        # InvalidSymlinkTarget
+```
+
+Run each against `transfer_files` with `pre_transfer_integrity_scan` both
+on and off, and confirm: the correct `TransferError` variant, a matching
+`SecurityAuditEvent`, an `error_type` metric increment (no paths in
+labels), the warehouse left clean, and the inbox untouched. See
+[Security Considerations](security-considerations.md) for the full threat
+model and the runbook for investigating a real violation.
 
 ---
 

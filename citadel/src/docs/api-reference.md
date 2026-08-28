@@ -15,6 +15,7 @@ Complete documentation for all Citadel HTTP API endpoints.
   - [List Jobs](#list-jobs)
   - [Cancel Job](#cancel-job)
 - [Job Callback Endpoint](#job-callback-endpoint)
+- [Transfer Error & Audit Event Types](#transfer-error--audit-event-types)
 - [Health Endpoints](#health-endpoints)
 - [Error Responses](#error-responses)
 
@@ -338,9 +339,10 @@ Receives completion/failure notifications from job workers (`citadel-job`).
 ```http
 POST /api/v1/job/callback
 Content-Type: application/json
+X-Callback-Secret: <shared-secret>
 ```
 
-**No JWT required** — authentication is via timestamp + nonce (see [Callback Security](authentication.md#callback-security)).
+**No JWT required** — authentication is via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)).
 
 **Request Body:**
 ```json
@@ -358,13 +360,14 @@ Content-Type: application/json
 ```
 
 **Behavior:**
-1. **Timestamp validation**: `age < 5 minutes` with up to 1 minute clock skew allowed
-2. **Nonce validation**: nonce must not have been seen before; stored with a 5-minute expiry
-3. Loads the job; ignores callbacks for already-terminal jobs
-4. On `completed` + `success`: sets `Completed`, records `JobResult`; **planned** notifications to catalog then LTA (currently `NoOp`/commented)
-5. On `completed` + `!success`: sets `Failed`
-6. On `failed`: sets `Failed` and records a `JobError`
-7. On `timed_out`: sets `TimedOut`
+1. **Callback secret validation** (when configured): `X-Callback-Secret` must match the configured secret using a **constant-time comparison**; missing/mismatch → `401 invalid_callback_secret`. When no secret is configured, a warning is logged and validation falls back to timestamp + nonce only.
+2. **Timestamp validation**: `age < 5 minutes` with up to 1 minute clock skew allowed
+3. **Nonce validation**: nonce must not have been seen before; stored with a 5-minute expiry
+4. Loads the job; ignores callbacks for already-terminal jobs
+5. On `completed` + `success`: sets `Completed`, records `JobResult`; notifies catalog then LTA (wired; `NoOp` implementations by default in `main.rs`)
+6. On `completed` + `!success`: sets `Failed`
+7. On `failed`: sets `Failed` and records a `JobError`
+8. On `timed_out`: sets `TimedOut`
 
 **Response (200 OK):**
 ```json
@@ -377,6 +380,54 @@ Content-Type: application/json
 - `invalid_callback_secret`
 - `callback_timestamp_expired`
 - `callback_nonce_reused`
+
+---
+
+## Transfer Error & Audit Event Types
+
+The recursive transfer engine (`storage/transfer.rs`) reports a structured
+set of error types and emits typed security audit events. These are the
+`error_type` metric labels (`citadel_transfer_errors_total`) and the
+`SecurityEventType` values logged/forwarded to the audit sink. See
+[Security Considerations](security-considerations.md) and
+[Recursive Transfer](recursive-transfer.md).
+
+### `TransferError` variants
+
+| Variant | Meaning |
+|---------|---------|
+| `StorageError` | Generic storage/IO wrapper (path + message) |
+| `FileTransferFailed` | A file copy/verify failed, or an unspecified transfer failure |
+| `IoError` | Underlying `std::io::Error` |
+| `SymlinkLoop` | Symlink loop/cycle detected (`PathBuf`) |
+| `ExternalSymlinkNotAllowed` | Symlink resolves outside the inbox (`{ path }`) |
+| `MaxRecursionDepthExceeded` | Directory nesting deeper than limit (`u32`) |
+| `MaxSymlinkDepthExceeded` | Symlink chain longer than limit (`u32`) |
+| `BrokenSymlink` | Symlink target missing (`PathBuf`) |
+| `PathTooLong` | Combined warehouse path exceeds limit (`PathBuf`) |
+| `MultipleErrors` | One or more collected sub-threshold errors (`Vec`) |
+| `Cancelled` | Cancellation mechanism (filtered from reported errors) |
+| `InvalidSymlinkTarget` | Target has null/control chars or `..` (`PathBuf`) |
+| `SymlinkResolutionFailed` | Chain resolution failed (`PathBuf`) |
+| `SecurityViolation` | Generic security violation (message) |
+| `InboxIntegrityFailed` | Pre-transfer integrity scan failed (message) |
+| `InsufficientDiskSpace` | Warehouse filesystem too small (`required`, `available`) |
+| `InvalidWarehousePath` | Warehouse path escapes protected base (`PathBuf`) |
+| `InboxLockFailed` | chmod lock failed (message) |
+| `MaxSymlinkReferencesExceeded` | Symlink-farm inode reference limit (`ino`) |
+| `MaxTotalFilesExceeded` | Total file count limit (`u64`) |
+| `MaxTotalSymlinksExceeded` | Total symlink count limit (`u32`) |
+| `TransferFailed` | **Wrapper**: all transfer failures return this with `{ errors, audit_events }` so the audit trail reaches callers |
+
+### `SecurityEventType` (audit events)
+
+`SymlinkLoopDetected`, `ExternalSymlinkRejected`, `MaxRecursionDepthExceeded`,
+`MaxSymlinkDepthExceeded`, `InvalidSymlinkTarget`, `InboxIntegrityCheckFailed`,
+`AtomicRollbackTriggered`, `InsufficientDiskSpace`,
+`WarehousePathValidationFailed`, `InboxLockFailed`,
+`MaxSymlinkReferencesExceeded`, `MaxTotalFilesExceeded`,
+`MaxTotalSymlinksExceeded` — each with a severity (`Info`/`Warning`/`Error`/`Critical`),
+structured `details`, and optional `inbox_id`/`job_id` context.
 
 ---
 

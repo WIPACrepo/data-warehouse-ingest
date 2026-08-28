@@ -151,7 +151,7 @@ CITADEL_JOB_BINARY=citadel-job
 CITADEL_JOB_MAX_DURATION_SECS=86400
 ```
 
-> **Status**: the `KubernetesExecutor` is a stub returning "not implemented"; the `MockExecutor` returns immediately in the current code (`kubernetes.rs` spec creation also unimplemented). See [Handoff Notes](../HANDOFF.md).
+> **Status**: both executors are functional — `KubernetesExecutor` creates real K8s Jobs (`submit`/`cancel`/`status`), and `MockExecutor` spawns local `citadel-job` processes. See [Handoff Notes](../HANDOFF.md).
 
 ---
 
@@ -169,6 +169,50 @@ CITADEL_TRANSFER_PARALLELISM=4
 CITADEL_TRANSFER_CHUNK_SIZE_MB=16
 ```
 
+### Inbox Security Settings (`InboxConfig`)
+
+Inbox-specific transfer settings are nested in `CitadelConfig` as
+`config.inbox` and loaded from the `CITADEL_INBOX_*` environment variables.
+Limits are security-hardened by default; a value of `0` disables the limit
+(`None`). See [Recursive Transfer](recursive-transfer.md) and
+[Security Considerations](security-considerations.md) for what each control
+defends against.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS` | `false` | Allow symlinks pointing outside the inbox tree (⚠ security-critical; default-deny) |
+| `CITADEL_INBOX_MAX_RECURSION_DEPTH` | `25` | Maximum directory traversal depth |
+| `CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL` | `1` | Collect up to N errors before failing the transfer (fails on the Nth) |
+| `CITADEL_INBOX_MAX_PATH_LENGTH` | `4096` | Maximum combined warehouse path length in bytes (`0` = unlimited) |
+| `CITADEL_INBOX_MAX_TOTAL_FILES` | `100000` | Maximum total files to process (resource-exhaustion prevention; `0` = unlimited) |
+| `CITADEL_INBOX_MAX_TOTAL_SYMLINKS` | `1000` | Maximum total symlinks to process (symlink-farm prevention; `0` = unlimited) |
+| `CITADEL_INBOX_MAX_SYMLINK_DEPTH` | `10` | Maximum symlink chain resolution depth (`0` = unlimited) |
+| `CITADEL_INBOX_MAX_SYMLINK_REFERENCES` | `10` | Maximum references to the same inode via different symlinks (`0` = unlimited) |
+| `CITADEL_INBOX_ATOMIC_TRANSFER` | `true` | Use the atomic transfer pattern (temp dir + rename; rollback on failure) |
+| `CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN` | `true` | Perform a read-only security scan before transfer begins (fail fast) |
+
+```bash
+# Security-critical defaults (already the built-in values)
+CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS=false
+CITADEL_INBOX_MAX_RECURSION_DEPTH=25
+CITADEL_INBOX_MAX_SYMLINK_DEPTH=10
+CITADEL_INBOX_MAX_TOTAL_FILES=100000
+CITADEL_INBOX_MAX_TOTAL_SYMLINKS=1000
+CITADEL_INBOX_ATOMIC_TRANSFER=true
+CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN=true
+```
+
+> **Warning**: enabling `CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS=true` lets a
+> transfer read arbitrary files the job user can access and copy them into
+> the protected warehouse. Only enable it per-deployment with a reviewed
+> reason; see [Symlink Limitations](symlink-limitations.md).
+>
+> **Note**: `CITADEL_PROTECTED_BASE_PATH` (Storage Paths) also gates the
+> transfer engine — the warehouse path must stay inside it
+> (`InvalidWarehousePath` otherwise). Job executors forward `CITADEL_PROTECTED_BASE_PATH`
+> + all `CITADEL_INBOX_*` variables to spawned jobs
+> (`CitadelConfig::inbox_env_vars()`).
+
 ---
 
 ## Callback Authentication
@@ -177,7 +221,7 @@ CITADEL_TRANSFER_CHUNK_SIZE_MB=16
 |----------|---------|-------------|
 | `CITADEL_JOB_CALLBACK_SECRET_FILE` | `/etc/citadel/secrets/callback-secret` | Path to the shared callback secret file |
 
-The secret is read by `citadel-job` and included in callbacks. Server-side secret *validation* is a planned TODO in the handler; **timestamp + nonce** validation is active today.
+The secret is read by `citadel-job` and sent as the `X-Callback-Secret` header. Server-side validation is active: when a secret is configured, the handler verifies the header with a **constant-time comparison** and rejects missing/mismatching values (`401`); when none is configured it logs a warning and falls back to timestamp + nonce only. The configured secret is hot-reloaded from this file via the `notify` watcher.
 
 ```bash
 CITADEL_JOB_CALLBACK_SECRET_FILE=/etc/citadel/secrets/callback-secret
@@ -207,7 +251,7 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=10
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | Inbox metadata polling interval during transfer (planned usage) |
+| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | Job metadata poll interval (used by the background poller) |
 | `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | Minimum interval between progress updates in MongoDB |
 
 ```bash
@@ -215,7 +259,7 @@ CITADEL_JOB_METADATA_POLL_INTERVAL_SECS=15
 CITADEL_PROGRESS_UPDATE_INTERVAL_SECS=30
 ```
 
-> **Status**: config fields exist; metadata polling during transfer and periodic progress updates are **planned** (see [Handoff Notes](../HANDOFF.md)).
+> **Status**: the background job status poller (`polling/job_status.rs`) is active — it polls K8s job status, detects timeouts, reconciles missed callbacks, and cleans up completed jobs.
 
 ---
 
@@ -293,8 +337,13 @@ CITADEL_JOB_EXECUTOR=mock
 CITADEL_BARBICAN_API_URL=http://localhost:8080
 
 # Transfer
-CITADEL_TRANSFER_PARALLELISM=4
-CITADEL_TRANSFER_CHUNK_SIZE_MB=16
+CITADEL_TRANSFER_PARALLELISM=2
+CITADEL_TRANSFER_CHUNK_SIZE_MB=8
+
+# Inbox (development: permissive)
+CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS=true
+CITADEL_INBOX_MAX_RECURSION_DEPTH=50
+CITADEL_INBOX_MAX_TOTAL_FILES=1000000
 
 # Callback
 CITADEL_JOB_CALLBACK_SECRET_FILE=./dev/callback-secret
@@ -341,6 +390,13 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 CITADEL_TRANSFER_PARALLELISM=8
 CITADEL_TRANSFER_CHUNK_SIZE_MB=16
 
+# Inbox (production: high-security)
+CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS=false
+CITADEL_INBOX_MAX_RECURSION_DEPTH=10
+CITADEL_INBOX_MAX_TOTAL_FILES=50000
+CITADEL_INBOX_ATOMIC_TRANSFER=true
+CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN=true
+
 # Callback secret (Kubernetes Secret mounted as file)
 CITADEL_JOB_CALLBACK_SECRET_FILE=/etc/citadel/secrets/callback-secret
 
@@ -375,6 +431,16 @@ RUST_LOG=info,citadel=info
 | `CITADEL_JOB_MAX_DURATION_SECS` | `86400` |
 | `CITADEL_TRANSFER_PARALLELISM` | `4` |
 | `CITADEL_TRANSFER_CHUNK_SIZE_MB` | `16` |
+| `CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS` | `false` |
+| `CITADEL_INBOX_MAX_RECURSION_DEPTH` | `25` |
+| `CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL` | `1` |
+| `CITADEL_INBOX_MAX_PATH_LENGTH` | `4096` |
+| `CITADEL_INBOX_MAX_TOTAL_FILES` | `100000` |
+| `CITADEL_INBOX_MAX_TOTAL_SYMLINKS` | `1000` |
+| `CITADEL_INBOX_MAX_SYMLINK_DEPTH` | `10` |
+| `CITADEL_INBOX_MAX_SYMLINK_REFERENCES` | `10` |
+| `CITADEL_INBOX_ATOMIC_TRANSFER` | `true` |
+| `CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN` | `true` |
 | `CITADEL_JOB_CALLBACK_SECRET_FILE` | `/etc/citadel/secrets/callback-secret` |
 | `CITADEL_BARBICAN_API_URL` | `http://barbican:8080` |
 | `CITADEL_BARBICAN_API_RETRY_MAX` | `5` |
@@ -401,11 +467,28 @@ RUST_LOG=info,citadel=info
 
 ### Validation
 
-The current `from_env()` does not fail on missing/invalid values beyond parse errors for numeric fields (unparseable integers return `ConfigError::InvalidValue`). Required-secret validation is **planned** to match Barbican's behavior.
+`from_env()` fails on unparseable values (numeric fields return `ConfigError::InvalidValue`, booleans reject non-`true/false` strings). Missing optional variables fall back to defaults.
 
 ### Hot Reload
 
-Like Barbican, Citadel does **not** hot-reload main configuration. The planned exception is the **callback secret**: `PLAN.md` specifies watching `CITADEL_JOB_CALLBACK_SECRET_FILE` with the `notify` crate and reloading atomically (dependency present; watcher not yet wired).
+Main configuration is **not** hot-reloaded. The **callback secret** is: `secret_reloader.rs` starts a `notify`-based file watcher on `CITADEL_JOB_CALLBACK_SECRET_FILE` that atomically swaps the in-memory `Arc<RwLock<Option<String>>>` when the file changes — no service restart required (see [Architecture](architecture.md)).
+
+---
+
+## Security Monitoring
+
+Transfer security events surface two ways:
+
+1. **Metrics** — scrape `citadel_security_events_total{event_type=...}` and
+   `citadel_transfer_errors_total{error_type=...}` (no paths in labels, by
+   design). Alert on `external_symlink_rejected`,
+   `warehouse_path_validation_failed`, `symlink_loop`, and any
+   `citadel_transfer_atomic_rollbacks_total` increment.
+2. **Audit log** — every security incident emits a structured
+   `SecurityAuditEvent` (paths, dev/ino, counts) that is logged and carried
+   to the job callback. Forward these to the centralized SIEM with
+   immutable storage (retention ≥ 90 days). See
+   [Security Considerations → Observability & Audit Logging](security-considerations.md#observability--audit-logging).
 
 ---
 

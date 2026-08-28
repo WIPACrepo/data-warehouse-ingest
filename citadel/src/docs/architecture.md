@@ -121,7 +121,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 5. Handler transitions the inbox to `publishing` via Barbican
 6. Handler submits the job to the executor (`KubernetesExecutor` or `MockExecutor`)
 7. Executor (K8s) launches a `citadel-job` process that performs the transfer
-8. `citadel-job` executes copy-verify-delete on the storage
+8. `citadel-job` executes recursive copy-verify-delete on the storage tree with the atomic transfer pattern
 9. `citadel-job` calls back to `POST /api/v1/job/callback` with the result
 10. Handler updates the job record (`completed` / `failed`) and records the result
 
@@ -178,14 +178,12 @@ citadel/src/
 ├── main.rs              # citadel service entry point: tracing, config, router, metrics server
 ├── job_main.rs          # citadel-job binary entry point (transfer worker + callback)
 ├── lib.rs               # Library exports and AppState (shared dependencies)
-├── config.rs            # CitadelConfig: CITADEL_* environment loading, defaults
+├── config.rs            # CitadelConfig (+ nested InboxConfig): CITADEL_* environment loading
 ├── error.rs             # Error types using common::AppError, Result, StatusCode mapping, sanitized IntoResponse
 ├── db.rs                # MongoDB client setup, collection helpers, collection name constants
 ├── models.rs            # JobDB, JobError, JobResult, CallbackNonceDB, FileInfo, TransferResult
 ├── metrics.rs           # CitadelMetrics: Prometheus registry + counters/histogram/gauge
-├── auth/                # JWT authentication
-│   ├── mod.rs           # Module exports
-│   ├── jwt_validator.rs # CustomJwks, Claims, JwksCache, validate_jwt, AuthState
+├── secret_reloader.rs   # Callback secret file loading + notify-based hot reload
 ├── middleware/          # Axum middleware
 │   ├── mod.rs           # Module exports
 │   ├── auth.rs          # auth_middleware: JWT extraction, validation, role gate
@@ -198,7 +196,7 @@ citadel/src/
 │   ├── get_job.rs       # GET /api/v1/job/{job_id}
 │   ├── list_jobs.rs     # GET /api/v1/jobs
 │   ├── cancel_job.rs    # POST /api/v1/job/{job_id}/cancel
-│   ├── job_callback.rs  # POST /api/v1/job/callback
+│   ├── job_callback.rs  # POST /api/v1/job/callback (secret + timestamp + nonce validation)
 │   ├── health.rs        # GET /health
 │   └── ready.rs         # GET /ready
 ├── jobs/                # Job model and execution
@@ -208,23 +206,22 @@ citadel/src/
 │   ├── processor.rs     # JobProcessor: permit acquisition + executor submission
 │   └── executor/
 │       ├── mod.rs       # JobExecutor trait (submit/cancel/status)
-│       ├── kubernetes.rs# KubernetesExecutor (stub: returns not-implemented errors)
-│       └── mock.rs      # MockExecutor (returns immediately; used for testing)
+│       ├── kubernetes.rs# KubernetesExecutor: K8s Job spec + submit/cancel/status
+│       └── mock.rs      # MockExecutor: spawns local citadel-job processes for testing
 ├── storage/             # Filesystem operations
-│   ├── mod.rs           # Module exports
+│   ├── mod.rs           # Module exports (transfer types re-exported)
 │   ├── manager.rs       # StorageManager: create/delete inbox, transfer_files, validate_path
-│   ├── transfer.rs      # transfer_files: lock (chmod 555) → parallel copy+verify → delete sources
+│   ├── transfer.rs      # Recursive transfer engine: lock → scan → collect (symlink-safe) →
+│   │                    #   parallel copy+verify → atomic commit → cleanup; audit events
 │   ├── checksum.rs      # SHA-512 checksum utilities
-│   ├── lock.rs          # Inbox lock helper
-│   └── progress.rs      # Transfer progress tracking
+│   └── progress.rs      # ProgressTracker: in-job progress state (per-job process)
 ├── integrations/        # External integrations
 │   ├── mod.rs           # Module exports
 │   ├── barbican.rs      # BarbicanClient: transition_inbox_state (retry/backoff); inbox reads via MongoDB
-│   ├── catalog.rs       # CatalogNotifier trait + NoOpCatalogNotifier
-│   ├── lta.rs           # LtaNotifier trait + NoOpLtaNotifier
-│   └── kubernetes.rs    # K8s job integration (stub: create_job_spec not implemented)
+│   ├── catalog.rs       # CatalogNotifier trait + NoOp/HTTP implementations
+│   └── lta.rs           # LtaNotifier trait + NoOp/HTTP implementations
 ├── polling/             # Background reconciliation
-│   └── job_status.rs    # JobStatusPoller (stub: log-only loop)
+│   └── job_status.rs    # JobStatusPoller: K8s job status, timeout detection, reconciliation
 └── docs/                # This documentation directory
 ```
 
@@ -235,7 +232,7 @@ All handlers receive the application state via Axum's `State` extractor:
 ```rust
 pub struct AppState {
     pub config: Arc<CitadelConfig>,
-    pub jwks_cache: Arc<JwksCache>,
+    pub auth_state: Arc<AuthMiddlewareState>,
     pub storage_manager: Arc<StorageManager>,
     pub barbican_client: Arc<BarbicanClient>,
     pub executor: Arc<dyn JobExecutor>,
@@ -243,6 +240,7 @@ pub struct AppState {
     pub lta_notifier: Arc<dyn LtaNotifier>,
     pub metrics: Arc<CitadelMetrics>,
     pub db_client: Arc<Client>,
+    pub callback_secret: Arc<RwLock<Option<String>>>, // hot-reloaded via notify
 }
 ```
 
@@ -267,6 +265,9 @@ CITADEL_PROTECTED_BASE_PATH/ (default ./data/protected)
 - Inbox directories are created by `StorageManager::create_inbox` using the inbox `ObjectId` as the directory name
 - Protected destinations are derived from the `warehouse_path` in inbox metadata
 - All paths are validated with `validate_path` (canonicalization) to prevent traversal
+- Inbox trees are transferred **recursively**: subdirectories are preserved in
+  the warehouse, symlinks are resolved safely (see
+  [Recursive Transfer](recursive-transfer.md))
 
 ### Transfer Pipeline (`storage/transfer.rs`)
 
@@ -274,33 +275,57 @@ CITADEL_PROTECTED_BASE_PATH/ (default ./data/protected)
 START
   │
   ▼
-Lock inbox (chmod 555)          // InboxLock::lock — read-only during transfer
+Validate warehouse path          // must stay inside CITADEL_PROTECTED_BASE_PATH
   │
   ▼
-Enumerate files                 // fs::read_dir, files only
+Lock inbox (chmod 555)           // InboxLock::lock — RAII restore on drop
   │
   ▼
-Parallel copy + verify          // Semaphore-limited; SHA-512 computed during streaming copy
-  │                              // atomic rename after verification
-  ├─ any failure ──────────────► Clean up transferred targets, preserve sources, return failure
+Pre-transfer integrity scan?     // optional read-only security walk (fail fast)
+  │  └► sums sizes ──► disk space check (statvfs, +10% buffer)
+  ▼
+Prepare target base              // atomic: {name}.transfer-{ms}-{rand} temp dir
+  ▼
+Producer (inline, backpressured) ────── bounded channel ──────► Copy workers
+  │  collect_directory_tree:                                   (Semaphore =
+  │  - active-chain (dev,ino) loop detection                       parallelism)
+  │  - symlink chain resolution (read_link + lstat, depth-bounded)
+  │  - multi-layer external check (canonical prefix + st_dev)
+  │  - global inode reference counting (symlink farm)
+  │  - depth / path-length / file / symlink limits
+  │  - pre-creates warehouse dirs (empty subdirs preserved)
+  ▼                                                        chunked copy + SHA-512
+All files copied & verified                                verify on-disk target
+  │                                                        atomic rename temp→target
+  ├─ failure ─────────────────────────────────────► ROLLBACK: delete temp dir /
+  │                                                 manifest files; inbox untouched;
+  │                                                 return TransferFailed{errors,audit}
+  ▼
+COMMIT: rename temp dir → warehouse (atomic)   [atomic mode]
   │
   ▼
-All verified                    // only now are sources touched
+Delete sources + remove inbox
   │
   ▼
-Delete source files             // one removal per transferred file
-  │
-  ▼
-Return TransferResult
+Return TransferResult (files, bytes, audit_events, sub-threshold errors)
 ```
 
-Key safety invariants (see [`transfer.rs`](../src/storage/transfer.rs) and [`PLAN.md`](../PLAN.md) Section 4):
+Key safety invariants (see [`transfer.rs`](../storage/transfer.rs),
+[Recursive Transfer](recursive-transfer.md), and
+[Security Considerations](security-considerations.md)):
 
 - **NEVER delete source files until ALL files are copied AND verified**
-- **Copy and verify run in parallel** per-file, bounded by `CITADEL_TRANSFER_PARALLELISM`
-- **On failure**: preserve all source files, clean up partial targets
-- **Chunked streaming**: files are copied in chunks (`CITADEL_TRANSFER_CHUNK_SIZE_MB`, default 16MB)
-- **Atomic writes**: each file is copied to a temp path then renamed
+- **No partial warehouse data**: atomic mode writes to a sibling temp dir and
+  commits with a single `rename()`; failure deletes the temp dir
+- **Symlink safety**: loops detected via active-chain `(dev, ino)` tracking;
+  external symlinks rejected by default (multi-layer canonical + `st_dev`
+  check); chain resolution is depth-bounded and validated per hop (TOCTOU
+  mitigation via non-following `read_link`/`lstat`)
+- **Error collection**: up to `CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL` errors
+  are collected and reported without aborting; the Nth cancels via a shared
+  `CancellationToken`; structural failures (loops, limits) always fail
+- **Chunked streaming**: files copied in `CITADEL_TRANSFER_CHUNK_SIZE_MB`
+  chunks; per-file SHA-512 verified against the on-disk target after copy
 - **Memory bound**: peak memory ≈ `CHUNK_SIZE_MB × PARALLELISM` per job
 
 ### Job Submission Pipeline
@@ -372,9 +397,15 @@ Update job: Completed / Failed / TimedOut
 
 ### 6. Replay-Protected Callback Authentication
 
-**Decision**: Job callbacks carry a timestamp (validated within 5 minutes, allowing 1 minute clock skew) and a per-call nonce stored in MongoDB to prevent replay.
+**Decision**: Job callbacks carry a timestamp (validated within 5 minutes, allowing 1 minute clock skew) and a per-call nonce stored in MongoDB to prevent replay. When a callback secret is configured, the `X-Callback-Secret` header is verified with a **constant-time comparison** (`ct_eq`); the secret is hot-reloaded from file via the `notify` watcher.
 
-**Rationale**: The callback endpoint is the trust boundary for job results; replay protection prevents forged/duplicated completions.
+**Rationale**: The callback endpoint is the trust boundary for job results; replay protection prevents forged/duplicated completions, and the shared secret authenticates the job caller (constant-time compare avoids timing side channels).
+
+### 7. Recursive Transfer with Symlink Safety
+
+**Decision**: Directory tree traversal with active-chain `(dev, ino)` loop detection, multi-layer external symlink validation (canonical prefix + `st_dev`), TOCTOU mitigation via non-following `read_link`/`lstat` chain resolution, streaming collection over a bounded channel with backpressure, and the atomic transfer pattern (temp dir + rename, rollback on failure).
+
+**Rationale**: Inboxes are an untrusted-content boundary; symlinks are the primary attack vector (loops, exfiltration, farms, races). Security-hardened defaults deny external links and bound all resources. See [Recursive Transfer](recursive-transfer.md), [Symlink Limitations](symlink-limitations.md), and [Security Considerations](security-considerations.md).
 
 See [`PLAN.md`](../PLAN.md) Section 14 (Success Criteria) for the full decision ledger.
 
@@ -382,7 +413,9 @@ See [`PLAN.md`](../PLAN.md) Section 14 (Success Criteria) for the full decision 
 
 ## Implementation Status
 
-The current source tree implements the core framework; several `PLAN.md` features are stubs or `NoOp` implementations. Everything below is as it stands in the code today.
+The source tree implements the full core framework plus the recursive,
+symlink-safe transfer engine. Everything below is as it stands in the code
+today.
 
 ### Implemented
 
@@ -393,27 +426,47 @@ The current source tree implements the core framework; several `PLAN.md` feature
 - Job model (`JobDB`), per-type queue semaphores, processor
 - Barbican client with exponential-backoff retry and 409 conflict handling
 - Storage manager with path traversal validation
-- File transfer engine: chmod-555 lock, parallel chunked copy, SHA-512 verify, atomic rename, delete-after-verify
-- `citadel-job` worker binary with environment-driven config and callback reporting
-- Callback handler with timestamp + nonce validation, job status updates
+- **Recursive file transfer engine**: chmod-555 lock, recursive tree walk with
+  symlink loop detection (active-chain `(dev, ino)`), multi-layer external
+  symlink validation, TOCTOU-safe chain resolution, producer/consumer
+  pipeline over a bounded channel, parallel chunked copy, SHA-512 verify,
+  per-file atomic rename, temp-dir + rename **atomic commit**, manifest
+  rollback, delete-after-verify
+- **Inbox security configuration** (`InboxConfig` nested in `CitadelConfig`):
+  external-symlink policy, recursion/symlink-depth, path-length,
+  file/symlink count, and symlink-farm limits, error threshold, atomic
+  transfer toggle, pre-transfer integrity scan
+- **Security audit events** (`SecurityAuditEvent`) emitted for every
+  security-relevant incident and carried to callers on success *and* failure
+- **Pre-transfer integrity scan** (read-only fail-fast) + disk-space check
+  (`statvfs`, 10% buffer)
+- `citadel-job` worker binary with environment-driven config and callback
+  reporting
+- Callback handler with **secret** (constant-time) + timestamp + nonce
+  validation, job status updates, catalog/LTA notify hooks
+- **Kubernetes executor**: real K8s Job spec creation, `submit`/`cancel`/`status`
+- **Mock executor**: spawns local `citadel-job` processes for end-to-end tests
+- **Catalog / LTA notifiers**: `NoOp` + `Http` implementations (wired as
+  `NoOp` in `main.rs` by default)
+- **Background job poller** (`polling/job_status.rs`): K8s status polling,
+  timeout detection, missed-callback reconciliation, job cleanup
+- **Callback secret hot-reload** via the `notify` file watcher
 - Sanitized error responses with mapping to generic HTTP error codes
-- Prometheus metrics registry (jobs, transfer bytes/files, Barbican errors, callback errors, circuit-breaker gauge)
+- Prometheus metrics (jobs, transfer files/bytes/errors/duration/rollbacks,
+  security events, Barbican errors, callback errors)
 
-### Planned / per PLAN.md (not fully implemented)
+### Known Gaps / Not Fully Wired
 
-- **Kubernetes executor**: `submit`/`cancel`/`status` return "not fully implemented" errors
-- **Kubernetes job spec creation** (`integrations/kubernetes.rs` `create_job_spec`): returns not-implemented
-- **Mock executor process spawning**: `MockExecutor` returns immediately rather than spawning `citadel-job`
-- **Catalog / LTA notifiers**: only `NoOp` implementations; the callback handler's notification calls are commented out (including the catalog-before-LTA ordering)
-- **Background job poller** (`polling/job_status.rs`): log-only loop; no K8s API polling, timeout detection, or reconciliation
-- **Callback secret validation**: callback handler relies on timestamp + nonce only; secret-file header validation is a `TODO`
+- **Catalog / LTA notifiers** are `NoOp` in the running service by default
+  (`main.rs` constructs `NoOpCatalogNotifier` / `NoOpLtaNotifier`); the HTTP
+  implementations exist but are not enabled without configuration.
+- **TTL index** on `callback_nonces.expires_at`: collection helper exists;
+  index creation is not wired.
 - **Metadata polling during transfer**: not present in the transfer path
-- **Open-handle verification** before/after locking: not present (lock is chmod + RAII restore)
-- **Circuit breaker**: gauge defined in metrics but no breaker logic in the Barbican client
-- **Secret hot-reload** (`notify` crate dependency present; no watcher wired up)
-- **TTL index** on `callback_nonces.expires_at`: collection helper exists; index creation not wired
+  (the background poller reconciles after the fact instead).
 
-> See [`HANDOFF.md`](../HANDOFF.md) for the authoritative implementation-status log and next steps.
+> See [`HANDOFF.md`](../HANDOFF.md) for the authoritative implementation-status
+> log and next steps.
 
 ---
 
@@ -447,7 +500,7 @@ The current source tree implements the core framework; several `PLAN.md` feature
 
 1. **External clients** (via Barbican): JWT with user roles (`read`, `write`, `admin`)
 2. **Service callers** of the Citadel API: JWT validated against Keycloak JWKS
-3. **Job callback**: timestamp + nonce validation (planned: shared file-based secret)
+3. **Job callback**: `X-Callback-Secret` (constant-time compare, hot-reloaded) + timestamp + nonce validation
 4. **MongoDB**: native authentication/TLS (environment-dependent)
 
 ### Authorization Model
@@ -459,7 +512,7 @@ The current source tree implements the core framework; several `PLAN.md` feature
 | `POST /api/v1/inbox/{id}/delete` | `write` or `admin` |
 | `GET /api/v1/job/{job_id}`, `GET /api/v1/jobs` | `read`, `write`, or `admin` |
 | `POST /api/v1/job/{job_id}/cancel` | `admin` |
-| `POST /api/v1/job/callback` | timestamp + nonce (planned: internal role / secret) |
+| `POST /api/v1/job/callback` | callback secret + timestamp + nonce |
 | `/health`, `/ready` | None (public) |
 
 ### Security Measures in Code
@@ -477,4 +530,7 @@ The current source tree implements the core framework; several `PLAN.md` feature
 - [State Machine](state-machine.md) - Job lifecycle
 - [Authentication](authentication.md) - JWT and role details
 - [Barbican Integration](barbican-integration.md) - Frontend coordination
+- [Recursive Transfer](recursive-transfer.md) - Transfer engine and symlink safety
+- [Symlink Limitations](symlink-limitations.md) - Edge cases and accepted limits
+- [Security Considerations](security-considerations.md) - Threat model and hardening
 - [Design Plan](../PLAN.md) - Complete specification

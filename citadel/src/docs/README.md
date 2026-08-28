@@ -15,6 +15,9 @@ Welcome to the Citadel crate documentation. This directory contains comprehensiv
 | [Barbican Integration](barbican-integration.md) | Frontend service coordination from the Citadel side |
 | [Configuration](configuration.md) | Environment variables and settings |
 | [Development Guide](development.md) | Building, testing, and extending Citadel |
+| [Recursive Transfer](recursive-transfer.md) | Transfer engine, symlink safety, atomic commit, error collection |
+| [Symlink Limitations](symlink-limitations.md) | Edge cases, bind mounts, TOCTOU, accepted risks |
+| [Security Considerations](security-considerations.md) | Threat model, hardening guide, incident response, compliance |
 
 ### Design Documents
 
@@ -177,4 +180,4 @@ See [API Reference](api-reference.md) for detailed endpoint documentation and [S
 
 ---
 
-*Last Updated: 2026-08-18*
+*Last Updated: 2026-08-26*

@@ -18,6 +18,9 @@
 //! - `barbican-integration.md` - Frontend coordination
 //! - `configuration.md` - Environment variables
 //! - `development.md` - Development guide
+//! - `recursive-transfer.md` - Recursive transfer engine and symlink safety
+//! - `symlink-limitations.md` - Symlink edge cases and accepted limits
+//! - `security-considerations.md` - Threat model, hardening, incident response
 
 pub mod config;
 pub mod db;

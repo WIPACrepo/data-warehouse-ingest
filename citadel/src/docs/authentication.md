@@ -262,12 +262,13 @@ CITADEL_REQUIRED_ROLES=read,write
 
 ## Callback Security
 
-The job callback endpoint (`POST /api/v1/job/callback`) authenticates job workers by **timestamp + nonce** rather than a JWT.
+The job callback endpoint (`POST /api/v1/job/callback`) authenticates job workers by **callback secret** (when configured), plus **timestamp + nonce** rather than a JWT.
 
 ### Flow (from [`handlers/job_callback.rs`](../src/handlers/job_callback.rs))
 
-1. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew)
-2. **Nonce validation & storage**:
+1. **Callback secret validation** (when a secret is configured): the `X-Callback-Secret` header is compared in constant time; missing/mismatch → `401 invalid_callback_secret` (see [Callback Secret Validation](#callback-secret-validation-implemented))
+2. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew)
+3. **Nonce validation & storage**:
    - Look up `{ nonce }` in the `callback_nonces` collection
    - If it already exists → reject `CallbackNonceReused`
    - Otherwise store `CallbackNonceDB::new(nonce)` (5-minute expiry) and continue
@@ -300,11 +301,30 @@ pub struct CallbackNonceDB {
 }
 ```
 
-> **Planned / per PLAN.md**:
-> - Validate a shared callback secret read from `CITADEL_JOB_CALLBACK_SECRET_FILE` (currently a `TODO` in the handler; `citadel-job` already reads the secret file to attach to its request)
+### Callback Secret Validation (implemented)
+
+When a secret is configured (read from `CITADEL_JOB_CALLBACK_SECRET_FILE`),
+the handler verifies the `X-Callback-Secret` request header using a
+**constant-time byte comparison** (`ct_eq`, in `handlers/job_callback.rs`)
+to prevent timing side-channels:
+
+- Secret configured + header present and matching → accepted
+- Secret configured + header missing or mismatching → rejected with
+  `401 invalid_callback_secret` (and `callback_errors_total` incremented)
+- No secret configured → dev-mode passthrough (a warning is logged unless
+  the mock executor is in use); authentication then relies on
+  timestamp + nonce only
+
+The secret is **hot-reloaded**: `secret_reloader.rs` watches the file via
+the `notify` crate and atomically swaps the in-memory value
+(`Arc<RwLock<Option<String>>>`) on change — no service restart needed.
+`citadel-job` reads the same secret file and attaches it as
+`X-Callback-Secret` on every callback.
+
+> **Remaining planned hardening**:
 > - TTL index on `callback_nonces.expires_at`
 > - `internal` role as an alternative callback authentication
-> - Secret hot-reload via the `notify` crate (dependency present, watcher not wired)
+> - K8s NetworkPolicy restricting the callback endpoint to internal pods
 
 ---
 
@@ -322,11 +342,14 @@ pub struct CallbackNonceDB {
 - **JWKS Cache**: refresh cache on rotation
 - **Algorithm Whitelist**: only asymmetric algorithms; reject `none` and HMAC-with-public-key
 
-### Callback Security Hardening (planned)
+### Callback Security Hardening (implemented / remaining)
 
-- Shared file-based secret (`CITADEL_JOB_CALLBACK_SECRET_FILE`) mounted via Kubernetes Secret
-- Replay protection extended with per-nonce MongoDB deduplication
+- Shared file-based secret (`CITADEL_JOB_CALLBACK_SECRET_FILE`) with
+  constant-time comparison and hot-reload (implemented)
+- Replay protection via per-nonce MongoDB deduplication + 5-minute
+  timestamp window (implemented)
 - K8s NetworkPolicy restricting the callback endpoint to internal pods
+  (deployment-level, not yet wired)
 
 ### Input Validation
 

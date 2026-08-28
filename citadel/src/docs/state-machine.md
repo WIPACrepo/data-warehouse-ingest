@@ -124,6 +124,11 @@ Where: [`handlers/job_callback.rs`](../src/handlers/job_callback.rs).
 
 - Callback with `status = "failed"`, or `completed` with `result.success == false`
 - `job.status = Failed`; a `JobError` is appended for failure callbacks
+- Common causes on publish jobs (see [Recursive Transfer](recursive-transfer.md#error-collection--cancellation)):
+  - **Threshold failure**: `max_errors_before_fail` errors collected (e.g. a broken symlink with the default threshold of 1) — the cancellation token fires, workers stop, and the run fails
+  - **Structural failure**: symlink loop, max recursion/symlink depth, max file/symlink/path-length limits — always fail immediately
+  - **Security failure**: external symlink rejected, integrity scan failure, insufficient disk space, warehouse path outside the protected base — fail before or during copy
+  - In all failure cases the warehouse is left clean (atomic rollback) and the **inbox is untouched**; sub-threshold errors do *not* fail the job but are reported in the transfer result
 
 ### Running → TimedOut
 
@@ -190,6 +195,22 @@ The authoritative transition rules are documented in [Barbican's State Machine](
 ---
 
 ## Failure Handling
+
+### Transfer Failures (within a Running publish job)
+
+The transfer engine distinguishes *failure modes* that map to job outcomes:
+
+| Mode | Trigger | Job outcome | Warehouse state | Inbox state |
+|------|---------|-------------|-----------------|-------------|
+| Sub-threshold errors | fewer than `max_errors_before_fail` errors (e.g. one broken symlink, threshold 5) | `Completed` (errors reported in result) | fully committed | removed |
+| Threshold failure | Nth error collected (cancellation token fires) | `Failed` | rolled back (no partial data) | untouched |
+| Structural failure | loop / depth / count / path-length limit | `Failed` | rolled back | untouched |
+| Pre-transfer failure | integrity scan, disk space, warehouse validation, lock | `Failed` (nothing copied) | empty | untouched |
+
+**Cancellation mechanism**: a single `CancellationToken` shared by the
+producer and all copy workers; any threshold-reaching error cancels it and
+all in-flight work exits gracefully. `Cancelled` is never reported as a
+failure cause — only the underlying errors are.
 
 ### Job Submission Failures
 

@@ -12,6 +12,9 @@
 //! - [`barbican-integration.md`](docs/barbican-integration.md) - Frontend service coordination
 //! - [`configuration.md`](docs/configuration.md) - Environment variables and settings
 //! - [`development.md`](docs/development.md) - Building, testing, and extending Citadel
+//! - [`recursive-transfer.md`](docs/recursive-transfer.md) - Recursive transfer engine and symlink safety
+//! - [`symlink-limitations.md`](docs/symlink-limitations.md) - Symlink edge cases and accepted limits
+//! - [`security-considerations.md`](docs/security-considerations.md) - Threat model, hardening, and incident response
 //!
 //! # Design Documents
 //!
