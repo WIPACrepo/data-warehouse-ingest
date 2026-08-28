@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::config::CitadelConfig;
 use crate::error::{AppError, Result};
 use crate::models::TransferResult;
+use crate::storage::transfer::TransferError;
 use mongodb::bson::oid::ObjectId;
 use tracing::{info, error};
 
@@ -83,12 +84,19 @@ impl StorageManager {
             }
             Err(e) => {
                 error!("Transfer failed: {}", e);
+                // `TransferFailed` wraps the collected errors (and the audit
+                // trail); surface the first underlying error in logs.
+                if let TransferError::TransferFailed { errors, .. } = &e {
+                    for err in errors {
+                        error!("  - {}", err);
+                    }
+                }
                 Ok(TransferResult {
                     success: false,
                     files_transferred: vec![],
                     files_failed: vec![],
                     total_bytes: 0,
-                    partial_cleanup_completed: false,
+                    partial_cleanup_completed: true,
                 })
             }
         }

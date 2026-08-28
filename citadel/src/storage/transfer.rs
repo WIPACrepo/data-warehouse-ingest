@@ -73,6 +73,22 @@ pub enum TransferError {
     #[error("Multiple errors occurred during transfer: {0:?}")]
     MultipleErrors(Vec<TransferError>),
 
+    /// The transfer failed as a whole.
+    ///
+    /// `errors` holds every distinct error collected during the run (at
+    /// least one); `audit_events` carries the security audit trail so
+    /// callers can forward it to the SIEM/audit sink even on failure
+    /// (plan §12).
+    #[error(
+        "Transfer failed with {} error(s): {}",
+        errors.len(),
+        errors.first().map(|e| e.to_string()).unwrap_or_default()
+    )]
+    TransferFailed {
+        errors: Vec<TransferError>,
+        audit_events: Vec<SecurityAuditEvent>,
+    },
+
     #[error("Transfer cancelled: {0}")]
     Cancelled(String),
 
@@ -200,6 +216,13 @@ pub struct TransferResult {
     pub total_bytes: u64,
     pub partial_cleanup_completed: bool,
     pub audit_events: Vec<SecurityAuditEvent>,
+    /// Errors collected during the run.
+    ///
+    /// On failure these are the errors that caused (or accompanied) the
+    /// failure — the returned [`TransferError`] wraps this list. On success
+    /// these are non-fatal errors collected below the
+    /// `max_errors_before_fail` threshold (e.g. broken symlinks that were
+    /// skipped while the rest of the tree transferred).
     pub errors: Vec<TransferError>,
 }
 
@@ -502,22 +525,30 @@ pub(crate) fn count_symlink_reference(
 ) -> Result<u32> {
     let count = global_inodes.entry((dev, ino)).or_insert(0);
     *count += 1;
-    if let Some(max) = max_references {
-        if *count > max {
-            return Err(TransferError::MaxSymlinkReferencesExceeded(ino));
-        }
+    if let Some(max) = max_references && *count > max {
+        return Err(TransferError::MaxSymlinkReferencesExceeded(ino));
     }
     Ok(*count)
 }
 
-/// Send an error through the channel and record it in the transfer context.
+/// Record an error against the transfer context and, if it is
+/// sub-threshold, send it through the channel.
+///
+/// Returns `Some(err)` when this error reached the `max_errors_before_fail`
+/// threshold (cancelling the transfer). The caller MUST then `return Err`
+/// with that error so the pipeline unwinds immediately with the specific
+/// failure. `None` means the error was collected non-fatally and forwarded
+/// through the channel; the caller should `continue`.
 async fn emit_error(
     tx: &mpsc::Sender<Result<(PathBuf, PathBuf)>>,
     err: TransferError,
     context: &TransferContext,
-) {
-    context.record_error();
+) -> Option<TransferError> {
+    if context.record_error() {
+        return Some(err);
+    }
     let _ = tx.send(Err(err)).await;
+    None
 }
 
 /// Worker task: copy a single file and verify its checksum.
@@ -714,10 +745,11 @@ impl<'a> Collector<'a> {
             let rel_path = rel_prefix.join(&file_name);
             let target_path = self.target_base.join(&rel_path);
 
-            // Path length check.
+            // Path length check. Sub-threshold: skip the file and continue;
+            // at/over threshold: fail the transfer (see `emit_error`).
             let max_len = self.config.max_path_length.unwrap_or(4096);
             if target_path.as_os_str().len() > max_len {
-                emit_error(
+                let hard = emit_error(
                     self.tx,
                     TransferError::PathTooLong(target_path.clone()),
                     self.context,
@@ -726,33 +758,37 @@ impl<'a> Collector<'a> {
                 if let Some(m) = self.metrics {
                     m.transfer_errors_total.with_label_values(&["path_too_long"]).inc();
                 }
+                if let Some(err) = hard {
+                    return Err(err);
+                }
                 continue;
             }
 
             let meta = match fs::symlink_metadata(&entry_path).await {
                 Ok(m) => m,
                 Err(e) => {
-                    emit_error(self.tx, TransferError::IoError(e), self.context).await;
+                    let err: TransferError = e.into();
+                    if let Some(hard) = emit_error(self.tx, err, self.context).await {
+                        return Err(hard);
+                    }
                     continue;
                 }
             };
 
             if meta.file_type().is_symlink() {
                 let symlink_count = self.counters.increment_symlink();
-                if let Some(max) = self.config.max_total_symlinks {
-                    if symlink_count > max {
-                        let err = TransferError::MaxTotalSymlinksExceeded(max);
-                        self.audit_events.push(SecurityAuditEvent::new(
-                            SecurityEventType::MaxTotalSymlinksExceeded,
-                            AuditSeverity::Error,
-                            self.audit_context,
-                            serde_json::json!({ "count": symlink_count }),
-                        ));
-                        if let Some(m) = self.metrics {
-                            m.transfer_errors_total.with_label_values(&["max_total_symlinks_exceeded"]).inc();
-                        }
-                        return Err(err);
+                if let Some(max) = self.config.max_total_symlinks && symlink_count > max {
+                    let err = TransferError::MaxTotalSymlinksExceeded(max);
+                    self.audit_events.push(SecurityAuditEvent::new(
+                        SecurityEventType::MaxTotalSymlinksExceeded,
+                        AuditSeverity::Error,
+                        self.audit_context,
+                        serde_json::json!({ "count": symlink_count }),
+                    ));
+                    if let Some(m) = self.metrics {
+                        m.transfer_errors_total.with_label_values(&["max_total_symlinks_exceeded"]).inc();
                     }
+                    return Err(err);
                 }
 
                 let (resolved, resolved_meta, _depth) =
@@ -774,9 +810,11 @@ impl<'a> Collector<'a> {
                                     serde_json::json!({ "path": entry_path.to_string_lossy() }),
                                 ));
                             }
-                            emit_error(self.tx, e, self.context).await;
                             if let Some(m) = self.metrics {
                                 m.transfer_errors_total.with_label_values(&[label]).inc();
+                            }
+                            if let Some(hard) = emit_error(self.tx, e, self.context).await {
+                                return Err(hard);
                             }
                             continue;
                         }
@@ -804,7 +842,9 @@ impl<'a> Collector<'a> {
                         m.transfer_errors_total.with_label_values(&["max_symlink_references_exceeded"]).inc();
                         m.security_events_total.with_label_values(&["max_symlink_references_exceeded"]).inc();
                     }
-                    emit_error(self.tx, e, self.context).await;
+                    if let Some(hard) = emit_error(self.tx, e, self.context).await {
+                        return Err(hard);
+                    }
                     continue;
                 }
 
@@ -834,12 +874,15 @@ impl<'a> Collector<'a> {
                             m.transfer_errors_total.with_label_values(&["external_symlink_not_allowed"]).inc();
                             m.security_events_total.with_label_values(&["external_symlink_rejected"]).inc();
                         }
-                        emit_error(
+                        if let Some(hard) = emit_error(
                             self.tx,
-                            TransferError::ExternalSymlinkNotAllowed { path: entry_path },
+                            TransferError::ExternalSymlinkNotAllowed { path: entry_path.clone() },
                             self.context,
                         )
-                        .await;
+                        .await
+                        {
+                            return Err(hard);
+                        }
                         continue;
                     }
                     debug!("Following external symlink {:?} -> {:?}", entry_path, resolved);
@@ -847,28 +890,22 @@ impl<'a> Collector<'a> {
 
                 if resolved_meta.is_dir() {
                     // Recurse into the resolved directory, preserving the symlink's path.
-                    if let Err(e) = self
-                        .collect(&resolved, &rel_path, active_chain, global_inodes, _current_depth + 1)
-                        .await
-                    {
-                        return Err(e);
-                    }
+                    self.collect(&resolved, &rel_path, active_chain, global_inodes, _current_depth + 1)
+                        .await?;
                 } else if resolved_meta.is_file() {
                     let file_count = self.counters.increment_file();
-                    if let Some(max) = self.config.max_total_files {
-                        if file_count > max {
-                            let err = TransferError::MaxTotalFilesExceeded(max);
-                            self.audit_events.push(SecurityAuditEvent::new(
-                                SecurityEventType::MaxTotalFilesExceeded,
-                                AuditSeverity::Error,
-                                self.audit_context,
-                                serde_json::json!({ "count": file_count }),
-                            ));
-                            if let Some(m) = self.metrics {
-                                m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
-                            }
-                            return Err(err);
+                    if let Some(max) = self.config.max_total_files && file_count > max {
+                        let err = TransferError::MaxTotalFilesExceeded(max);
+                        self.audit_events.push(SecurityAuditEvent::new(
+                            SecurityEventType::MaxTotalFilesExceeded,
+                            AuditSeverity::Error,
+                            self.audit_context,
+                            serde_json::json!({ "count": file_count }),
+                        ));
+                        if let Some(m) = self.metrics {
+                            m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
                         }
+                        return Err(err);
                     }
 
                     // Copy through the symlink: opening the link path reads
@@ -885,28 +922,22 @@ impl<'a> Collector<'a> {
                 }
             } else if meta.is_dir() {
                 // Recurse into regular directory.
-                if let Err(e) = self
-                    .collect(&entry_path, &rel_path, active_chain, global_inodes, _current_depth + 1)
-                    .await
-                {
-                    return Err(e);
-                }
+                self.collect(&entry_path, &rel_path, active_chain, global_inodes, _current_depth + 1)
+                    .await?;
             } else if meta.is_file() {
                 let file_count = self.counters.increment_file();
-                if let Some(max) = self.config.max_total_files {
-                    if file_count > max {
-                        let err = TransferError::MaxTotalFilesExceeded(max);
-                        self.audit_events.push(SecurityAuditEvent::new(
-                            SecurityEventType::MaxTotalFilesExceeded,
-                            AuditSeverity::Error,
-                            self.audit_context,
-                            serde_json::json!({ "count": file_count }),
-                        ));
-                        if let Some(m) = self.metrics {
-                            m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
-                        }
-                        return Err(err);
+                if let Some(max) = self.config.max_total_files && file_count > max {
+                    let err = TransferError::MaxTotalFilesExceeded(max);
+                    self.audit_events.push(SecurityAuditEvent::new(
+                        SecurityEventType::MaxTotalFilesExceeded,
+                        AuditSeverity::Error,
+                        self.audit_context,
+                        serde_json::json!({ "count": file_count }),
+                    ));
+                    if let Some(m) = self.metrics {
+                        m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
                     }
+                    return Err(err);
                 }
 
                 self.tx
@@ -988,13 +1019,6 @@ async fn pre_transfer_integrity_scan(
             continue;
         }
 
-        if file_count >= config.max_total_files.unwrap_or(u64::MAX) {
-            return Err(TransferError::MaxTotalFilesExceeded(config.max_total_files.unwrap_or(0)));
-        }
-        if symlink_count >= config.max_total_symlinks.unwrap_or(u32::MAX) {
-            return Err(TransferError::MaxTotalSymlinksExceeded(config.max_total_symlinks.unwrap_or(0)));
-        }
-
         let mut entries = fs::read_dir(&canonical).await.map_err(|e| {
             TransferError::InboxIntegrityFailed(format!("Failed to read directory {:?}: {}", canonical, e))
         })?;
@@ -1005,6 +1029,9 @@ async fn pre_transfer_integrity_scan(
 
             if entry_meta.file_type().is_symlink() {
                 symlink_count += 1;
+                if let Some(max) = config.max_total_symlinks && symlink_count > max {
+                    return Err(TransferError::MaxTotalSymlinksExceeded(max));
+                }
                 match resolve_symlink_chain(&entry_path, config.max_symlink_depth).await {
                     Ok((resolved, resolved_meta, _depth)) => {
                         // Same multi-layer external check as the collector:
@@ -1023,6 +1050,9 @@ async fn pre_transfer_integrity_scan(
                         } else if resolved_meta.is_file() {
                             total_size += resolved_meta.len();
                             file_count += 1;
+                            if let Some(max) = config.max_total_files && file_count > max {
+                                return Err(TransferError::MaxTotalFilesExceeded(max));
+                            }
                         }
                     }
                     Err(TransferError::BrokenSymlink(_)) => {
@@ -1040,6 +1070,9 @@ async fn pre_transfer_integrity_scan(
             } else if entry_meta.is_file() {
                 total_size += entry_meta.len();
                 file_count += 1;
+                if let Some(max) = config.max_total_files && file_count > max {
+                    return Err(TransferError::MaxTotalFilesExceeded(max));
+                }
             }
         }
     }
@@ -1101,6 +1134,35 @@ async fn cleanup_source(inbox_path: &Path, transferred_files: &[FileInfo]) -> Re
     Ok(())
 }
 
+/// Build a [`TransferError::TransferFailed`] for failures that occur before
+/// the producer/consumer pipeline (integrity scan, disk space, ...),
+/// recording the matching audit event so the compliance trail is populated
+/// even when the transfer never started copying (plan §12).
+fn early_transfer_failure(
+    errors: Vec<TransferError>,
+    event_type: SecurityEventType,
+    audit_context: &AuditContext,
+) -> TransferError {
+    let severity = match event_type {
+        SecurityEventType::InboxIntegrityCheckFailed
+        | SecurityEventType::AtomicRollbackTriggered
+        | SecurityEventType::WarehousePathValidationFailed
+        | SecurityEventType::InboxLockFailed
+        | SecurityEventType::SymlinkLoopDetected => AuditSeverity::Error,
+        SecurityEventType::InsufficientDiskSpace
+        | SecurityEventType::ExternalSymlinkRejected
+        | SecurityEventType::MaxSymlinkReferencesExceeded => AuditSeverity::Warning,
+        _ => AuditSeverity::Error,
+    };
+    let audit_events = vec![SecurityAuditEvent::new(
+        event_type,
+        severity,
+        audit_context,
+        serde_json::json!({ "reason": "pre-transfer failure" }),
+    )];
+    TransferError::TransferFailed { errors, audit_events }
+}
+
 /// Transfer all files from inbox to protected area.
 pub async fn transfer_files(
     inbox_path: &Path,
@@ -1160,7 +1222,11 @@ pub async fn transfer_files_with_metrics(
                     m.security_events_total.with_label_values(&["inbox_integrity_check_failed"]).inc();
                 }
                 drop(lock);
-                return Err(e);
+                return Err(early_transfer_failure(
+                    vec![e],
+                    SecurityEventType::InboxIntegrityCheckFailed,
+                    &audit_context,
+                ));
             }
         }
     } else {
@@ -1183,12 +1249,16 @@ pub async fn transfer_files_with_metrics(
                 m.security_events_total.with_label_values(&["insufficient_disk_space"]).inc();
             }
             drop(lock);
-            return Err(TransferError::InsufficientDiskSpace(required_with_buffer, available));
+            return Err(early_transfer_failure(
+                vec![TransferError::InsufficientDiskSpace(required_with_buffer, available)],
+                SecurityEventType::InsufficientDiskSpace,
+                &audit_context,
+            ));
         }
     }
 
     // Step 6: Determine target base (atomic temp dir or direct warehouse path).
-    let (target_base, temp_dir) = if config.inbox.atomic_transfer {
+    let (target_base, mut temp_dir) = if config.inbox.atomic_transfer {
         let temp = temp_transfer_dir_name(&warehouse_canonical);
         fs::create_dir_all(&temp).await.map_err(|e| {
             TransferError::StorageError(format!("Failed to create temp transfer directory {:?}: {}", temp, e))
@@ -1298,9 +1368,10 @@ pub async fn transfer_files_with_metrics(
                 }
                 None => {
                     // All senders dropped without the producer completing on
-                    // this task (should not happen, but fail safely).
-                    break 'pipeline Some(Err(TransferError::Cancelled(
-                        "producer channel closed".to_string(),
+                    // this task (should not happen, but fail safely as a
+                    // hard error — cancellation is not involved).
+                    break 'pipeline Some(Err(TransferError::FileTransferFailed(
+                        "producer channel closed unexpectedly".to_string(),
                     )));
                 }
             },
@@ -1327,9 +1398,19 @@ pub async fn transfer_files_with_metrics(
     drop(producer); // ends the collector's borrow of audit_events & co.
 
     // Record the producer's own failure (loops, depth/count limits, ...).
+    // A structural producer error always fails the run regardless of the
+    // error threshold: collection was aborted, so the tree was not fully
+    // walked. `Cancelled` is a byproduct of threshold-triggered
+    // cancellation — the real cause is already recorded — so it is
+    // filtered, mirroring the channel path.
+    let producer_ok = !matches!(&producer_status, Some(Err(_)));
     if let Some(Err(e)) = producer_status.take() {
-        error!("Directory collection failed: {}", e);
-        collected_errors.push(e);
+        if matches!(e, TransferError::Cancelled(_)) {
+            debug!("Producer exited due to cancellation: {}", e);
+        } else {
+            error!("Directory collection failed: {}", e);
+            collected_errors.push(e);
+        }
     }
 
     // Wait for all in-flight copies to finish.
@@ -1356,29 +1437,35 @@ pub async fn transfer_files_with_metrics(
         }
     }
 
-    // The cancellation token is triggered by `record_error` at the exact point
-    // each error is observed (producer errors via `emit_error`, worker errors
-    // in the dispatched task), so a non-empty error list implies cancellation.
-    let success = collected_errors.is_empty() && !context.is_cancelled();
+    // Failure is determined by the cancellation token (triggered by
+    // `record_error` at the exact point each error is observed, once the
+    // configured threshold is reached: `max_errors_before_fail = N` fails on
+    // the Nth error, while fewer than N errors are collected in
+    // `result.errors` and the transfer still succeeds — plan §2: "Collect
+    // up to N errors before failing the transfer") OR by a structural
+    // producer error (loops, depth/count limits, channel closed), which
+    // always aborts collection and always fails the run.
+    let success = producer_ok && !context.is_cancelled();
 
     if !success {
-        // Rollback: no partial data exposure.
-        if let Some(temp) = temp_dir {
+        // Remove the temporary directory or roll back the manifest before
+        // building the failure result.
+        if let Some(temp) = temp_dir.take() {
             if let Err(e) = fs::remove_dir_all(&temp).await {
                 warn!("Failed to remove temp transfer directory {:?}: {}", temp, e);
             }
             if let Some(m) = metrics.as_ref() {
                 m.transfer_atomic_rollbacks_total.inc();
             }
-            audit_events.push(SecurityAuditEvent::new(
-                SecurityEventType::AtomicRollbackTriggered,
-                AuditSeverity::Error,
-                &audit_context,
-                serde_json::json!({ "reason": "transfer failure", "temp_dir": temp.to_string_lossy() }),
-            ));
         } else {
             rollback_files(&manifest).await;
         }
+        audit_events.push(SecurityAuditEvent::new(
+            SecurityEventType::AtomicRollbackTriggered,
+            AuditSeverity::Error,
+            &audit_context,
+            serde_json::json!({ "reason": "transfer failure" }),
+        ));
 
         drop(lock);
 
@@ -1388,21 +1475,22 @@ pub async fn transfer_files_with_metrics(
             context.error_count()
         );
 
-        // Surface the most specific errors collected during the run.
-        if collected_errors.len() > 1 {
-            return Err(TransferError::MultipleErrors(collected_errors));
+        // Surface the errors collected during the run. The wrapper carries
+        // the full error list plus the audit trail so callers can report
+        // security events even when the transfer failed (plan §12).
+        if collected_errors.is_empty() {
+            collected_errors.push(TransferError::FileTransferFailed(
+                "one or more files failed to transfer".to_string(),
+            ));
         }
-        if let Some(e) = collected_errors.into_iter().next() {
-            return Err(e);
-        }
-        return Err(TransferError::FileTransferFailed(
-            "one or more files failed to transfer".to_string(),
-        ));
+        return Err(TransferError::TransferFailed {
+            errors: collected_errors,
+            audit_events,
+        });
     }
 
     // Step 8: Commit atomic transfer.
     if let Some(temp) = temp_dir {
-        // Remove an existing empty warehouse directory if present so rename succeeds.
         if warehouse_canonical.exists() {
             let mut existing = fs::read_dir(&warehouse_canonical).await.map_err(|e| {
                 TransferError::StorageError(format!("Failed to inspect existing warehouse path: {}", e))
@@ -1445,6 +1533,10 @@ pub async fn transfer_files_with_metrics(
     result.files_transferred = transferred;
     result.total_bytes = total_bytes;
     result.audit_events = audit_events;
+    // Sub-threshold errors (e.g. a broken symlink collected with
+    // `max_errors_before_fail` > 1) do not fail the transfer but are
+    // reported to callers via `result.errors`.
+    result.errors = collected_errors;
     Ok(result)
 }
 

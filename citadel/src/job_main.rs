@@ -282,6 +282,13 @@ async fn execute_publish(config: &JobConfig) -> TransferResult {
         }
         Err(e) => {
             error!("Publish failed: {}", e);
+            // `TransferFailed` wraps every distinct error collected during
+            // the run (and the security audit trail); log each one.
+            if let citadel::storage::transfer::TransferError::TransferFailed { errors, .. } = &e {
+                for err in errors {
+                    error!("  - {}", err);
+                }
+            }
             TransferResult {
                 success: false,
                 files_transferred: 0,
