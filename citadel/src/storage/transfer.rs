@@ -235,9 +235,13 @@ impl TransferContext {
 
     /// Record an error and trigger cancellation if the threshold is reached.
     /// Returns `true` if cancellation was triggered by this call.
+    ///
+    /// With `max_errors = N`, the transfer fails on the Nth error: errors
+    /// 1..N-1 are collected and processing continues, the Nth triggers
+    /// cancellation. (N is always >= 1.)
     pub fn record_error(&self) -> bool {
         let count = self.error_count.fetch_add(1, Ordering::SeqCst);
-        if count >= self.max_errors {
+        if count + 1 >= self.max_errors {
             self.cancel_token.cancel();
             true
         } else {
@@ -374,7 +378,7 @@ pub async fn compute_checksum(path: &Path, chunk_size: usize) -> Result<String> 
 }
 
 #[cfg(unix)]
-fn dev_ino(meta: &std::fs::Metadata) -> (u64, u64) {
+pub(crate) fn dev_ino(meta: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
     (meta.dev(), meta.ino())
 }
@@ -387,7 +391,7 @@ async fn ensure_dir_exists(path: &Path) -> Result<()> {
 }
 
 /// Validate a symlink target for dangerous characters or traversal attempts.
-fn validate_symlink_target(target: &Path) -> Result<()> {
+pub(crate) fn validate_symlink_target(target: &Path) -> Result<()> {
     let bytes = target.as_os_str().as_encoded_bytes();
 
     // Reject null bytes and ASCII control characters.
@@ -410,14 +414,23 @@ fn validate_symlink_target(target: &Path) -> Result<()> {
 /// Resolve a symlink chain manually, enforcing a depth limit and validating
 /// each intermediate target. Returns the canonical final path, its metadata,
 /// whether it is external to the inbox, and the number of links traversed.
+/// Resolve a symlink chain manually, enforcing a depth limit, detecting
+/// pure cycles, and validating each intermediate target. Returns the
+/// canonical final path, the final target's metadata, and the number of
+/// links traversed. External detection is performed by the caller via
+/// [`is_external_to_inbox`] (path prefix) plus a device comparison against
+/// the inbox root (bind-mount subtrees).
 async fn resolve_symlink_chain(
     link_path: &Path,
-    inbox_root: &Path,
     max_depth: Option<u32>,
-) -> Result<(PathBuf, std::fs::Metadata, bool, u32)> {
+) -> Result<(PathBuf, std::fs::Metadata, u32)> {
     let mut current = link_path.to_path_buf();
     let max = max_depth.unwrap_or(u32::MAX);
     let mut depth: u32 = 0;
+    // (dev, ino) of every link followed so far — detects pure cycles
+    // (e.g. a -> b -> a) which a depth limit alone would misreport as
+    // MaxSymlinkDepthExceeded.
+    let mut visited: HashSet<(u64, u64)> = HashSet::new();
 
     loop {
         if depth >= max {
@@ -454,6 +467,10 @@ async fn resolve_symlink_chain(
         })?;
 
         if meta.file_type().is_symlink() {
+            let link_id = dev_ino(&meta);
+            if !visited.insert(link_id) {
+                return Err(TransferError::SymlinkLoop(resolved));
+            }
             current = resolved;
             continue;
         }
@@ -467,18 +484,17 @@ async fn resolve_symlink_chain(
             }
         })?;
 
-        let is_external = is_external_to_inbox(&canonical, inbox_root);
-        return Ok((canonical, meta, is_external, depth));
+        return Ok((canonical, meta, depth));
     }
 }
 
 /// Determine whether a canonical path is outside the inbox tree.
-fn is_external_to_inbox(canonical: &Path, inbox_root: &Path) -> bool {
+pub(crate) fn is_external_to_inbox(canonical: &Path, inbox_root: &Path) -> bool {
     !canonical.starts_with(inbox_root)
 }
 
 /// Count a reference to a symlink target inode and enforce symlink-farm limits.
-fn count_symlink_reference(
+pub(crate) fn count_symlink_reference(
     global_inodes: &mut HashMap<(u64, u64), u32>,
     dev: u64,
     ino: u64,
@@ -656,6 +672,19 @@ impl<'a> Collector<'a> {
 
             active_chain.insert(dir_id);
 
+            // Pre-create this directory in the warehouse so the structure
+            // exists even for empty subdirectories (and so workers only
+            // need to write files into directories that are already present).
+            let target_dir = if rel_prefix.as_os_str().is_empty() {
+                self.target_base.to_path_buf()
+            } else {
+                self.target_base.join(rel_prefix)
+            };
+            if let Err(e) = ensure_dir_exists(&target_dir).await {
+                active_chain.remove(&dir_id);
+                return Err(e);
+            }
+
             let result = self.collect_entries(&canonical_dir, rel_prefix, active_chain, global_inodes, current_depth).await;
 
             active_chain.remove(&dir_id);
@@ -726,8 +755,8 @@ impl<'a> Collector<'a> {
                     }
                 }
 
-                let (resolved, resolved_meta, is_external, _depth) =
-                    match resolve_symlink_chain(&entry_path, self.inbox_root, self.config.max_symlink_depth).await {
+                let (resolved, resolved_meta, _depth) =
+                    match resolve_symlink_chain(&entry_path, self.config.max_symlink_depth).await {
                         Ok(r) => r,
                         Err(e) => {
                             let label = match &e {
@@ -779,9 +808,17 @@ impl<'a> Collector<'a> {
                     continue;
                 }
 
-                // External symlink validation.
-                let external_by_device = resolved_id.0 != self.inbox_root_id.0 || resolved_id.1 != self.inbox_root_id.1;
-                if is_external || external_by_device {
+                // External symlink validation (multi-layer, plan §9):
+                // 1. canonical path prefix — resolved target must stay under
+                //    the inbox root;
+                // 2. device comparison — the resolved target must live on
+                //    the same filesystem as the inbox root. This catches
+                //    bind-mounted subtrees *inside* the inbox whose paths
+                //    canonicalize under the inbox root but whose contents
+                //    come from a different filesystem.
+                let external_by_path = is_external_to_inbox(&resolved, self.inbox_root);
+                let external_by_device = resolved_id.0 != self.inbox_root_id.0;
+                if external_by_path || external_by_device {
                     if !self.config.allow_external_symlinks {
                         warn!("Rejecting external symlink {:?} -> {:?}", entry_path, resolved);
                         self.audit_events.push(SecurityAuditEvent::new(
@@ -834,11 +871,13 @@ impl<'a> Collector<'a> {
                         }
                     }
 
-                    if let Some(parent) = target_path.parent() {
-                        ensure_dir_exists(parent).await?;
-                    }
+                    // Copy through the symlink: opening the link path reads
+                    // the target's content, and the manifest/cleanup then
+                    // reference the symlink itself (inside the inbox) rather
+                    // than the resolved target — which may live outside the
+                    // inbox when `allow_external_symlinks` is enabled.
                     self.tx
-                        .send(Ok((resolved, target_path)))
+                        .send(Ok((entry_path, target_path)))
                         .await
                         .map_err(|_| TransferError::Cancelled("channel closed".to_string()))?;
                 } else {
@@ -870,9 +909,6 @@ impl<'a> Collector<'a> {
                     }
                 }
 
-                if let Some(parent) = target_path.parent() {
-                    ensure_dir_exists(parent).await?;
-                }
                 self.tx
                     .send(Ok((entry_path, target_path)))
                     .await
@@ -887,7 +923,7 @@ impl<'a> Collector<'a> {
 }
 
 /// Validate that the warehouse path is contained within the protected base.
-async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -> Result<PathBuf> {
+pub(crate) async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -> Result<PathBuf> {
     let protected_canonical = fs::canonicalize(protected_base)
         .await
         .map_err(|_e| TransferError::InvalidWarehousePath(protected_base.to_path_buf()))?;
@@ -911,7 +947,7 @@ async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -
 
 /// Check available disk space on the warehouse filesystem.
 #[cfg(unix)]
-fn check_disk_space(target_dir: &Path, _required_bytes: u64) -> Result<u64> {
+pub(crate) fn check_disk_space(target_dir: &Path, _required_bytes: u64) -> Result<u64> {
     use nix::sys::statvfs::statvfs;
 
     let stat = statvfs(target_dir).map_err(|e| {
@@ -923,7 +959,7 @@ fn check_disk_space(target_dir: &Path, _required_bytes: u64) -> Result<u64> {
 }
 
 #[cfg(not(unix))]
-fn check_disk_space(_target_dir: &Path, _required_bytes: u64) -> Result<u64> {
+pub(crate) fn check_disk_space(_target_dir: &Path, _required_bytes: u64) -> Result<u64> {
     // Skip disk-space check on non-Unix platforms.
     Ok(u64::MAX)
 }
@@ -933,7 +969,7 @@ fn check_disk_space(_target_dir: &Path, _required_bytes: u64) -> Result<u64> {
 async fn pre_transfer_integrity_scan(
     inbox_path: &Path,
     config: &InboxConfig,
-    inbox_root: &Path,
+    inbox_root_id: (u64, u64),
 ) -> Result<(u64, u64)> {
     let mut total_size: u64 = 0;
     let mut file_count: u64 = 0;
@@ -969,8 +1005,13 @@ async fn pre_transfer_integrity_scan(
 
             if entry_meta.file_type().is_symlink() {
                 symlink_count += 1;
-                match resolve_symlink_chain(&entry_path, inbox_root, config.max_symlink_depth).await {
-                    Ok((resolved, resolved_meta, is_external, _depth)) => {
+                match resolve_symlink_chain(&entry_path, config.max_symlink_depth).await {
+                    Ok((resolved, resolved_meta, _depth)) => {
+                        // Same multi-layer external check as the collector:
+                        // canonical path prefix + device comparison.
+                        let resolved_id = dev_ino(&resolved_meta);
+                        let is_external = is_external_to_inbox(&resolved, inbox_path)
+                            || resolved_id.0 != inbox_root_id.0;
                         if is_external && !config.allow_external_symlinks {
                             return Err(TransferError::InboxIntegrityFailed(format!(
                                 "External symlink not allowed: {:?}",
@@ -1007,7 +1048,7 @@ async fn pre_transfer_integrity_scan(
 }
 
 /// Compute a unique temporary directory name next to the warehouse path.
-fn temp_transfer_dir_name(warehouse_path: &Path) -> PathBuf {
+pub(crate) fn temp_transfer_dir_name(warehouse_path: &Path) -> PathBuf {
     let timestamp = Utc::now().timestamp_millis();
     let random: u32 = rand::rng().random();
     let name = format!(
@@ -1029,15 +1070,30 @@ async fn rollback_files(files: &[PathBuf]) {
 }
 
 /// Delete source files and directories after a successful transfer.
+///
+/// Only paths *inside* the inbox are deleted. Sources that resolved outside
+/// the inbox (e.g. via external symlinks when `allow_external_symlinks` is
+/// enabled, or files under an external directory symlink) are never touched;
+/// the inbox itself is removed wholesale at the end, which also deletes the
+/// symlink entries.
 async fn cleanup_source(inbox_path: &Path, transferred_files: &[FileInfo]) -> Result<()> {
-    // Delete individual source files first.
+    let inbox_canonical = fs::canonicalize(inbox_path)
+        .await
+        .map_err(|e| TransferError::StorageError(format!("Failed to canonicalize inbox {:?}: {}", inbox_path, e)))?;
+
+    // Delete individual source files first (inbox-contained only).
     for file in transferred_files {
-        if let Err(e) = fs::remove_file(&file.source_path).await {
-            warn!("Failed to delete source file {:?}: {}", file.source_path, e);
+        if file.source_path.starts_with(&inbox_canonical) {
+            if let Err(e) = fs::remove_file(&file.source_path).await {
+                warn!("Failed to delete source file {:?}: {}", file.source_path, e);
+            }
+        } else {
+            debug!("Skipping external source {:?} during cleanup", file.source_path);
         }
     }
 
-    // Remove any remaining empty directories.
+    // Remove the inbox directory and any remaining entries (symlinks, empty
+    // dirs, failed stragglers).
     if let Err(e) = fs::remove_dir_all(inbox_path).await {
         warn!("Failed to remove inbox directory {:?}: {}", inbox_path, e);
     }
@@ -1078,7 +1134,15 @@ pub async fn transfer_files_with_metrics(
     // Step 2: Lock inbox directory.
     let lock = InboxLock::lock(inbox_path).await?;
 
-    // Step 3: Resolve canonical inbox root and its identity.
+    // Step 3: Resolve canonical inbox root and its filesystem identity.
+    //
+    // The external-symlink check is multi-layer (see plan §9):
+    //   1. canonical path prefix — resolved target must stay under the
+    //      inbox root;
+    //   2. device comparison — the resolved target's `st_dev` must match
+    //      the inbox root's `st_dev`. This catches bind-mounted subtrees
+    //      *inside* the inbox whose paths canonicalize under the inbox
+    //      root but whose contents live on a different filesystem.
     let inbox_canonical = fs::canonicalize(inbox_path).await.map_err(|e| {
         TransferError::StorageError(format!("Failed to canonicalize inbox {:?}: {}", inbox_path, e))
     })?;
@@ -1087,7 +1151,7 @@ pub async fn transfer_files_with_metrics(
 
     // Step 4: Pre-transfer integrity scan (optional).
     let (required_bytes, _file_count) = if config.inbox.pre_transfer_integrity_scan {
-        match pre_transfer_integrity_scan(&inbox_canonical, &config.inbox, &inbox_canonical).await {
+        match pre_transfer_integrity_scan(&inbox_canonical, &config.inbox, inbox_root_id).await {
             Ok(size_count) => size_count,
             Err(e) => {
                 tracing::error!("Pre-transfer integrity scan failed: {}", e);
@@ -1225,8 +1289,12 @@ pub async fn transfer_files_with_metrics(
                 Some(Err(e)) => {
                     // Already recorded in the TransferContext at the error
                     // origin (emit_error); collect it for the final report.
-                    warn!("Transfer error during collection: {}", e);
-                    collected_errors.push(e);
+                    // `Cancelled` is the cancellation mechanism, not a
+                    // cause — never report it as an error.
+                    if !matches!(e, TransferError::Cancelled(_)) {
+                        warn!("Transfer error during collection: {}", e);
+                        collected_errors.push(e);
+                    }
                 }
                 None => {
                     // All senders dropped without the producer completing on
@@ -1248,8 +1316,10 @@ pub async fn transfer_files_with_metrics(
                 }
             }
             Err(e) => {
-                warn!("Transfer error during collection: {}", e);
-                collected_errors.push(e);
+                if !matches!(e, TransferError::Cancelled(_)) {
+                    warn!("Transfer error during collection: {}", e);
+                    collected_errors.push(e);
+                }
             }
         }
     }
