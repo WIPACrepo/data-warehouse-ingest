@@ -1462,3 +1462,25 @@ mod recursive_transfer_tests {
         );
     }
 }
+/// Queue rate-limit quota tests (P4.2, D8)
+#[cfg(test)]
+mod queue_quota_tests {
+    use crate::handlers::publish_inbox::quota_exceeded;
+
+    #[test]
+    fn test_quota_below_limit_allows() {
+        assert!(!quota_exceeded(9, 10));
+        assert!(!quota_exceeded(0, 10));
+    }
+
+    #[test]
+    fn test_quota_at_limit_rejects() {
+        assert!(quota_exceeded(10, 10));
+    }
+
+    #[test]
+    fn test_quota_above_limit_rejects() {
+        assert!(quota_exceeded(11, 10));
+        assert!(quota_exceeded(999, 20));
+    }
+}
