@@ -94,8 +94,12 @@ Configuration for MongoDB connectivity.
 | `BARBICAN_MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `BARBICAN_MONGODB_DATABASE` | `data_warehouse` | Database name |
 | `BARBICAN_MONGODB_INBOX_COLLECTION` | `inboxes` | Collection name for inbox metadata |
-| `BARBICAN_MONGODB_TIMEOUT_SECS` | `30` | Operation timeout in seconds |
-| `BARBICAN_MONGODB_RETRY_MAX` | `3` | Max retries for transient errors |
+| `BARBICAN_MONGODB_TIMEOUT_SECS` | `30` | **Reserved/unused** — parsed but not read by any code path |
+| `BARBICAN_MONGODB_RETRY_MAX` | `3` | **Reserved/unused** — parsed but not read by any code path |
+
+> The unique index on `warehouse_path` (`uniq_warehouse_path`, created
+> idempotently at startup — P1.5/D3) lives in this database's `inboxes`
+> collection; a duplicate insert surfaces as `409 Conflict`.
 
 ### Connection String Formats
 
@@ -123,8 +127,6 @@ BARBICAN_MONGODB_URI=mongodb://localhost:27017/data_warehouse?tls=true&tlsCAFile
 
 **Production:**
 ```bash
-BARBICAN_MONGODB_TIMEOUT_SECS=30
-BARBICAN_MONGODB_RETRY_MAX=3
 BARBICAN_MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0&readPreference=primaryPreferred
 ```
 
@@ -139,11 +141,15 @@ Configuration for JWT authentication via Keycloak.
 | `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server base URL |
 | `BARBICAN_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
 | `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Client ID for audience validation |
-| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(required)* | Client secret for service authentication |
-| `BARBICAN_REQUIRED_ROLES` | `read,write` | Comma-separated list of accepted roles |
-| `BARBICAN_INTERNAL_ROLES` | `internal` | Roles allowed for internal endpoints |
+| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(optional)* | Only checked for **non-emptiness** at startup; JWT validation is JWKS-based, the secret and `token_url()` are not used by any code path |
+| `BARBICAN_REQUIRED_ROLES` | `read,write` | Comma-separated list of accepted roles (external routes) |
 | `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated list of allowed JWT algorithms |
 | `BARBICAN_JWKS_REFRESH_SECS` | `60` | Minimum seconds between JWKS refreshes |
+
+> There is **no `BARBICAN_INTERNAL_ROLES`** (D9): with the removal of the
+> `internal` role, the state-transition endpoints are gated only by the
+> generic auth layer (valid Bearer JWT, no role requirement). Trust is
+> delegated to Citadel, the only caller of those endpoints.
 
 ### Derived URLs
 
@@ -152,11 +158,6 @@ Barbican automatically constructs these URLs from the base configuration:
 **JWKS URL:**
 ```
 {BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/certs
-```
-
-**Token Validation URL:**
-```
-{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/token
 ```
 
 ### Example Configuration
@@ -168,7 +169,6 @@ BARBICAN_KEYCLOAK_REALM=data-warehouse
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-dev
 BARBICAN_KEYCLOAK_CLIENT_SECRET=dev-secret-123
 BARBICAN_REQUIRED_ROLES=read,write
-BARBICAN_INTERNAL_ROLES=internal
 BARBICAN_ALLOWED_ALGORITHMS=RS256
 BARBICAN_JWKS_REFRESH_SECS=60
 ```
@@ -180,7 +180,6 @@ BARBICAN_KEYCLOAK_REALM=data-warehouse-prod
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-service
 BARBICAN_KEYCLOAK_CLIENT_SECRET=${SECRET_FROM_VAULT}
 BARBICAN_REQUIRED_ROLES=read,write
-BARBICAN_INTERNAL_ROLES=internal,admin
 BARBICAN_ALLOWED_ALGORITHMS=RS256,RS384,RS512
 BARBICAN_JWKS_REFRESH_SECS=300
 ```
@@ -192,8 +191,10 @@ BARBICAN_JWKS_REFRESH_SECS=300
 - ❌ Never Allow: `none`, `HS256`, `HS384`, `HS512`
 
 **Role Configuration:**
-- Keep `internal` role exclusive to Citadel service account
 - Use separate clients for external users and internal services
+- The state-transition endpoints are reachable by any valid Bearer token
+  (no role gate) — keep them off the public network; Citadel is the only
+  legitimate caller (see [Authentication](authentication.md))
 - Regularly rotate client secrets
 
 ---
@@ -249,31 +250,17 @@ Attempt 4: After 4 seconds (if retry_max >= 4)
 
 ## File System
 
-Configuration for file system paths.
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BARBICAN_INBOX_BASE_PATH` | `./data/inboxes` | Base path for inbox directories (used for validation) |
+| `BARBICAN_INBOX_BASE_PATH` | `./data/inboxes` | **Reserved/unused** — parsed but not read by any code path. Barbican is a metadata-only service; the physical inbox/protected directories belong to Citadel. |
 
-### Path Validation
+### Warehouse-path containment
 
-Barbican validates that inbox paths don't attempt directory traversal:
-
-```rust
-pub fn validate_path(base: &Path, requested: &Path) -> Result<PathBuf, AppError> {
-    let base_canonical = base.canonicalize()?;
-    let full_path = base.join(requested);
-    let canonical = full_path.canonicalize().unwrap_or(full_path);
-    
-    if !canonical.starts_with(&base_canonical) {
-        return Err(AppError::ValidationError(
-            "Path traversal attempt detected".to_string()
-        ));
-    }
-    
-    Ok(canonical)
-}
-```
+Barbican has **no** `validate_path` helper (there is no such function in the
+codebase). Containment of the physical warehouse path is enforced by
+**Citadel**: `CITADEL_PROTECTED_BASE_PATH` + `validate_warehouse_path`
+reject any target outside the protected base. Barbican's duplicate-path guard
+is the unique `warehouse_path` index (see [MongoDB](#mongodb)).
 
 ### Example Configuration
 
@@ -304,12 +291,23 @@ GET /metrics
 Host: barbican:9091
 ```
 
+Served from **Barbican's own registry** via
+`common::start_metrics_server_with_router` (bound `0.0.0.0:{prometheus_port}`).
+Two Barbican-owned instruments (P4.3):
+
+- `barbican_inboxes_total{status}` — a **gauge** refreshed on a 30 s
+  background interval (`find_many` grouped by status; `set()` semantics, so
+  unused status labels report 0 rather than lingering).
+- `barbican_api_requests_total{endpoint,method,status}` — a per-request
+  counter recorded by middleware; `endpoint` is the matched route template
+  (e.g. `/api/v1/inbox/{id}/publish/complete`), keeping cardinality bounded.
+
 **Example Metrics:**
 ```
-# HELP barbican_inboxes_total Total number of inboxes by status
+# HELP barbican_inboxes_total Number of inboxes by status (refreshed periodically)
 # TYPE barbican_inboxes_total gauge
 barbican_inboxes_total{status="active"} 5
-barbican_inboxes_total{status="creating"} 12
+barbican_inboxes_total{status="creating"} 0
 barbican_inboxes_total{status="ready"} 45
 barbican_inboxes_total{status="publishing"} 8
 barbican_inboxes_total{status="published"} 120
@@ -317,9 +315,10 @@ barbican_inboxes_total{status="failed"} 3
 barbican_inboxes_total{status="deleting"} 2
 barbican_inboxes_total{status="deleted"} 89
 
-# HELP barbican_api_requests_total Total API requests
+# HELP barbican_api_requests_total HTTP requests handled by Barbican
 # TYPE barbican_api_requests_total counter
 barbican_api_requests_total{endpoint="/api/v1/inbox",method="POST",status="202"} 150
+barbican_api_requests_total{endpoint="/api/v1/inbox/{id}/publish/complete",method="POST",status="200"} 12
 ```
 
 ### Logging
@@ -358,17 +357,15 @@ BARBICAN_ALLOWED_ALGORITHMS=HS256
 
 ### Role Configuration
 
-**Minimum Required Roles:**
+**External routes** (create/get/list/delete/publish) require at least one of
+`CITADEL_REQUIRED_ROLES`-style roles (`read`/`write`/`admin`):
 ```bash
 BARBICAN_REQUIRED_ROLES=read,write
-BARBICAN_INTERNAL_ROLES=internal
 ```
 
-**Production with Admin:**
-```bash
-BARBICAN_REQUIRED_ROLES=read,write,admin
-BARBICAN_INTERNAL_ROLES=internal,admin
-```
+**State-transition endpoints** have **no role requirement** (D9): only a
+valid Bearer JWT is required. `BARBICAN_INTERNAL_ROLES` does **not exist** —
+do not set it.
 
 ### JWKS Cache Settings
 
@@ -398,8 +395,6 @@ BARBICAN_BIND_ADDRESS=127.0.0.1:8080
 BARBICAN_MONGODB_URI=mongodb://localhost:27017
 BARBICAN_MONGODB_DATABASE=data_warehouse_dev
 BARBICAN_MONGODB_INBOX_COLLECTION=inboxes
-BARBICAN_MONGODB_TIMEOUT_SECS=30
-BARBARICAN_MONGODB_RETRY_MAX=3
 
 # Keycloak
 BARBICAN_KEYCLOAK_URL=http://localhost:8080
@@ -407,7 +402,6 @@ BARBICAN_KEYCLOAK_REALM=data-warehouse
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-dev
 BARBICAN_KEYCLOAK_CLIENT_SECRET=dev-secret-change-me
 BARBICAN_REQUIRED_ROLES=read,write,admin
-BARBICAN_INTERNAL_ROLES=internal,admin
 BARBICAN_ALLOWED_ALGORITHMS=RS256
 BARBICAN_JWKS_REFRESH_SECS=30
 
@@ -437,8 +431,6 @@ BARBICAN_BIND_ADDRESS=0.0.0.0:8080
 BARBICAN_MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
 BARBICAN_MONGODB_DATABASE=data_warehouse
 BARBICAN_MONGODB_INBOX_COLLECTION=inboxes
-BARBICAN_MONGODB_TIMEOUT_SECS=30
-BARBICAN_MONGODB_RETRY_MAX=3
 
 # Keycloak
 BARBICAN_KEYCLOAK_URL=https://auth.example.com
@@ -446,7 +438,6 @@ BARBICAN_KEYCLOAK_REALM=data-warehouse-prod
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-service
 BARBICAN_KEYCLOAK_CLIENT_SECRET=${SECRET_FROM_VAULT}
 BARBICAN_REQUIRED_ROLES=read,write
-BARBICAN_INTERNAL_ROLES=internal
 BARBICAN_ALLOWED_ALGORITHMS=RS256,RS384,RS512
 BARBICAN_JWKS_REFRESH_SECS=300
 
