@@ -93,20 +93,16 @@ pub async fn create_inbox(
                 Ok(resp) => tracing::info!("Citadel create triggered: job_id={}", resp.job_id),
                 Err(e) => {
                     tracing::error!("Failed to trigger Citadel create: {}", e);
-                    if let Some(id) = id {
-                        if let Err(ferr) = crate::handlers::transition::apply_trigger_failure(
+                    if let Some(id) = id
+                        && let Err(ferr) = crate::handlers::transition::apply_trigger_failure(
                             &store,
                             &id,
                             "citadel_trigger_failed",
                             &format!("Citadel create trigger failed: {}", e),
                         )
                         .await
-                        {
-                            tracing::warn!(
-                                "Failed to apply create-trigger failure fallback: {}",
-                                ferr
-                            );
-                        }
+                    {
+                        tracing::warn!("Failed to apply create-trigger failure fallback: {}", ferr);
                     }
                 }
             }

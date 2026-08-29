@@ -152,15 +152,28 @@ impl AppState {
 
 /// Create the application router with the given state
 pub fn create_app(state: Arc<AppState>) -> Router {
-    // API routes with auth middleware applied per-route using with_state
-    let api_routes = Router::new()
-        // External API endpoints
+    // External, client-facing routes — role-gated via `state.auth_state`
+    // (the configured `required_roles`).
+    let external_routes = Router::new()
         .route("/api/v1/inbox", post(handlers::create_inbox))
         .route("/api/v1/inbox", get(handlers::list_inboxes))
         .route("/api/v1/inbox/{id}", get(handlers::get_inbox))
         .route("/api/v1/inbox/{id}", delete(handlers::delete_inbox))
         .route("/api/v1/inbox/{id}/publish", post(handlers::publish_inbox))
-        // Internal API endpoints (Citadel callbacks) - Create operation
+        .with_state(state.clone());
+
+    // Internal (Citadel callback) routes — Bearer-only, NO role gate (D9).
+    // Citadel is the only legitimate caller and authenticates to Barbican; an
+    // empty `required_roles` list makes `auth_middleware` skip the role check
+    // (any valid service token passes — see common::auth_middleware).
+    let internal_auth_state = Arc::new(AuthMiddlewareState {
+        validator: state.auth_state.validator.clone(),
+        required_roles: Vec::new(),
+        service_name: "barbican".to_string(),
+    });
+
+    let internal_routes = Router::new()
+        // Create operation
         .route(
             "/api/v1/inbox/{id}/create/start",
             post(handlers::create_start),
@@ -177,7 +190,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             "/api/v1/inbox/{id}/create/failure",
             post(handlers::create_failure),
         )
-        // Internal API endpoints - Publish operation
+        // Publish operation
         .route(
             "/api/v1/inbox/{id}/publish/start",
             post(handlers::publish_start),
@@ -194,7 +207,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             "/api/v1/inbox/{id}/publish/failure",
             post(handlers::publish_failure),
         )
-        // Internal API endpoints - Delete operation
+        // Delete operation
         .route(
             "/api/v1/inbox/{id}/delete/start",
             post(handlers::delete_start),
@@ -211,10 +224,14 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             "/api/v1/inbox/{id}/delete/failure",
             post(handlers::delete_failure),
         )
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            internal_auth_state,
+            common::auth_middleware,
+        ));
 
-    // Apply auth middleware to API routes
-    let api_routes_with_auth = api_routes.layer(axum::middleware::from_fn_with_state(
+    // Apply the role-gated auth middleware to external routes
+    let external_routes_with_auth = external_routes.layer(axum::middleware::from_fn_with_state(
         state.auth_state.clone(),
         common::auth_middleware,
     ));
@@ -226,7 +243,9 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .with_state(state.clone());
 
     // Combine routes
-    let router = public_routes.merge(api_routes_with_auth);
+    let router = public_routes
+        .merge(external_routes_with_auth)
+        .merge(internal_routes);
 
     // Record per-request metrics (endpoint template + method + status). Applied
     // after auth so the counter only sees requests that reached routing.

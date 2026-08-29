@@ -19,6 +19,8 @@ use tracing::{error, warn};
 /// return the updated `InboxDB`.
 #[async_trait::async_trait]
 #[cfg_attr(test, mockall::automock)]
+// The progress-reporting methods take one arg per metric the endpoint needs.
+#[allow(clippy::too_many_arguments)]
 pub trait InboxTransitioner: Send + Sync {
     /// `create/start` — Active -> Creating
     async fn create_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB>;
@@ -432,10 +434,10 @@ impl BarbicanClient {
         }
         // Auto half-open after the cooldown window.
         let opened = self.breaker_opened_at.blocking_lock();
-        if let Some(opened_at) = *opened {
-            if opened_at.elapsed().as_secs() >= Self::HALF_OPEN_AFTER_SECS {
-                return false;
-            }
+        if let Some(opened_at) = *opened
+            && opened_at.elapsed().as_secs() >= Self::HALF_OPEN_AFTER_SECS
+        {
+            return false;
         }
         true
     }
@@ -471,7 +473,7 @@ impl BarbicanClient {
             + 1;
         // A 409 is an expected/benign state race — don't trip the breaker on it.
         if !matches!(err, AppError::Conflict(_))
-            && failures >= self.config.barbican_api_retry_max.max(1) as u32
+            && failures >= self.config.barbican_api_retry_max.max(1)
         {
             self.trip_breaker();
         }
@@ -679,6 +681,7 @@ impl BarbicanClient {
     }
 
     /// `POST /api/v1/inbox/{id}/publish/progress`
+    #[allow(clippy::too_many_arguments)]
     pub async fn publish_progress(
         &self,
         inbox_id: &ObjectId,

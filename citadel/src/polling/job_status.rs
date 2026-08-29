@@ -192,11 +192,17 @@ impl JobStatusPoller {
                 error!("Failed to cancel timed out job {}: {}", job.job_id, e);
             }
 
-            // Update job status in MongoDB
+            // Update job status in MongoDB (version-conditional optimistic
+            // lock — P2.3). The filter uses the version read when the job was
+            // fetched plus `$inc version`, so a concurrent writer cannot
+            // silently clobber this timeout.
             let update = doc! {
                 "$set": {
                     "status": Self::status_to_string(JobStatus::TimedOut),
                     "updated_at": now.to_rfc3339(),
+                },
+                "$inc": {
+                    "version": 1,
                 },
                 "$push": {
                     "errors": {
@@ -207,15 +213,22 @@ impl JobStatusPoller {
                 }
             };
 
-            let query = doc! { "job_id": &job.job_id };
-            jobs_coll.update_one(query, update).await.map_err(|e| {
+            let query = doc! { "job_id": &job.job_id, "version": job.version };
+            let outcome = jobs_coll.update_one(query, update).await.map_err(|e| {
                 crate::error::AppError::DatabaseError(format!(
                     "Failed to update timed out job: {}",
                     e
                 ))
             })?;
-
-            timed_out_count += 1;
+            if outcome.matched_count == 0 {
+                // Concurrently modified — leave it for a later tick.
+                warn!(
+                    "Timed-out job {} changed concurrently; skipping status update",
+                    job.job_id
+                );
+            } else {
+                timed_out_count += 1;
+            }
         }
 
         if timed_out_count > 0 {
@@ -269,6 +282,9 @@ impl JobStatusPoller {
                                     "status": Self::status_to_string(new_status.clone()),
                                     "updated_at": now.to_rfc3339(),
                                 },
+                                "$inc": {
+                                    "version": 1,
+                                },
                                 "$push": {
                                     "errors": {
                                         "code": "reconciliation_status_update",
@@ -281,7 +297,7 @@ impl JobStatusPoller {
                                 }
                             };
 
-                            let query = doc! { "job_id": &job.job_id };
+                            let query = doc! { "job_id": &job.job_id, "version": job.version };
                             if let Err(e) = jobs_coll.update_one(query, update).await {
                                 error!("Failed to update reconciled job {}: {}", job.job_id, e);
                             } else {

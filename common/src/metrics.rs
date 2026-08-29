@@ -11,7 +11,7 @@ use prometheus::{Counter, CounterVec, Gauge, Histogram, HistogramOpts, Opts, Reg
 use crate::error::AppError;
 
 // Global registry for auth metrics
-pub static AUTH_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::new());
+pub static AUTH_REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
 // JWKS operations
 pub static JWKS_FETCH_TOTAL: Lazy<Counter> =

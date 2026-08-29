@@ -31,9 +31,12 @@ pub struct Jwk {
     pub x509_chain: Option<Vec<String>>,
 }
 
+/// In-memory JWKS cache slot: the fetched key set plus the fetch time.
+type JwksCacheInner = Option<(Jwks, DateTime<Utc>)>;
+
 pub struct JwksCache {
     jwks_url: String,
-    cache: Arc<RwLock<Option<(Jwks, DateTime<Utc>)>>>,
+    cache: Arc<RwLock<JwksCacheInner>>,
     client: reqwest::Client,
     last_refresh: Arc<RwLock<DateTime<Utc>>>,
     refresh_interval_secs: u64,
@@ -225,10 +228,10 @@ impl JwksCache {
         // Check if kid exists in cache
         {
             let cache_guard = self.cache.read().await;
-            if let Some((jwks, _)) = cache_guard.as_ref() {
-                if jwks.keys.iter().any(|k| k.kid.as_deref() == Some(kid)) {
-                    return Ok(()); // Kid found, no refresh needed
-                }
+            if let Some((jwks, _)) = cache_guard.as_ref()
+                && jwks.keys.iter().any(|k| k.kid.as_deref() == Some(kid))
+            {
+                return Ok(()); // Kid found, no refresh needed
             }
         }
 

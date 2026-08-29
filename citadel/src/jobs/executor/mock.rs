@@ -44,10 +44,10 @@ impl MockExecutor {
         ];
 
         for candidate in candidates {
-            if let Some(path) = candidate {
-                if path.exists() {
-                    return Some(path);
-                }
+            if let Some(path) = candidate
+                && path.exists()
+            {
+                return Some(path);
             }
         }
 

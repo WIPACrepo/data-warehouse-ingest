@@ -65,10 +65,10 @@ pub async fn list_jobs(
         filter.insert("status", status.to_lowercase());
     }
 
-    if let Some(inbox_id) = params.inbox_id {
-        if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(&inbox_id) {
-            filter.insert("inbox_id", object_id);
-        }
+    if let Some(inbox_id) = params.inbox_id
+        && let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(&inbox_id)
+    {
+        filter.insert("inbox_id", object_id);
     }
 
     let options = mongodb::options::FindOptions::builder()

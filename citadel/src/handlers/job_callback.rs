@@ -578,41 +578,40 @@ pub async fn job_callback(
     app_state.metrics.jobs_duration.observe(age_secs);
 
     // (c) Notify catalog/LTA for successful publishes.
-    if terminal_success {
-        if let JobType::PublishInbox {
+    if terminal_success
+        && let JobType::PublishInbox {
             notify_catalog,
             notify_lta,
             inbox_id,
         } = &job_type
-        {
-            let inbox = inboxes_collection(&app_state.db_client, &app_state.config)
-                .find_one(doc! { "_id": inbox_id })
-                .await
-                .map_err(|e| {
-                    error!("Failed to fetch inbox for notification: {}", e);
-                    AppError::DatabaseError(format!("Failed to fetch inbox: {}", e))
-                })?;
+    {
+        let inbox = inboxes_collection(&app_state.db_client, &app_state.config)
+            .find_one(doc! { "_id": inbox_id })
+            .await
+            .map_err(|e| {
+                error!("Failed to fetch inbox for notification: {}", e);
+                AppError::DatabaseError(format!("Failed to fetch inbox: {}", e))
+            })?;
 
-            if let Some(ref inbox_doc) = inbox {
-                let transfer_result = TransferResult {
-                    success: true,
-                    files_transferred: vec![],
-                    files_failed: vec![],
-                    total_bytes: reported_total_bytes,
-                    partial_cleanup_completed: true,
-                };
-                notify_catalog_and_lta(
-                    &app_state,
-                    &job_id,
-                    inbox_doc,
-                    &transfer_result,
-                    *notify_catalog,
-                    *notify_lta,
-                )
-                .await;
-            } else {
-                warn!("Inbox {} not found for notifications", inbox_id);
-            }
+        if let Some(ref inbox_doc) = inbox {
+            let transfer_result = TransferResult {
+                success: true,
+                files_transferred: vec![],
+                files_failed: vec![],
+                total_bytes: reported_total_bytes,
+                partial_cleanup_completed: true,
+            };
+            notify_catalog_and_lta(
+                &app_state,
+                &job_id,
+                inbox_doc,
+                &transfer_result,
+                *notify_catalog,
+                *notify_lta,
+            )
+            .await;
+        } else {
+            warn!("Inbox {} not found for notifications", inbox_id);
         }
     }
 

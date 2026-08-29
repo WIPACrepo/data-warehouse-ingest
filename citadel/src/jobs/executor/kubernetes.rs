@@ -409,13 +409,13 @@ impl JobExecutor for KubernetesExecutor {
 /// Convert Kubernetes job status to Citadel job status
 fn k8s_job_status_to_citadel(k8s_job: &K8sJob) -> JobStatus {
     if let Some(status) = &k8s_job.status {
-        if status.succeeded.map_or(false, |s| s > 0) {
+        if status.succeeded.unwrap_or_default() > 0 {
             return JobStatus::Completed;
         }
-        if status.failed.map_or(false, |f| f > 0) {
+        if status.failed.unwrap_or_default() > 0 {
             return JobStatus::Failed;
         }
-        if status.active.map_or(false, |a| a > 0) {
+        if status.active.unwrap_or_default() > 0 {
             return JobStatus::Running;
         }
     }

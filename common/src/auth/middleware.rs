@@ -30,6 +30,10 @@ pub struct AuthMiddlewareState {
 /// - JWKS unavailable/fetch/parse failure → `AppError::ServiceUnavailable`
 ///   (503, code `service_unavailable`);
 /// - missing required role → `AppError::Forbidden` (403, code `forbidden`).
+///
+/// An empty `required_roles` list disables the role gate entirely (valid
+/// Bearer token only) — used by services like Barbican whose internal
+/// transition endpoints are called only by a trusted peer (D9).
 pub async fn auth_middleware(
     State(state): State<Arc<AuthMiddlewareState>>,
     mut request: Request,
@@ -65,9 +69,14 @@ pub async fn auth_middleware(
         }
     };
 
-    let has_required_role = state.required_roles.iter().any(|role| {
-        claims.has_role(&state.service_name, role) || claims.is_admin(&state.service_name)
-    });
+    // An empty `required_roles` list means this route is public-Bearer: the
+    // caller must present a valid JWT but no role gate applies (D9 — Barbican's
+    // 12 internal `*/{start,progress,complete,failure}` routes are reachable by
+    // any valid service token; trust is delegated to Citadel, the only caller).
+    let has_required_role = state.required_roles.is_empty()
+        || state.required_roles.iter().any(|role| {
+            claims.has_role(&state.service_name, role) || claims.is_admin(&state.service_name)
+        });
 
     if !has_required_role {
         // Track which specific role was missing for denied requests

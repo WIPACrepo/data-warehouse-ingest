@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // P1.3: Use the shared shutdown signal (created early for Ctrl+C during startup)
     axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown_shared.await })
+        .with_graceful_shutdown(shutdown_shared)
         .await
         .unwrap_or_else(|e| {
             error!("Server error: {}", e);

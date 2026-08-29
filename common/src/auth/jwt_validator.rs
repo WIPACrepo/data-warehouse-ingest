@@ -53,7 +53,7 @@ impl JwtValidator {
         }
 
         // 4. Check if kid exists
-        let kid = header.kid.ok_or_else(|| AuthError::MissingKeyId)?;
+        let kid = header.kid.ok_or(AuthError::MissingKeyId)?;
 
         // 5. Optional: Refresh JWKS if kid not found (rate-limited)
         self.jwks_cache.refresh_on_unknown_kid(&kid).await.ok();

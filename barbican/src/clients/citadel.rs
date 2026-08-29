@@ -163,10 +163,7 @@ impl CitadelClient {
                         "Attempt {} failed to trigger {} operation, retrying: {}",
                         attempts, operation, e
                     );
-                    tokio::time::sleep(Duration::from_millis(
-                        (1000 * 2u64.pow(attempts - 1)) as u64,
-                    ))
-                    .await;
+                    tokio::time::sleep(Duration::from_millis(1000 * 2u64.pow(attempts - 1))).await;
                 }
             }
         }
