@@ -31,8 +31,13 @@ impl Claims {
     }
 
     /// Check if claims contain a specific role for a service
+    /// Iterates the resource-access entries without cloning (no allocation).
     pub fn has_role(&self, service: &str, role: &str) -> bool {
-        self.get_roles(service).contains(&role.to_string())
+        self.resource_access
+            .as_ref()
+            .and_then(|ra| ra.get(service))
+            .map(|ra| ra.roles.iter().any(|r| r == role))
+            .unwrap_or(false)
     }
 
     /// Check if claims have admin role for a service

@@ -22,7 +22,6 @@ pub struct Config {
     pub keycloak_client_id: String,
     pub keycloak_client_secret: String,
     pub required_roles: Vec<String>,
-    pub internal_roles: Vec<String>,
     pub allowed_algorithms: Vec<String>,
     pub jwks_refresh_secs: u64,
     
@@ -68,11 +67,6 @@ impl Default for Config {
                 .unwrap_or_else(|_| "".to_string()),
             required_roles: env::var("BARBICAN_REQUIRED_ROLES")
                 .unwrap_or_else(|_| "read,write".to_string())
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect(),
-            internal_roles: env::var("BARBICAN_INTERNAL_ROLES")
-                .unwrap_or_else(|_| "internal".to_string())
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .collect(),
