@@ -30,3 +30,8 @@ default = []
 auth = ["dep:jsonwebtoken", "dep:prometheus", "dep:once_cell"]
 integration-tests = []
 test-utils = ["auth", "dep:rsa", "dep:rand"]
+
+[package.metadata.cargo-machete]
+# rsa/rand are used only under the `test-utils` feature (auth_mock.rs +
+# RSA keygen); cargo-machete cannot see feature-gated usage.
+ignored = ["rsa", "rand"]
