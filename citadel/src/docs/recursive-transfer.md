@@ -269,15 +269,20 @@ Copy workers are spawned per file pair and bounded by a
 `Semaphore(parallelism)` held for the duration of the copy:
 
 1. Open the source (following symlinks, as intended).
-2. Stream in `chunk_size_mb` chunks to a **temporary file** next to the
-   target (`{target}.tmp.{pid}`), computing SHA-512 over the stream.
-3. Re-read the temp file from disk and compare checksums
-   (verifies the on-disk state, not just the in-memory digest).
-4. `rename()` temp → target (atomic on the same filesystem).
-5. Report `FileInfo` (source, target, size, checksum).
+2. Stream in `chunk_size_mb` chunks **directly to the final target**
+   (truncate + write + flush), computing SHA-512 over the stream. There is
+   deliberately no per-file temp name — two workers can never collide on one
+   (D10).
+3. Re-read the target file from disk and compare checksums
+   (verifies the on-disk state, not just the in-memory digest); on mismatch
+   the partial target is removed before the error is returned.
+4. Report `FileInfo` (source, target, size, checksum).
 
 On failure a worker records the error in the shared `TransferContext`
 so the producer observes the cancellation promptly.
+The commit/rollback step (atomic rename of the temp directory, or manifest
+rollback) cleans up any partial file — see [Atomic Transfer
+Pattern](#atomic-transfer-pattern).
 
 ### Producer-Consumer Diagram
 
@@ -327,8 +332,18 @@ Because consumers only write inside the temp tree until commit, observers of
 the warehouse path see either the old state or the fully new state — never a
 half-transfer. In non-atomic mode (`atomic_transfer = false`), files go
 straight to the warehouse and rollback on failure removes exactly the files
-recorded in the manifest (still no *partial file* exposure: each file is
-written to a temp file and renamed into place).
+recorded in the manifest.
+
+> **Per-file writes (D10)**: both modes write each file **directly to its
+> final path** (truncate + write + flush) — there is no per-file temp name and
+> no per-file rename, so two `{source,target}` pairs can never race on a
+> shared temp name. A checksum mismatch removes the partial file before the
+> worker reports the error. In atomic mode the "direct write" lands inside
+> the temp transfer directory (step 2 above) and is committed by the
+> directory rename; a failed run either removes the temp tree (atomic) or
+> rolls back the manifest (non-atomic), so a partial file is never committed
+> to the published warehouse. The accepted residual risk is a transient
+> partial file at its final path inside the in-flight temp/warehouse tree.
 
 ---
 
@@ -377,13 +392,12 @@ audit events even when the transfer never completed.
 Per file, **after** the copy:
 
 1. SHA-512 is computed over the byte stream *during* the copy.
-2. The on-disk temp file is then read back and hashed independently.
-3. The two digests must match; the temp file is only renamed to its final
-   target after this passes.
+2. The on-disk target file is then read back and hashed independently.
+3. The two digests must match.
 
 This verifies the actual on-disk state (detecting write-side corruption)
-rather than trusting the in-memory digest. A mismatch removes the temp file
-and fails the worker (counted toward the threshold).
+rather than trusting the in-memory digest. A mismatch removes the partial
+target file and fails the worker (counted toward the threshold).
 
 ---
 
