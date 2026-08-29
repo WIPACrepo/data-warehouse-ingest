@@ -102,6 +102,14 @@ pub trait InboxTransitioner: Send + Sync {
 pub struct BarbicanClient {
     config: CitadelConfig,
     client: reqwest::Client,
+    /// Optional metrics handle (set via [`BarbicanClient::with_metrics`]).
+    metrics: Option<Arc<crate::metrics::CitadelMetrics>>,
+    /// Circuit-breaker state (P4.4): `0 = closed`, `1 = open`.
+    breaker_open: std::sync::atomic::AtomicU8,
+    /// Consecutive `post_action` failures while closed.
+    breaker_failures: std::sync::atomic::AtomicU32,
+    /// When the breaker was tripped (used to auto half-open).
+    breaker_opened_at: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +358,71 @@ impl BarbicanClient {
                 .build()
                 .unwrap_or_default(),
             config,
+            metrics: None,
+            breaker_open: std::sync::atomic::AtomicU8::new(0),
+            breaker_failures: std::sync::atomic::AtomicU32::new(0),
+            breaker_opened_at: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Attach a metrics handle so the client can meter Barbican API errors and
+    /// the circuit-breaker gauge.
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::CitadelMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// How long the breaker stays open before auto half-opening (seconds).
+    const HALF_OPEN_AFTER_SECS: u64 = 30;
+
+    fn is_breaker_open(&self) -> bool {
+        if self.breaker_open.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            return false;
+        }
+        // Auto half-open after the cooldown window.
+        let opened = self.breaker_opened_at.blocking_lock();
+        if let Some(opened_at) = *opened {
+            if opened_at.elapsed().as_secs() >= Self::HALF_OPEN_AFTER_SECS {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn trip_breaker(&self) {
+        self.breaker_open.store(1, std::sync::atomic::Ordering::SeqCst);
+        *self.breaker_opened_at.blocking_lock() = Some(std::time::Instant::now());
+        if let Some(m) = self.metrics.as_ref() {
+            m.circuit_breaker_state.set(1);
+        }
+        warn!("Barbican circuit breaker opened");
+    }
+
+    fn close_breaker(&self) {
+        self.breaker_failures.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.breaker_open.store(0, std::sync::atomic::Ordering::SeqCst);
+        *self.breaker_opened_at.blocking_lock() = None;
+        if let Some(m) = self.metrics.as_ref() {
+            m.circuit_breaker_state.set(0);
+        }
+    }
+
+    fn record_failure(&self, label: &str, err: &AppError) {
+        if let Some(m) = self.metrics.as_ref() {
+            m.barbican_api_errors_total.inc();
+        }
+        let failures = self.breaker_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        // A 409 is an expected/benign state race — don't trip the breaker on it.
+        if !matches!(err, AppError::Conflict(_))
+            && failures >= self.config.barbican_api_retry_max.max(1) as u32
+        {
+            self.trip_breaker();
+        }
+        error!("Barbican {} failed: {}", label, err);
+    }
+
+    fn record_success(&self) {
+        self.close_breaker();
     }
 
     // -----------------------------------------------------------------------
@@ -358,27 +430,43 @@ impl BarbicanClient {
     // -----------------------------------------------------------------------
 
     /// POST a body to a Barbican action endpoint with exponential backoff.
-    /// `BarbicanConflict` errors fail immediately (no retry).
+    /// `Conflict` errors fail immediately (no retry, no breaker trip). When
+    /// the breaker is open, calls fail fast with `ServiceUnavailable`.
     async fn post_action(
         &self,
         url: &str,
         body: &impl serde::Serialize,
         label: &str,
     ) -> Result<InboxDB> {
+        // Fail fast while the breaker is open.
+        if self.is_breaker_open() {
+            warn!("Barbican circuit breaker open; failing fast for {}", label);
+            return Err(AppError::ServiceUnavailable(
+                "Barbican circuit breaker open".to_string(),
+            ));
+        }
+
         let mut retries = 0;
         let mut backoff_ms = self.config.barbican_api_retry_backoff_ms;
 
         loop {
             match self.do_post(url, body).await {
-                Ok(inbox) => return Ok(inbox),
+                Ok(inbox) => {
+                    self.record_success();
+                    return Ok(inbox);
+                }
                 Err(e) => {
                     retries += 1;
                     if retries > self.config.barbican_api_retry_max {
-                        error!("Barbican {} failed after {} retries: {}", label, retries, e);
+                        self.record_failure(label, &e);
                         return Err(e);
                     }
 
                     if matches!(e, AppError::Conflict(_)) {
+                        // Benign state race — record error but do not trip.
+                        if let Some(m) = self.metrics.as_ref() {
+                            m.barbican_api_errors_total.inc();
+                        }
                         return Err(e);
                     }
 

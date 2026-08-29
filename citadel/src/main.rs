@@ -86,10 +86,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up storage manager
     let storage_manager = StorageManager::new(&config);
 
-    // Set up Barbican client
-    let barbican_client: Arc<dyn InboxTransitioner> = Arc::new(BarbicanClient::new(config.clone()));
+    // Set up metrics (BarbicanClient needs the metrics handle for breaker/errors)
+    let metrics = Arc::new(CitadelMetrics::new().map_err(|e| {
+        error!("Failed to initialize metrics: {}", e);
+        e
+    })?);
 
-    // Set up job executor
+    // Set up Barbican client (wired with metrics for P4.4 metering)
+    let barbican_client: Arc<dyn InboxTransitioner> =
+        Arc::new(BarbicanClient::new(config.clone()).with_metrics(metrics.clone()));
     let executor: Arc<dyn JobExecutor> = match config.job_executor {
         citadel::config::JobExecutorType::Kubernetes => {
             Arc::new(KubernetesExecutor::new(config.clone()).await?)
@@ -102,13 +107,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up notifiers (using no-op implementations for now)
     let catalog_notifier: Arc<dyn CatalogNotifier> = Arc::new(NoOpCatalogNotifier);
     let lta_notifier: Arc<dyn LtaNotifier> = Arc::new(NoOpLtaNotifier);
-
-    // Set up metrics
-    let metrics = CitadelMetrics::new()
-        .map_err(|e| {
-            error!("Failed to initialize metrics: {}", e);
-            e
-        })?;
 
     // Load callback secret
     let callback_secret: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(
@@ -124,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         executor,
         catalog_notifier,
         lta_notifier,
-        metrics: Arc::new(metrics),
+        metrics: metrics.clone(),
         db_client: Arc::new(db_client),
         callback_secret: callback_secret.clone(),
     };
