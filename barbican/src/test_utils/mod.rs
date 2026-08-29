@@ -32,11 +32,14 @@ pub fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
         required_roles: config.required_roles.clone(),
         service_name: "barbican".to_string(),
     });
-    
+
+    let metrics = Arc::new(crate::metrics::BarbicanMetrics::new().unwrap());
+
     Arc::new(AppState {
         store,
         citadel_client: None,
         config,
         auth_state,
+        metrics,
     })
 }

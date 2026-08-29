@@ -266,6 +266,7 @@ dependencies = [
  "jwks",
  "mockall",
  "mongodb",
+ "prometheus",
  "reqwest",
  "serde",
  "serde_json",

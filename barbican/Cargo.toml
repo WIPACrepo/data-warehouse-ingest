@@ -13,6 +13,7 @@ jsonwebtoken = { workspace = true }
 jwks = { workspace = true }
 mockall = { workspace = true }
 mongodb = { workspace = true }
+prometheus = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

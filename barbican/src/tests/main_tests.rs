@@ -29,12 +29,15 @@ async fn test_health_endpoint() {
         required_roles: config.required_roles.clone(),
         service_name: "barbican".to_string(),
     });
-    
+
+    let metrics = Arc::new(crate::metrics::BarbicanMetrics::new().unwrap());
+
     let state = Arc::new(AppState {
         store: mock_store,
         citadel_client: None,
         config,
         auth_state,
+        metrics,
     });
     
     let router = create_app(state);

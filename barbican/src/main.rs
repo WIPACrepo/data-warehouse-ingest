@@ -1,5 +1,5 @@
 use barbican::{Config, serve};
-use common::{db_setup_with_shutdown, logging_setup, shutdown_signal, start_metrics_server};
+use common::{db_setup_with_shutdown, logging_setup, shutdown_signal};
 use futures::future::Shared;
 use futures::FutureExt;
 use tracing::error;
@@ -14,11 +14,6 @@ async fn main() {
 
     // Load configuration early so we can use it for metrics and database
     let config = Config::from_env().expect("Failed to load configuration");
-
-    // Set up prometheus metrics server
-    if let Err(e) = start_metrics_server(config.prometheus_port).await {
-        error!("Failed to start metrics server: {e}");
-    }
 
     // Connect to database with shutdown support
     let shutdown_for_db = shutdown_shared.clone();
@@ -36,6 +31,9 @@ async fn main() {
         }
     };
 
-    // Run the service
+    // Run the service. serve() builds the store and AppState (which owns the
+    // Barbican metrics registry and the inbox-count refresh loop) and starts
+    // the metrics server on the configured port via
+    // start_metrics_server_with_router so the Barbican registry is rendered.
     serve(client, config).await
 }

@@ -82,6 +82,7 @@ pub mod config;
 pub mod db;
 pub mod docs;
 pub mod handlers;
+pub mod metrics;
 pub mod middleware;
 
 #[cfg(test)]
@@ -109,6 +110,7 @@ pub struct AppState {
     pub citadel_client: Option<CitadelClient>,
     pub config: Config,
     pub auth_state: Arc<AuthMiddlewareState>,
+    pub metrics: Arc<metrics::BarbicanMetrics>,
 }
 
 impl AppState {
@@ -128,12 +130,19 @@ impl AppState {
             required_roles: config.required_roles.clone(),
             service_name: "barbican".to_string(),
         });
+
+        let metrics = Arc::new(
+            metrics::BarbicanMetrics::new()
+                .expect("Failed to initialize Barbican metrics"),
+        );
+        metrics.spawn_inbox_refresh_loop(store.clone(), 30);
         
         Self {
             store,
             citadel_client,
             config,
             auth_state,
+            metrics,
         }
     }
 }
@@ -179,6 +188,13 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 
     // Combine routes
     let router = public_routes.merge(api_routes_with_auth);
+
+    // Record per-request metrics (endpoint template + method + status). Applied
+    // after auth so the counter only sees requests that reached routing.
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        state.metrics.clone(),
+        metrics::record_request_metrics,
+    ));
     
     // Add logging layer
     let router = common::router_logging_layer(router);
@@ -205,7 +221,21 @@ pub async fn serve(client: mongodb::Client, config: Config) {
     let store = Arc::new(MongoInboxStore::new(collection));
 
     let state = Arc::new(AppState::new(store, config));
-    let app = create_app(state);
+    let app = create_app(state.clone());
+
+    // Serve Barbican's own prometheus registry on the metrics port (P4.3).
+    // Citadel's metrics server renders its registry the same way; Barbican
+    // previously used the plain start_metrics_server (default registry), which
+    // did not include barbican_inboxes_total / barbican_api_requests_total.
+    let metrics_router = metrics::metrics_router(state.metrics.clone());
+    if let Err(e) = common::start_metrics_server_with_router(
+        state.config.prometheus_port,
+        metrics_router,
+    )
+    .await
+    {
+        tracing::error!("Failed to start metrics server: {e}");
+    }
 
     let _ = axum::serve(listener, app)
         .with_graceful_shutdown(common::shutdown_signal())
