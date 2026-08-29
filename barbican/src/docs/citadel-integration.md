@@ -97,45 +97,44 @@ pub struct InboxDB {
 
 ### Trigger Pattern
 
-Barbican automatically triggers Citadel operations when external clients perform certain actions:
+Barbican automatically triggers **Citadel** operations (the single outward
+cross-service edge, D9) when external clients perform certain actions. The
+triggers are `POST /api/v1/inbox/{id}/create|publish|delete` **on the Citadel
+service** (per `barbican/src/clients/citadel.rs`); Citadel replies with a
+`job_id` it generated. Barbican's own `create/start`, `publish/start`, etc.
+action endpoints are invoked **by Citadel** (`BarbicanClient`), never by
+Barbican.
 
-| Client Action | Barbican Response | Citadel Trigger |
-|---------------|-------------------|-----------------|
-| `POST /api/v1/inbox` | 202 Accepted | `POST /create/start` |
-| `POST /api/v1/inbox/{id}/publish` | 202 Accepted | `POST /publish/start` |
-| `DELETE /api/v1/inbox/{id}` | 202 Accepted | `POST /delete/start` |
+| Client Action | Barbican Response | Citadel Trigger (on Citadel) |
+|---------------|-------------------|------------------------------|
+| `POST /api/v1/inbox` | 202 Accepted | `POST /api/v1/inbox/{id}/create` (body `{"warehouse_path": "..."}`) |
+| `POST /api/v1/inbox/{id}/publish` | 202 Accepted | `POST /api/v1/inbox/{id}/publish` (no body) |
+| `DELETE /api/v1/inbox/{id}` | 202 Accepted | `POST /api/v1/inbox/{id}/delete` (no body) |
+
+All three triggers are **fire-and-forget** (`tokio::spawn`): the external
+response is returned before Citadel acknowledges. If a trigger fails, the
+asynchronous fallback (`apply_trigger_failure`, D2) transitions the inbox to
+`Failed` so it never sits in `active`/`creating`/`publishing`/`deleting`
+indefinitely.
 
 ### Implementation
 
 ```rust
-// In handlers/create_inbox.rs
-pub async fn create_inbox(
-    State(state): State<Arc<AppState>>,
-    Json(input): Json<CreateInboxRequest>,
-) -> Result<AppJson<CreateInboxResponse>, AppError> {
-    // 1. Create inbox metadata
-    let inbox = state.store.insert(InboxDB {
-        status: InboxStatus::Active,
-        // ... other fields
-    }).await?;
-    
-    // 2. Trigger Citadel asynchronously
-    if let Some(citadel) = &state.citadel_client {
-        tokio::spawn({
-            let citadel = citadel.clone();
-            let inbox_id = inbox._id;
-            async move {
-                let _ = citadel.trigger_create(inbox_id).await;
+// In handlers/create_inbox.rs — trigger fires after the insert is accepted
+if let Some(ref citadel) = state.citadel_client {
+    let warehouse_path = inbox.warehouse_path.clone();
+    let citadel_clone = citadel.clone();
+    let store = state.store.clone();
+    let id = inserted_id;
+    tokio::spawn(async move {
+        match citadel_clone.trigger_create(&id_str, &warehouse_path).await {
+            Ok(resp) => tracing::info!("Citadel create triggered: job_id={}", resp.job_id),
+            Err(e) => {
+                // D2 fallback: mark the inbox failed via the transition path
+                apply_trigger_failure(&store, &id, "citadel_trigger_failed", &format!("{e}")).await;
             }
-        });
-    }
-    
-    // 3. Return acceptance to client
-    Ok(AppJson::new(CreateInboxResponse {
-        inbox_id: inbox._id,
-        status: "creating",
-        message: "Inbox creation initiated",
-    }))
+        }
+    });
 }
 ```
 
@@ -148,36 +147,37 @@ BARBICAN_CITADEL_API_URL=http://citadel:8081
 # Timeout for trigger calls
 BARBICAN_CITADEL_API_TIMEOUT_SECS=30
 
-# Retry configuration
+# Max transport retries
 BARBICAN_CITADEL_API_RETRY_MAX=3
-BARBICAN_CITADEL_TRIGGER_RETRY_MS=1000
 ```
+
+(`BARBICAN_CITADEL_TRIGGER_RETRY_MS` does **not** exist — see Retry Logic.)
 
 ### Retry Logic
 
-Citadel triggers use exponential backoff:
+Triggers use `CitadelClient::call_with_retry`: the request is retried up to
+`BARBICAN_CITADEL_API_RETRY_MAX` times **only when the request transport
+fails** (connect/timeout); on the final failure the error is logged and the
+D2 fallback transitions the inbox. There is no backoff knob — each retry is
+attempted immediately. An HTTP error status from Citadel (4xx/5xx) is not
+retried.
 
 ```rust
-pub async fn trigger_with_retry(
-    &self,
-    endpoint: &str,
-    payload: &serde_json::Value,
-) -> Result<(), CitadelError> {
+// barbican/src/clients/citadel.rs — simplified shape
+async fn call_with_retry(&self, url, body, operation) -> Result<StartOperationResponse, CitadelError> {
     let mut attempts = 0;
-    let mut delay = self.config.retry_initial_ms;
-    
     loop {
-        match self.http_post(endpoint, payload).await {
-            Ok(_) => return Ok(()),
-            Err(e) if attempts < self.config.retry_max => {
-                attempts += 1;
-                tokio::time::sleep(Duration::from_millis(delay)).await;
-                delay *= 2; // Exponential backoff
-            }
-            Err(e) => return Err(e),
+        attempts += 1;
+        let response = self.client.post(url).json(body).bearer_auth(token?).send().await;
+        match response {
+            Ok(resp) if resp.status().is_success() => return resp.json::<StartOperationResponse>().await,
+            Ok(resp) => return Err(CitadelError::ApiError(resp.status(), resp.text().await.unwrap_or_default())),
+            Err(e) if attempts >= self.config.citadel_api_retry_max => return Err(CitadelError::RequestFailed(...)),
+            Err(_) => { /* sleep 1s, retry */ }
         }
     }
 }
+```
 ```
 
 ---
@@ -256,19 +256,21 @@ Citadel authenticates to Barbican using a JWT service account:
 
 **Configuration:**
 ```bash
-# On Citadel side
+# On Citadel side — Citadel → Barbican is the only outward cross-service path
 CITADEL_BARBICAN_API_URL=http://barbican:8080
-CITADEL_BARBICAN_SERVICE_TOKEN_FILE=/etc/citadel/barbican.jwt
 
-# On Barbican side
+# On Barbican side — Barbican → Citadel triggers use Bearer service_token
 BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/etc/barbican/citadel.jwt
-BARBICAN_INTERNAL_ROLES=internal
 ```
 
-**Token Requirements:**
-- Must have `internal` or `admin` role
-- Must be valid (not expired)
-- Must be signed by trusted Keycloak instance
+**Token Requirements (Barbican → Citadel triggers):**
+- Any valid (non-expired) Bearer `service_token`; **no role gating** (D9)
+- Signed by the trusted Keycloak instance
+
+> Since D9, there is **no `internal` role** and no
+> `BARBICAN_INTERNAL_ROLES`. Barbican's 12 `*/{start,progress,complete,
+> failure}` action endpoints are protected only by the generic auth layer
+> (valid Bearer JWT); trust is delegated to Citadel, the only caller.
 
 ### HTTP Client
 
@@ -276,52 +278,22 @@ Barbican's Citadel client implementation:
 
 ```rust
 pub struct CitadelClient {
-    http_client: reqwest::Client,
-    base_url: String,
-    service_token: String,
-    timeout: Duration,
-    retry_max: u32,
+    client: reqwest::Client,
+    config: Config,
+    service_token: Option<String>,
 }
 
 impl CitadelClient {
-    pub fn new(config: &Config) -> Result<Self, CitadelClientError> {
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.citadel_api_timeout_secs))
-            .build()?;
-        
-        let service_token = load_service_token(&config.citadel_service_token_file)?;
-        
-        Ok(Self {
-            http_client,
-            base_url: config.citadel_api_url.clone(),
-            service_token,
-            timeout: Duration::from_secs(config.citadel_api_timeout_secs),
-            retry_max: config.citadel_api_retry_max,
-        })
-    }
-    
-    pub async fn trigger_create(&self, inbox_id: ObjectId) -> Result<(), CitadelError> {
-        let url = format!("{}/api/v1/inbox/{}/create/start", self.base_url, inbox_id);
-        
-        let payload = json!({
-            "job_id": Uuid::new_v4().to_string()
-        });
-        
-        let response = self.http_client
-            .post(&url)
-            .bearer_auth(&self.service_token)
-            .json(&payload)
-            .send()
-            .await?;
-        
-        if !response.status().is_success() {
-            return Err(CitadelError::ApiError(response.status()));
-        }
-        
-        Ok(())
+    pub async fn trigger_create(&self, inbox_id: &str, warehouse_path: &str) -> Result<StartOperationResponse, CitadelError> {
+        let url = format!("{}/api/v1/inbox/{}/create", self.config.citadel_api_url, inbox_id);
+        self.call_with_retry(&url, &CreateRequestBody { warehouse_path: warehouse_path.into() }, "create").await
     }
 }
 ```
+
+The `job_id` is **generated by Citadel** and returned in
+`StartOperationResponse { job_id, message }`; Barbican's triggers never mint
+their own job ids (D9).
 
 ### Network Considerations
 
@@ -417,15 +389,11 @@ BARBICAN_CITADEL_API_URL=http://citadel:8081
 # HTTP client timeout
 BARBICAN_CITADEL_API_TIMEOUT_SECS=30
 
-# Retry configuration
+# Max transport retries
 BARBICAN_CITADEL_API_RETRY_MAX=3
-BARBICAN_CITADEL_TRIGGER_RETRY_MS=1000
 
-# Service account token
+# Service account token (Bearer) for Barbican → Citadel triggers
 BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/etc/barbican/citadel.jwt
-
-# Inbox base path (for validation)
-BARBICAN_INBOX_BASE_PATH=/data/inboxes
 ```
 
 ### Citadel Configuration
@@ -540,9 +508,9 @@ async fn test_citadel_trigger_on_create() {
     
     mock_citadel.mock(|when, then| {
         when.method(POST)
-            .path("/api/v1/inbox/abc123/create/start");
+            .path("/api/v1/inbox/abc123/create");
         then.status(200)
-            .json_body(json!({"status": "started"}));
+            .json_body(json!({"job_id": "citadel-job-123", "message": "create initiated"}));
     });
     
     // Create test Barbican app with mock Citadel URL
