@@ -9,3 +9,4 @@ pub mod get_job;
 pub mod list_jobs;
 pub mod cancel_job;
 pub mod job_callback;
+pub mod job_progress;

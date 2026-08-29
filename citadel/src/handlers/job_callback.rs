@@ -109,8 +109,21 @@ async fn authenticate_callback(
     headers: &axum::http::HeaderMap,
     request: &JobCallbackRequest,
 ) -> Result<()> {
+    validate_callback_credentials(app_state, headers, request.timestamp, &request.nonce).await
+}
+
+/// Validate the shared callback credentials (timestamp + secret + nonce).
+///
+/// Reused by both the job callback and the job-progress endpoint so
+/// `citadel-job` has exactly one trust edge (D9).
+pub(crate) async fn validate_callback_credentials(
+    app_state: &AppState,
+    headers: &axum::http::HeaderMap,
+    timestamp: DateTime<Utc>,
+    nonce: &str,
+) -> Result<()> {
     // Check timestamp
-    if !validate_timestamp(request.timestamp) {
+    if !validate_timestamp(timestamp) {
         return Err(AppError::CallbackTimestampExpired);
     }
 
@@ -118,7 +131,7 @@ async fn authenticate_callback(
     validate_callback_secret(app_state, headers).await?;
 
     // Check nonce
-    validate_and_store_nonce(app_state, &request.nonce).await?;
+    validate_and_store_nonce(app_state, nonce).await?;
 
     Ok(())
 }

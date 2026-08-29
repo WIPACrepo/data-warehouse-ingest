@@ -39,6 +39,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{CitadelConfig, InboxConfig};
 use crate::metrics::CitadelMetrics;
+use crate::storage::progress::ProgressTracker;
 
 /// File transfer error types
 #[derive(Debug, thiserror::Error)]
@@ -249,8 +250,14 @@ pub struct TransferContext {
 
 impl TransferContext {
     pub fn new(max_errors: u32) -> Self {
+        Self::with_external_token(max_errors, CancellationToken::new())
+    }
+
+    /// Create a transfer context whose cancellation is shared with an
+    /// external token (e.g. citadel-job's metadata bail-out poll, P4.1).
+    pub fn with_external_token(max_errors: u32, cancel_token: CancellationToken) -> Self {
         Self {
-            cancel_token: CancellationToken::new(),
+            cancel_token,
             error_count: Arc::new(AtomicU32::new(0)),
             max_errors,
         }
@@ -567,6 +574,7 @@ async fn copy_file_worker(
     context: Arc<TransferContext>,
     counters: Arc<TransferCounters>,
     metrics: Option<Arc<CitadelMetrics>>,
+    progress: Option<Arc<ProgressTracker>>,
 ) -> Result<FileInfo> {
     if context.is_cancelled() {
         return Err(TransferError::Cancelled("worker cancelled before copy".to_string()));
@@ -622,6 +630,9 @@ async fn copy_file_worker(
     if let Some(m) = metrics.as_ref() {
         m.transfer_files_total.inc();
         m.transfer_bytes_total.inc_by(total_bytes as f64);
+    }
+    if let Some(p) = progress.as_ref() {
+        p.increment_files(1, total_bytes).await;
     }
 
     info!("Successfully transferred {:?} -> {:?} ({} bytes)", source, target, total_bytes);
@@ -1173,13 +1184,33 @@ pub async fn transfer_files(
     chunk_size_mb: usize,
     audit_context: AuditContext,
 ) -> Result<TransferResult> {
-    transfer_files_with_metrics(inbox_path, warehouse_path, config, parallelism, chunk_size_mb, audit_context, None).await
+    transfer_files_with_metrics(
+        inbox_path,
+        warehouse_path,
+        config,
+        parallelism,
+        chunk_size_mb,
+        audit_context,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Variant that accepts an optional metrics handle for observability.
 ///
 /// Pass `Some(metrics)` (an `Arc<CitadelMetrics>` from the application state)
 /// to record transfer metrics; pass `None` to skip metrics recording.
+///
+/// `progress` (an [`Option<Arc<ProgressTracker>>`]) is the D5 wiring: when
+/// provided, [`ProgressTracker::increment_files`] is called as each file
+/// completes so the job main loop can report progress to Citadel on an
+/// interval.
+///
+/// `external_cancel` lets a caller (citadel-job's metadata bail-out poll)
+/// cancel the transfer mid-flight by triggering the shared token.
+#[allow(clippy::too_many_arguments)]
 pub async fn transfer_files_with_metrics(
     inbox_path: &Path,
     warehouse_path: &Path,
@@ -1188,6 +1219,8 @@ pub async fn transfer_files_with_metrics(
     chunk_size_mb: usize,
     audit_context: AuditContext,
     metrics: Option<Arc<CitadelMetrics>>,
+    progress: Option<Arc<ProgressTracker>>,
+    external_cancel: Option<CancellationToken>,
 ) -> Result<TransferResult> {
     info!("Starting file transfer from {:?} to {:?}", inbox_path, warehouse_path);
 
@@ -1213,7 +1246,7 @@ pub async fn transfer_files_with_metrics(
     let inbox_root_id = dev_ino(&inbox_meta);
 
     // Step 4: Pre-transfer integrity scan (optional).
-    let (required_bytes, _file_count) = if config.inbox.pre_transfer_integrity_scan {
+    let (required_bytes, found_files) = if config.inbox.pre_transfer_integrity_scan {
         match pre_transfer_integrity_scan(&inbox_canonical, &config.inbox, inbox_root_id).await {
             Ok(size_count) => size_count,
             Err(e) => {
@@ -1273,10 +1306,19 @@ pub async fn transfer_files_with_metrics(
     let channel_capacity = (parallelism * 2).max(1);
     let (sender, mut receiver) = mpsc::channel::<Result<(PathBuf, PathBuf)>>(channel_capacity);
 
-    let context = Arc::new(TransferContext::new(config.inbox.max_errors_before_fail.max(1)));
+    let context = Arc::new(TransferContext::with_external_token(
+        config.inbox.max_errors_before_fail.max(1),
+        external_cancel.unwrap_or_default(),
+    ));
     let counters = Arc::new(TransferCounters::new());
     let chunk_size = chunk_size_mb.max(1) * 1024 * 1024;
     let start = std::time::Instant::now();
+
+    if let Some(p) = progress.as_ref() {
+        // Expose the scanned totals so live progress can report counts.
+        p.set_total_files(found_files as usize).await;
+        p.update_phase("transferring").await;
+    }
 
     let mut active_chain: HashSet<(u64, u64)> = HashSet::new();
     // Note: the inbox root is intentionally NOT pre-inserted here. The top
@@ -1317,12 +1359,13 @@ pub async fn transfer_files_with_metrics(
                 let ctx = context.clone();
                 let cnt = counters.clone();
                 let m = metrics.clone();
+                let p = progress.clone();
                 join_set.spawn(async move {
                     let _permit = sem
                         .acquire_owned()
                         .await
                         .expect("transfer semaphore was closed");
-                    match copy_file_worker($source, target_path, chunk_size, ctx.clone(), cnt, m).await {
+                    match copy_file_worker($source, target_path, chunk_size, ctx.clone(), cnt, m, p).await {
                         Ok(info) => Ok(info),
                         Err(e) => {
                             // Record here so the producer observes the
@@ -1476,6 +1519,10 @@ pub async fn transfer_files_with_metrics(
             context.error_count()
         );
 
+        if let Some(p) = progress.as_ref() {
+            p.update_phase("failed").await;
+        }
+
         // Surface the errors collected during the run. The wrapper carries
         // the full error list plus the audit trail so callers can report
         // security events even when the transfer failed (plan §12).
@@ -1521,6 +1568,10 @@ pub async fn transfer_files_with_metrics(
 
     if let Some(m) = metrics.as_ref() {
         m.transfer_duration.observe(start.elapsed().as_secs_f64());
+    }
+
+    if let Some(p) = progress.as_ref() {
+        p.update_phase("committed").await;
     }
 
     info!(

@@ -136,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/jobs", get(handlers::list_jobs::list_jobs))
         .route("/job/{job_id}/cancel", post(handlers::cancel_job::cancel_job))
         .route("/job/callback", post(handlers::job_callback::job_callback))
+        .route("/job/progress", post(handlers::job_progress::job_progress))
         .layer(axum::middleware::from_fn_with_state(app_state.auth_state.clone(), auth_middleware));
 
     // Combine routes

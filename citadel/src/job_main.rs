@@ -18,15 +18,34 @@
 //! - `CITADEL_TRANSFER_PARALLELISM` - 4
 //! - `CITADEL_TRANSFER_CHUNK_SIZE_MB` - 16
 //! - `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` - 15
+//! - `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` - 30
 //! - `CITADEL_PROTECTED_BASE_PATH` - warehouse validation base (from CitadelConfig)
+//! - `CITADEL_MONGODB_URI` / `CITADEL_MONGODB_DATABASE` - shared Mongo (for the
+//!   metadata bail-out poll)
 //! - `CITADEL_INBOX_*` - inbox security settings (see citadel/src/docs/configuration.md)
+//!
+//! # Progress / metadata polling (P4.1)
+//!
+//! While a publish transfer runs, `citadel-job` polls the shared MongoDB
+//! `inboxes` collection every `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS`:
+//! - **Bail-out**: if the inbox is no longer `publishing`, the transfer is
+//!   cancelled via a `CancellationToken` (surfaced as `MetadataChanged`).
+//! - **Progress**: every `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` the current
+//!   `ProgressTracker` snapshot is POSTed to Citadel's
+//!   `POST /api/v1/job/progress` (X-Callback-Secret auth), which forwards it
+//!   to Barbican. Progress-report failures are logged + retried with bounded
+//!   backoff and never fail the transfer.
 
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tracing::{info, error};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 #[derive(Error, Debug)]
 pub enum JobError {
@@ -74,6 +93,9 @@ pub struct JobConfig {
     pub transfer_parallelism: usize,
     pub transfer_chunk_size_mb: usize,
     pub metadata_poll_interval_secs: u64,
+    pub progress_update_interval_secs: u64,
+    pub mongodb_uri: String,
+    pub mongodb_database: String,
 }
 
 impl JobConfig {
@@ -92,6 +114,16 @@ impl JobConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(15);
+
+        let progress_update_interval_secs = env::var("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+
+        let mongodb_uri = env::var("CITADEL_MONGODB_URI")
+            .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+        let mongodb_database = env::var("CITADEL_MONGODB_DATABASE")
+            .unwrap_or_else(|_| "data_warehouse".to_string());
 
         Ok(Self {
             job_id: env::var("JOB_ID")
@@ -116,7 +148,18 @@ impl JobConfig {
             transfer_parallelism,
             transfer_chunk_size_mb,
             metadata_poll_interval_secs,
+            progress_update_interval_secs,
+            mongodb_uri,
+            mongodb_database,
         })
+    }
+
+    /// Base URL of the Citadel service (`CITADEL_CALLBACK_URL` minus the
+    /// `/api/v1/job/callback` suffix), used to reach other endpoints such as
+    /// `POST /api/v1/job/progress`.
+    fn citadel_base_url(&self) -> String {
+        let cb = self.callback_url.trim_end_matches('/');
+        cb.trim_end_matches("/api/v1/job/callback").to_string()
     }
 }
 
@@ -173,6 +216,185 @@ fn get_callback_secret(config: &JobConfig) -> Result<String> {
         })
         .map_err(|_| JobError::CallbackFailed("No callback secret configured".to_string()))?;
     Ok(secret.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Progress reporting to Citadel (P4.1 / D9)
+// ---------------------------------------------------------------------------
+
+/// Progress report POSTed to Citadel's `POST /api/v1/job/progress`.
+#[derive(Debug, Serialize)]
+struct ProgressRequest {
+    job_id: String,
+    timestamp: DateTime<Utc>,
+    nonce: String,
+    total_files: u64,
+    processed_files: u64,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    phase: String,
+}
+
+/// POST a progress snapshot to Citadel with bounded retry + backoff.
+/// Never fails the transfer: after the final attempt the error is logged and
+/// the function returns.
+async fn send_progress(config: &JobConfig, progress: &citadel::jobs::types::JobProgress, nonce: &str) {
+    let url = format!("{}/api/v1/job/progress", config.citadel_base_url());
+
+    let body = ProgressRequest {
+        job_id: config.job_id.clone(),
+        timestamp: Utc::now(),
+        nonce: nonce.to_string(),
+        total_files: progress.total_files as u64,
+        processed_files: progress.processed_files as u64,
+        total_bytes: progress.total_bytes,
+        transferred_bytes: progress.processed_bytes,
+        phase: progress.phase.clone(),
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to build progress client: {}", e);
+            return;
+        }
+    };
+
+    let secret = get_callback_secret(config).unwrap_or_default();
+
+    // Bounded retry with exponential backoff (1s, 2s).
+    let mut attempt = 0;
+    loop {
+        let result = client
+            .post(&url)
+            .header("X-Callback-Secret", &secret)
+            .json(&body)
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                info!(
+                    "Reported progress for job {} (files {}/{}, bytes {}/{})",
+                    config.job_id, body.processed_files, body.total_files,
+                    body.transferred_bytes, body.total_bytes
+                );
+                return;
+            }
+            Ok(resp) => {
+                warn!(
+                    "Progress report for job {} returned status {}",
+                    config.job_id,
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("Progress report for job {} failed: {}", config.job_id, e);
+            }
+        }
+
+        attempt += 1;
+        if attempt >= 3 {
+            warn!(
+                "Giving up progress report for job {} after {} attempts",
+                config.job_id, attempt
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(2_u64.pow(attempt))).await;
+    }
+}
+
+/// Handle returned by [`spawn_progress_monitor`] carrying the tracker and
+/// the cancellation token the transfer must observe.
+struct ProgressMonitor {
+    tracker: Arc<citadel::storage::progress::ProgressTracker>,
+    cancel: CancellationToken,
+}
+
+/// Spawn the metadata bail-out poll + progress-report loop for a publish job.
+///
+/// The poll reads the shared `inboxes` collection; if the inbox is no longer
+/// `publishing`, `cancel` is triggered so the in-flight transfer unwinds.
+/// Progress snapshots are POSTed to Citadel on the progress cadence.
+fn spawn_progress_monitor(config: &JobConfig) -> ProgressMonitor {
+    let tracker = Arc::new(citadel::storage::progress::ProgressTracker::new(
+        0,
+        config.progress_update_interval_secs,
+    ));
+    let cancel = CancellationToken::new();
+
+    let cfg = config.clone();
+    let tracker_for_loop = tracker.clone();
+    let cancel_for_loop = cancel.clone();
+    tokio::spawn(async move {
+        // Connect to the shared MongoDB. If it is unavailable, log and skip
+        // the bail-out poll (progress reporting still works via the tracker).
+        let client: Option<Arc<mongodb::Client>> = match common::db_setup(&cfg.mongodb_uri, &cfg.mongodb_database).await {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                warn!(
+                    "Failed to connect to MongoDB for metadata poll: {}; bail-out disabled",
+                    e
+                );
+                None
+            }
+        };
+
+        let mut poll_interval = tokio::time::interval(Duration::from_secs(
+            cfg.metadata_poll_interval_secs.max(1),
+        ));
+        let mut report_interval = tokio::time::interval(Duration::from_secs(
+            cfg.progress_update_interval_secs.max(1),
+        ));
+        // The first `interval` tick fires immediately; consume it so the
+        // first report happens after `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS`.
+        report_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = poll_interval.tick() => {
+                    let Some(client) = client.as_ref() else { continue };
+                    let inbox_coll = common::db::db_collection::<common::InboxDB>(
+                        client, &cfg.mongodb_database, "inboxes",
+                    );
+                    let inbox = inbox_coll
+                        .find_one(mongodb::bson::doc! { "_id": &cfg.inbox_id })
+                        .await;
+                    match inbox {
+                        Ok(Some(inbox)) if matches!(inbox.status, common::InboxStatus::Publishing) => {
+                            // Still transferring; nothing to do.
+                        }
+                        Ok(Some(inbox)) => {
+                            warn!(
+                                "Inbox {} status changed to {:?}; cancelling transfer",
+                                cfg.inbox_id, inbox.status
+                            );
+                            cancel_for_loop.cancel();
+                            return;
+                        }
+                        Ok(None) => {
+                            warn!("Inbox {} not found; cancelling transfer", cfg.inbox_id);
+                            cancel_for_loop.cancel();
+                            return;
+                        }
+                        Err(e) => {
+                            warn!("Metadata poll failed for inbox {}: {}; continuing", cfg.inbox_id, e);
+                        }
+                    }
+                }
+                _ = report_interval.tick() => {
+                    let p = tracker_for_loop.get_progress().await;
+                    send_progress(&cfg, &p, &uuid::Uuid::new_v4().to_string()).await;
+                }
+            }
+        }
+    });
+
+    ProgressMonitor { tracker, cancel }
 }
 
 #[tokio::main]
@@ -259,14 +481,22 @@ async fn execute_publish(config: &JobConfig) -> TransferResult {
         Some(config.job_id.clone()),
     );
 
-    match citadel::storage::transfer::transfer_files(
+    // Wire the ProgressTracker + metadata bail-out poll (D5/P4.1).
+    let monitor = spawn_progress_monitor(config);
+
+    match citadel::storage::transfer::transfer_files_with_metrics(
         &config.inbox_path,
         &config.warehouse_path,
         &citadel_config,
         config.transfer_parallelism,
         config.transfer_chunk_size_mb,
         audit_context,
-    ).await {
+        None,
+        Some(monitor.tracker),
+        Some(monitor.cancel),
+    )
+    .await
+    {
         Ok(r) => {
             info!(
                 "Publish completed: success={}, files={}, bytes={}",

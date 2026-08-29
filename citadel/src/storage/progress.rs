@@ -29,6 +29,14 @@ impl ProgressTracker {
         progress.phase = phase.to_string();
         progress.last_updated = Utc::now();
     }
+
+    /// Update the known total file count once the transfer determines it
+    /// (e.g. from the pre-transfer integrity scan).
+    pub async fn set_total_files(&self, total_files: usize) {
+        let mut progress = self.progress.write().await;
+        progress.total_files = total_files;
+        progress.last_updated = Utc::now();
+    }
     
     pub async fn increment_files(&self, count: usize, bytes: u64) {
         let mut progress = self.progress.write().await;
