@@ -207,8 +207,6 @@ dependencies = [
  "chrono",
  "common",
  "futures",
- "jsonwebtoken",
- "jwks",
  "mockall",
  "mongodb",
  "prometheus",
@@ -219,7 +217,6 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -381,11 +378,8 @@ dependencies = [
  "common",
  "futures",
  "hex",
- "jsonwebtoken",
- "jwks",
  "k8s-openapi",
  "kube",
- "maplit",
  "mockall",
  "mongodb",
  "nix",
@@ -400,8 +394,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
- "tower 0.5.3",
- "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1763,20 +1755,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jwks"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c940b91cfb3b56645bab00ff7a7919c5decf1bc5c8f9327b6dcff34e2d95c9"
-dependencies = [
- "base64 0.22.1",
- "jsonwebtoken",
- "reqwest",
- "serde",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "k8s-openapi"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2019,12 +1997,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "maplit"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "matchers"
