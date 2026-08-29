@@ -4,7 +4,7 @@
 //!
 //! - `barbican_inboxes_total{status}` — a gauge over the `inboxes`
 //!   collection. It is refreshed on a background interval (see
-//!   [`refresh_inbox_gauge`]) rather than incremented per write, because the
+//!   [`BarbicanMetrics::refresh_inbox_gauge`]) rather than incremented per write, because the
 //!   collection is also mutated by Citadel through the transition endpoints.
 //! - `barbican_api_requests_total{endpoint,method,status}` — a per-request
 //!   counter recorded by [`record_request_metrics`]. `endpoint` is the matched
@@ -30,7 +30,7 @@ use common::{InboxDB, InboxStatus, InboxStore};
 pub struct BarbicanMetrics {
     pub registry: Registry,
     /// `barbican_inboxes_total{status}` — inbox counts by status, refreshed
-    /// periodically by [`refresh_inbox_gauge`].
+    /// periodically by [`BarbicanMetrics::refresh_inbox_gauge`].
     pub inboxes_total: GaugeVec,
     /// `barbican_api_requests_total{endpoint,method,status}` — HTTP request
     /// counter, incremented by [`record_request_metrics`].
