@@ -115,7 +115,7 @@ Content-Type: application/json
 ```
 
 **Behavior:**
-1. Fetches inbox metadata via the Barbican API
+1. Reads inbox metadata from the shared MongoDB (`inboxes` collection, read-only)
 2. Validates the inbox doesn't already have an `inbox_path`
 3. Creates `CITADEL_INBOX_BASE_PATH/{inbox_id}/`
 4. Transitions the inbox state via the Barbican API
@@ -125,7 +125,7 @@ Content-Type: application/json
 {
   "inbox_id": "507f1f77bcf86cd799439011",
   "inbox_path": "/data/inboxes/507f1f77bcf86cd799439011",
-  "status": "active"
+  "status": "ready"
 }
 ```
 
@@ -152,11 +152,12 @@ Authorization: Bearer <jwt_token>
 - `id` — the MongoDB `ObjectId` of the inbox
 
 **Behavior:**
-1. Fetches inbox metadata via the Barbican API
+1. Reads inbox metadata from the shared MongoDB (`inboxes` collection, read-only)
 2. Validates the inbox has an `inbox_path` (i.e., it was created)
 3. Creates a `PublishInbox` job record in MongoDB (status `queued`)
-4. Transitions the inbox to `publishing` via the Barbican API
-5. Submits the job to the executor; updates the job to `running` with the executor id
+4. Quota check (in-flight MongoDB count) — `429` if at/above `CITADEL_QUEUE_PUBLISH_RATE_LIMIT`
+5. Transitions the inbox to `publishing` via the Barbican API
+6. Submits the job to the executor; updates the job to `running` with the executor id
 
 **Response (202 Accepted):**
 ```json
@@ -194,11 +195,12 @@ Authorization: Bearer <jwt_token>
 - `id` — the MongoDB `ObjectId` of the inbox
 
 **Behavior:**
-1. Fetches inbox metadata via the Barbican API
+1. Reads inbox metadata from the shared MongoDB (`inboxes` collection, read-only)
 2. Validates the inbox has an `inbox_path`
 3. Creates a `DeleteInbox` job record in MongoDB (status `queued`)
-4. Transitions the inbox to `deleting` via the Barbican API
-5. Submits the job to the executor; updates the job to `running` with the executor id
+4. Quota check (in-flight MongoDB count) — `429` if at/above `CITADEL_QUEUE_DELETE_RATE_LIMIT`
+5. Transitions the inbox to `deleting` via the Barbican API
+6. Submits the job to the executor; updates the job to `running` with the executor id
 
 **Response (202 Accepted):**
 ```json
