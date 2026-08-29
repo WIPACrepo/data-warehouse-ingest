@@ -49,3 +49,45 @@ impl ProgressTracker {
         self.progress.read().await.clone()
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_progress_tracker_new_defaults() {
+        let tracker = ProgressTracker::new(100, 30);
+        let p = tracker.get_progress().await;
+        assert_eq!(p.total_files, 100);
+        assert_eq!(p.processed_files, 0);
+        assert_eq!(p.processed_bytes, 0);
+        assert_eq!(p.total_bytes, 0);
+        assert_eq!(p.phase, "initializing");
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_increment_files() {
+        let tracker = ProgressTracker::new(2, 30);
+        tracker.increment_files(1, 10).await;
+        tracker.increment_files(1, 22).await;
+        let p = tracker.get_progress().await;
+        assert_eq!(p.processed_files, 2);
+        assert_eq!(p.processed_bytes, 32);
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_update_phase() {
+        let tracker = ProgressTracker::new(0, 30);
+        tracker.update_phase("transferring").await;
+        assert_eq!(tracker.get_progress().await.phase, "transferring");
+        tracker.update_phase("committed").await;
+        assert_eq!(tracker.get_progress().await.phase, "committed");
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_set_total_files() {
+        let tracker = ProgressTracker::new(0, 30);
+        // Discovered by the pre-transfer integrity scan after construction.
+        tracker.set_total_files(57).await;
+        assert_eq!(tracker.get_progress().await.total_files, 57);
+    }
+}

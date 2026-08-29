@@ -160,3 +160,137 @@ fn phase_or<'a>(phase: &'a str, default: &'a str) -> &'a str {
         phase
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_phase_or_empty_uses_default() {
+        assert_eq!(phase_or("", "in_progress"), "in_progress");
+        assert_eq!(phase_or("", "in_progress"), "in_progress");
+    }
+
+    #[test]
+    fn test_phase_or_uses_provided_phase() {
+        assert_eq!(phase_or("transferring", "in_progress"), "transferring");
+        assert_eq!(phase_or("committed", "in_progress"), "committed");
+    }
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use crate::config::CitadelConfig;
+    use crate::integrations::barbican::MockInboxTransitioner;
+    use crate::metrics::CitadelMetrics;
+    use crate::storage::manager::StorageManager;
+    use std::sync::Arc;
+
+    /// Build an AppState whose barbican_client is a mock; the db_client and
+    /// the rest are inert (forward_publish/forward_delete never touch them).
+    async fn test_state(mock: MockInboxTransitioner) -> AppState {
+        let config = CitadelConfig {
+            barbican_api_url: "http://barbican:8080".to_string(),
+            ..CitadelConfig::default()
+        };
+        let metrics = Arc::new(CitadelMetrics::new().expect("metrics init"));
+        let client = mongodb::Client::with_uri_str("mongodb://localhost:27017")
+            .await
+            .expect("lazy client construction must not connect");
+        AppState {
+            config: Arc::new(config.clone()),
+            auth_state: Arc::new(common::AuthMiddlewareState {
+                validator: Arc::new(common::JwtValidator::new(
+                    Arc::new(common::JwksCache::new(
+                        "http://localhost:8080/certs".to_string(),
+                        60,
+                    )),
+                    common::AuthConfig {
+                        keycloak_url: "http://localhost:8080".to_string(),
+                        keycloak_realm: "test".to_string(),
+                        keycloak_client_id: "test".to_string(),
+                        required_roles: vec!["read".to_string()],
+                        allowed_algorithms: vec!["RS256".to_string()].into_iter().collect(),
+                        jwks_refresh_secs: 60,
+                        leeway_ms: 5000,
+                    },
+                )),
+                required_roles: vec!["read".to_string()],
+                service_name: "citadel".to_string(),
+            }),
+            storage_manager: Arc::new(StorageManager::new(&config)),
+            barbican_client: Arc::new(mock),
+            executor: Arc::new(crate::jobs::executor::MockExecutor::new(config.clone())),
+            catalog_notifier: Arc::new(crate::integrations::catalog::NoOpCatalogNotifier),
+            lta_notifier: Arc::new(crate::integrations::lta::NoOpLtaNotifier),
+            metrics,
+            db_client: Arc::new(client),
+            callback_secret: Arc::new(tokio::sync::RwLock::new(Some("secret".to_string()))),
+        }
+    }
+
+    fn request() -> JobProgressRequest {
+        JobProgressRequest {
+            job_id: "job-1".to_string(),
+            timestamp: Utc::now(),
+            nonce: "nonce-1".to_string(),
+            total_files: 10,
+            processed_files: 4,
+            total_bytes: 1000,
+            transferred_bytes: 400,
+            phase: "transferring".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_forward_publish_calls_barbican_with_counts() {
+        let inbox_id = ObjectId::new();
+        let mut mock = MockInboxTransitioner::new();
+        mock.expect_publish_progress()
+            .withf(move |id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes| {
+                id == &inbox_id
+                    && job_id == "job-1"
+                    && phase == "transferring"
+                    && *total_files == 10
+                    && *processed_files == 4
+                    && *total_bytes == 1000
+                    && *transferred_bytes == 400
+            })
+            .times(1)
+            .returning(|_, _, _, _, _, _, _| {
+                Box::pin(async { Err(AppError::ServiceUnavailable("down".into())) })
+            });
+
+        let state = test_state(mock).await;
+        let req = request();
+        // Barbican error is non-fatal at the forward layer too: the function
+        // returns Err, and the caller (job_progress) treats it best-effort.
+        let result = forward_publish(&state, &inbox_id, &req).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_forward_delete_calls_barbican_with_bytes() {
+        let inbox_id = ObjectId::new();
+        let mut mock = MockInboxTransitioner::new();
+        mock.expect_delete_progress()
+            .withf(move |id, job_id, phase, total_bytes, deleted_bytes| {
+                id == &inbox_id
+                    && job_id == "job-1"
+                    && phase == "in_progress"
+                    && *total_bytes == 1000
+                    && *deleted_bytes == 400
+            })
+            .times(1)
+            .returning(|_, _, _, _, _| {
+                Box::pin(async { Err(AppError::ServiceUnavailable("down".into())) })
+            });
+
+        let state = test_state(mock).await;
+        let mut req = request();
+        req.phase = "".to_string(); // empty phase → default "in_progress"
+        let result = forward_delete(&state, &inbox_id, &req).await;
+        assert!(result.is_err());
+    }
+}

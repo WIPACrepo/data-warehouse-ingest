@@ -1484,3 +1484,138 @@ mod queue_quota_tests {
         assert!(quota_exceeded(999, 20));
     }
 }
+
+/// P4.1: `ProgressTracker` wiring through `transfer_files_with_metrics` —
+/// an external tracker observes files/bytes/phase as the copy completes;
+/// a pre-cancelled external token aborts the transfer.
+#[cfg(unix)]
+mod progress_wiring_tests {
+    use std::sync::Arc;
+
+    use super::test_utils::TestFixture;
+    use crate::storage::progress::ProgressTracker;
+    use crate::storage::transfer::{AuditContext, TransferError};
+    use tokio_util::sync::CancellationToken;
+
+    fn default_audit() -> AuditContext {
+        AuditContext::new(None, None)
+    }
+
+    #[tokio::test]
+    async fn test_tracker_observes_copy_progress() {
+        let fixture = TestFixture::new();
+        let inbox = fixture.inbox_base.join("inbox_tracker");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("a.txt"), "aaa").unwrap();
+        std::fs::write(inbox.join("b.txt"), "bbbbb").unwrap();
+
+        let warehouse = fixture.protected_base.join("inbox_tracker");
+        let mut cfg = fixture.config.clone();
+        cfg.inbox.pre_transfer_integrity_scan = false;
+
+        let tracker = Arc::new(ProgressTracker::new(0, 30));
+        let cancel = CancellationToken::new();
+        let result = crate::storage::transfer::transfer_files_with_metrics(
+            &inbox,
+            &warehouse,
+            &cfg,
+            2,
+            1,
+            default_audit(),
+            None,
+            Some(tracker.clone()),
+            Some(cancel),
+        )
+        .await
+        .expect("transfer should succeed");
+
+        assert_eq!(result.files_transferred.len(), 2);
+        assert_eq!(result.total_bytes, 8);
+
+        let p = tracker.get_progress().await;
+        assert_eq!(p.processed_files, 2);
+        assert_eq!(p.processed_bytes, 8);
+        // total_files was set from the scan (0 with scan off) — phase ends
+        // committed.
+        assert_eq!(p.phase, "committed");
+    }
+
+    #[tokio::test]
+    async fn test_tracker_observes_total_from_integrity_scan() {
+        let fixture = TestFixture::new();
+        let inbox = fixture.inbox_base.join("inbox_tracker_scan");
+        std::fs::create_dir_all(inbox.join("sub")).unwrap();
+        std::fs::write(inbox.join("x.txt"), "x").unwrap();
+        std::fs::write(inbox.join("sub/y.txt"), "yy").unwrap();
+
+        let warehouse = fixture.protected_base.join("inbox_tracker_scan");
+        let cfg = fixture.config.clone(); // pre_transfer_integrity_scan = true (default)
+
+        let tracker = Arc::new(ProgressTracker::new(0, 30));
+        let result = crate::storage::transfer::transfer_files_with_metrics(
+            &inbox,
+            &warehouse,
+            &cfg,
+            2,
+            1,
+            default_audit(),
+            None,
+            Some(tracker.clone()),
+            None,
+        )
+        .await
+        .expect("transfer should succeed");
+
+        assert_eq!(result.files_transferred.len(), 2);
+        let p = tracker.get_progress().await;
+        // The integrity scan discovered 2 transferable files; the tracker's
+        // total_files was updated accordingly.
+        assert_eq!(p.total_files, 2);
+        assert_eq!(p.processed_files, 2);
+        assert_eq!(p.phase, "committed");
+    }
+
+    #[tokio::test]
+    async fn test_pre_cancelled_token_aborts_transfer() {
+        let fixture = TestFixture::new();
+        let inbox = fixture.inbox_base.join("inbox_cancel");
+        std::fs::create_dir_all(&inbox).unwrap();
+        for i in 0..10 {
+            std::fs::write(inbox.join(format!("f{}.txt", i)), format!("content {}", i)).unwrap();
+        }
+
+        let warehouse = fixture.protected_base.join("inbox_cancel");
+        let mut cfg = fixture.config.clone();
+        cfg.inbox.pre_transfer_integrity_scan = false;
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // pre-cancelled → the transfer must not even start
+
+        let result = crate::storage::transfer::transfer_files_with_metrics(
+            &inbox,
+            &warehouse,
+            &cfg,
+            2,
+            1,
+            default_audit(),
+            None,
+            None,
+            Some(cancel),
+        )
+        .await;
+
+        assert!(result.is_err(), "pre-cancelled token must fail the transfer");
+        let inner = result.unwrap_err();
+        assert!(
+            matches!(inner, TransferError::TransferFailed { .. })
+                || matches!(inner, TransferError::Cancelled(_)),
+            "expected a cancellation-related error, got {:?}",
+            inner
+        );
+        // Inbox must be untouched.
+        assert!(inbox.exists());
+        for i in 0..10 {
+            assert!(inbox.join(format!("f{}.txt", i)).exists());
+        }
+    }
+}

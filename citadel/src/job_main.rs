@@ -163,6 +163,51 @@ impl JobConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_callback_url(url: &str) -> JobConfig {
+        // from_env needs JOB_ID etc.; build a minimal config directly for the
+        // pure helper under test.
+        JobConfig {
+            job_id: "test-job".to_string(),
+            job_type: "publish_inbox".to_string(),
+            inbox_id: "000000000000000000000000".to_string(),
+            inbox_path: PathBuf::from("/tmp/inbox"),
+            warehouse_path: PathBuf::from("/tmp/warehouse"),
+            callback_url: url.to_string(),
+            callback_secret_file: PathBuf::from("/tmp/secret"),
+            callback_timestamp: Utc::now(),
+            callback_nonce: "nonce".to_string(),
+            transfer_parallelism: 4,
+            transfer_chunk_size_mb: 16,
+            metadata_poll_interval_secs: 15,
+            progress_update_interval_secs: 30,
+            mongodb_uri: "mongodb://localhost:27017".to_string(),
+            mongodb_database: "data_warehouse".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_citadel_base_url_strips_callback_suffix() {
+        let config = config_with_callback_url("http://localhost:8081/api/v1/job/callback");
+        assert_eq!(config.citadel_base_url(), "http://localhost:8081");
+    }
+
+    #[test]
+    fn test_citadel_base_url_trailing_slash() {
+        let config = config_with_callback_url("http://citadel:8081/api/v1/job/callback/");
+        assert_eq!(config.citadel_base_url(), "http://citadel:8081");
+    }
+
+    #[test]
+    fn test_citadel_base_url_unknown_suffix_unchanged() {
+        let config = config_with_callback_url("http://citadel:8081/something/else");
+        assert_eq!(config.citadel_base_url(), "http://citadel:8081/something/else");
+    }
+}
+
 /// Callback request to Citadel API
 #[derive(Debug, Serialize)]
 pub struct CallbackRequest {
