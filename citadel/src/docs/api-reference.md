@@ -36,6 +36,7 @@ The endpoints map to the following handlers (see [`src/handlers/`](../src/handle
 | `GET` | `/api/v1/jobs` | `list_jobs` | read |
 | `POST` | `/api/v1/job/{job_id}/cancel` | `cancel_job` | admin |
 | `POST` | `/api/v1/job/callback` | `job_callback` | timestamp+nonce |
+| `POST` | `/api/v1/job/progress` | `job_progress` | timestamp+nonce |
 | `GET` | `/health` | `health` | none |
 | `GET` | `/ready` | `ready` | none |
 
@@ -344,7 +345,7 @@ Content-Type: application/json
 X-Callback-Secret: <shared-secret>
 ```
 
-**No JWT required** — authentication is via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)).
+**Authentication:** the route sits inside the same JWT auth layer as the other `/api/v1` routes; the callback itself is additionally authenticated via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)). In practice the job worker always presents a valid service token *and* the shared secret.
 
 **Request Body:**
 ```json
@@ -364,12 +365,12 @@ X-Callback-Secret: <shared-secret>
 **Behavior:**
 1. **Callback secret validation** (when configured): `X-Callback-Secret` must match the configured secret using a **constant-time comparison**; missing/mismatch → `401 invalid_callback_secret`. When no secret is configured, a warning is logged and validation falls back to timestamp + nonce only.
 2. **Timestamp validation**: `age < 5 minutes` with up to 1 minute clock skew allowed
-3. **Nonce validation**: nonce must not have been seen before; stored with a 5-minute expiry
+3. **Nonce validation**: a *live* (unexpired) nonce is rejected as replayed (`callback_nonce_reused`); an *expired-but-present* nonce is reused with a fresh 5-minute window (the TTL index on `callback_nonces.expires_at` garbage-collects old rows — P2.2)
 4. Loads the job; ignores callbacks for already-terminal jobs
-5. On `completed` + `success`: sets `Completed`, records `JobResult`; notifies catalog then LTA (wired; `NoOp` implementations by default in `main.rs`)
-6. On `completed` + `!success`: sets `Failed`
-7. On `failed`: sets `Failed` and records a `JobError`
-8. On `timed_out`: sets `TimedOut`
+5. On `completed` + `success`: sets `Completed`, records `JobResult`; the **terminal JobDB write is optimistic-locked** (`{job_id, version}` + `$inc version`); then notifies catalog → LTA (only if catalog succeeded), recording failures on the JobDB `errors` array + `citadel_notify_errors_total{target}`
+6. On `completed` + `!success` and on `failed`: sets `Failed` and records a `JobError`
+7. On `timed_out`: sets `TimedOut`
+8. Finally **forwards the terminal state to Barbican** (`publish_complete`/`publish_failure`/`delete_complete`/`delete_failure`) so the inbox leaves `publishing`/`deleting`; forward failures are logged + metered (`citadel_barbican_api_errors_total`) but never fail the callback (P1.2/D1)
 
 **Response (200 OK):**
 ```json
@@ -382,6 +383,35 @@ X-Callback-Secret: <shared-secret>
 - `invalid_callback_secret`
 - `callback_timestamp_expired`
 - `callback_nonce_reused`
+
+---
+
+### Job Progress Endpoint
+
+Receives periodic progress updates from job workers (`citadel-job`) and forwards them to Barbican's `publish/progress` / `delete/progress` so the inbox `progress` field stays live during long transfers (P4.1/D9).
+
+```http
+POST /api/v1/job/progress
+Content-Type: application/json
+X-Callback-Secret: <shared-secret>
+```
+
+Authenticated exactly like the job callback (service JWT + secret + timestamp + nonce). Body:
+
+```json
+{
+  "job_id": "58a3e4c0-...",
+  "timestamp": "2024-01-01T00:00:00Z",
+  "nonce": "unique-random-string",
+  "total_files": 100,
+  "processed_files": 42,
+  "total_bytes": 1048576,
+  "transferred_bytes": 524288,
+  "phase": "transferring"
+}
+```
+
+**Behavior:** validates the callback credentials, loads the job, and forwards the counts to Barbican for the matching job type. Forwarding is **best-effort** — failures are logged (and metered by the Barbican client) but the handler still returns `200 {"acknowledged": true}` so a Barbican outage never disturbs the transfer.
 
 ---
 
