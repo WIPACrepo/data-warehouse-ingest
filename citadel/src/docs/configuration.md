@@ -132,11 +132,11 @@ CITADEL_JWKS_REFRESH_SECS=60
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CITADEL_JOB_EXECUTOR` | `kubernetes` | `kubernetes` or `mock` |
-| `CITADEL_KUBE_CONFIG_PATH` | *(unset)* | Path to Kubernetes config file |
-| `CITADEL_KUBE_NAMESPACE` | `citadel-jobs` | Namespace for K8s jobs |
+| `CITADEL_KUBE_CONFIG_PATH` | *(unset)* | Path to Kubernetes config file; **effective** — when set, `KubernetesExecutor` loads it via `kube::Config::from_path` (else in-cluster/default resolution) |
+| `CITADEL_KUBE_NAMESPACE` | `citadel-jobs` | Namespace for K8s jobs; **effective** — passed into every job spec |
 | `CITADEL_JOB_IMAGE` | `citadel:latest` | Container image for K8s jobs |
 | `CITADEL_JOB_BINARY` | `citadel-job` | Binary name within the image |
-| `CITADEL_JOB_MAX_DURATION_SECS` | `86400` | Maximum job duration (24h); timeout enforcement planned |
+| `CITADEL_JOB_MAX_DURATION_SECS` | `86400` | Maximum job duration (24h); enforced as the K8s `activeDeadlineSeconds` and by the poller's timeout detection |
 
 ```bash
 # Local development: no cluster needed
@@ -251,15 +251,15 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=10
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | Job metadata poll interval (used by the background poller) |
-| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | Minimum interval between progress updates in MongoDB |
+| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | cadence for Citadel's background job-status poller (`polling/job_status.rs`) |
+| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | cadence at which `citadel-job` POSTs progress to `POST /api/v1/job/progress`, which forwards it to Barbican's `publish/progress`/`delete/progress`. Also the metadata bail-out poll uses `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` (two distinct knobs — P4.1) |
 
 ```bash
 CITADEL_JOB_METADATA_POLL_INTERVAL_SECS=15
 CITADEL_PROGRESS_UPDATE_INTERVAL_SECS=30
 ```
 
-> **Status**: the background job status poller (`polling/job_status.rs`) is active — it polls K8s job status, detects timeouts, reconciles missed callbacks, and cleans up completed jobs.
+> **Status**: the background job status poller (`polling/job_status.rs`) is active — it polls K8s job status, detects timeouts, reconciles missed callbacks (re-issuing terminal Barbican transitions), and cleans up completed jobs. `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` is forwarded to job executors (Kubernetes + mock) so in-cluster jobs report progress on the same cadence (P4.1).
 
 ---
 
@@ -267,12 +267,14 @@ CITADEL_PROGRESS_UPDATE_INTERVAL_SECS=30
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` | `10` | Max concurrent publish jobs |
-| `CITADEL_QUEUE_DELETE_RATE_LIMIT` | `20` | Max concurrent delete jobs |
-| `CITADEL_QUEUE_PUBLISH_CPU_LIMIT` | `"2"` | K8s CPU limit for publish jobs (planned usage) |
-| `CITADEL_QUEUE_PUBLISH_MEMORY_LIMIT` | `"4Gi"` | K8s memory limit for publish jobs (planned usage) |
-| `CITADEL_QUEUE_DELETE_CPU_LIMIT` | `"1"` | K8s CPU limit for delete jobs (planned usage) |
-| `CITADEL_QUEUE_DELETE_MEMORY_LIMIT` | `"2Gi"` | K8s memory limit for delete jobs (planned usage) |
+| `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` | `10` | Max in-flight publish jobs (`queued`/`running`/`cancelling`); **enforced** via a MongoDB count — submissions above it get `429 Too Many Requests` and the JobDB is rolled back (D8) |
+| `CITADEL_QUEUE_DELETE_RATE_LIMIT` | `20` | Max in-flight delete jobs; **enforced** the same way |
+| `CITADEL_QUEUE_PUBLISH_CPU_LIMIT` | `"2"` | K8s CPU limit for publish jobs |
+| `CITADEL_QUEUE_PUBLISH_MEMORY_LIMIT` | `"4Gi"` | K8s memory limit for publish jobs |
+| `CITADEL_QUEUE_DELETE_CPU_LIMIT` | `"1"` | K8s CPU limit for delete jobs |
+| `CITADEL_QUEUE_DELETE_MEMORY_LIMIT` | `"2Gi"` | K8s memory limit for delete jobs |
+
+The CPU/memory limits are applied to the container `ResourceRequirements` in the K8s job spec (see `jobs/executor/kubernetes.rs`); the rate limits are enforced by an in-flight MongoDB count — there is no semaphore (`JobQueue`/`JobProcessor` were removed as dead code, D8).
 
 ```bash
 CITADEL_QUEUE_PUBLISH_RATE_LIMIT=10
@@ -467,7 +469,7 @@ RUST_LOG=info,citadel=info
 
 ### Validation
 
-`from_env()` fails on unparseable values (numeric fields return `ConfigError::InvalidValue`, booleans reject non-`true/false` strings). Missing optional variables fall back to defaults.
+`from_env()` fails on unparseable values (numeric fields return `ConfigError::InvalidValue`); missing optional variables fall back to defaults. Booleans (e.g. `CITADEL_INBOX_ATOMIC_TRANSFER`) accept `true/false`, `1/0`, `yes/no`, `on/off` (case-insensitive) via `parse_bool`.
 
 ### Hot Reload
 
@@ -481,14 +483,30 @@ Transfer security events surface two ways:
 
 1. **Metrics** — scrape `citadel_security_events_total{event_type=...}` and
    `citadel_transfer_errors_total{error_type=...}` (no paths in labels, by
-   design). Alert on `external_symlink_rejected`,
-   `warehouse_path_validation_failed`, `symlink_loop`, and any
-   `citadel_transfer_atomic_rollbacks_total` increment.
+   design). The `error_type` vocabulary actually emitted by `storage/transfer.rs`:
+
+   - transfer errors (`citadel_transfer_errors_total`): `symlink_loop`,
+     `path_too_long`, `external_symlink_not_allowed`, `max_total_files_exceeded`,
+     `max_total_symlinks_exceeded`, `max_symlink_references_exceeded`,
+     `inbox_integrity_failed`, `insufficient_disk_space`, `file_transfer_failed`
+     (plus `warehouse_path_validation_failed` and `inbox_lock_failed` for the
+     corresponding early failures);
+   - security events (`citadel_security_events_total`): `symlink_loop_detected`,
+     `external_symlink_rejected`, `inbox_integrity_check_failed`,
+     `insufficient_disk_space`.
+
+   Alert on structural rejections (`symlink_loop`, `external_symlink_rejected`,
+   `inbox_integrity_*`) and any `citadel_transfer_atomic_rollbacks_total`
+   increment.
 2. **Audit log** — every security incident emits a structured
    `SecurityAuditEvent` (paths, dev/ino, counts) that is logged and carried
    to the job callback. Forward these to the centralized SIEM with
    immutable storage (retention ≥ 90 days). See
    [Security Considerations → Observability & Audit Logging](security-considerations.md#observability--audit-logging).
+
+Catalog/LTA notification failures are metered separately as
+`citadel_notify_errors_total{target="catalog"|"lta"}` and pushed onto the
+JobDB's `errors` array (P2.3).
 
 ---
 

@@ -1225,10 +1225,30 @@ pub async fn transfer_files_with_metrics(
     info!("Starting file transfer from {:?} to {:?}", inbox_path, warehouse_path);
 
     // Step 1: Validate warehouse path.
-    let warehouse_canonical = validate_warehouse_path(warehouse_path, &config.protected_base_path).await?;
+    let warehouse_canonical = match validate_warehouse_path(warehouse_path, &config.protected_base_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(m) = metrics.as_ref() {
+                m.transfer_errors_total
+                    .with_label_values(&["warehouse_path_validation_failed"])
+                    .inc();
+            }
+            return Err(e);
+        }
+    };
 
     // Step 2: Lock inbox directory.
-    let lock = InboxLock::lock(inbox_path).await?;
+    let lock = match InboxLock::lock(inbox_path).await {
+        Ok(l) => l,
+        Err(e) => {
+            if let Some(m) = metrics.as_ref() {
+                m.transfer_errors_total
+                    .with_label_values(&["inbox_lock_failed"])
+                    .inc();
+            }
+            return Err(e);
+        }
+    };
 
     // Step 3: Resolve canonical inbox root and its filesystem identity.
     //
