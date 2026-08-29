@@ -324,6 +324,19 @@ too. Doc is wrong (code is more permissive).
 
 ## 5. Recommended priority order
 
+> **Resolution status (2026-08-29):** all 7 priorities addressed. Mapping:
+> **1** → implemented in `PLAN.md` P1.1 (optimistic-locking helper
+> `apply_versioned_update`; zero matched docs → `409 Conflict`);
+> **2** → P1.2 + D1 (callback handler forwards terminal transitions via
+> `BarbicanClient`, poller self-heals; `Published`/`Deleted` reachable);
+> **3** → P1.5 + D3 (unique `uniq_warehouse_path` index at startup, duplicate →
+> 409); **4** → P2.1 + P2.2 (`FindOptions` wired, nonce TTL index + expired-
+> reuse); **5** → Phase 3 + P1.4 (all endpoint/status-code/module-tree/metrics
+> docs aligned, README known-issue removed); **6** → P4.7 (Barbican dev-only
+> deps feature-gated; `rsa`/`rand` out of prod graph); **7** → P4.1/P4.2/P4.5/
+> P3.4 (`ProgressTracker` wired, `JobQueue`/`JobProcessor` deleted, unused
+> config fields documented/removed).
+
 1. **§1.1** Fix optimistic locking (`matched_count == 0` → `Conflict`). This is
    the documented concurrency contract and it silently does nothing.
 2. **§1.2** Wire `publish_complete` / `delete_complete` / `delete_failure`
