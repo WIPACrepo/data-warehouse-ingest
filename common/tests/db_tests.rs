@@ -1,8 +1,8 @@
 //! Integration tests requiring a running MongoDB instance
 //!
-//! Run with: `cargo test --package common --features integration-tests`
+//! Run with: `cargo test --package common --features integration-tests,test-utils`
 
-#![cfg(feature = "integration-tests")]
+#![cfg(all(feature = "integration-tests", feature = "test-utils"))]
 
 use common::{
     adapters::MongoInboxStore,

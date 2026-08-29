@@ -70,7 +70,7 @@ mod tests {
     /// `{"error":"conflict"}`.
     async fn assert_conflict_response(
         store: Arc<MockInboxStore>,
-        inbox_id: ObjectId,
+        _inbox_id: ObjectId,
         route: &str,
         uri: &str,
         body: &str,

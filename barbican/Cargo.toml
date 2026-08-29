@@ -18,6 +18,15 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 axum-test = { workspace = true }
+# `common` is also a normal dependency (with `auth` only). Declaring it again
+# as a dev-dependency with `test-utils` makes Cargo unify the features during
+# test compilation, so `cargo test -p barbican` (and workspace/CI test runs)
+# compile Barbican's unit tests — which use `common::test_utils`
+# builders + `common::MockInboxStore` — WITHOUT requiring an explicit
+# `--features test-utils`. The normal dependency (auth only) keeps `rsa`/
+# `rand` out of the production build (P4.7); the dev-dependency is stripped
+# from non-test builds.
+common = { workspace = true, features = ["test-utils"] }
 mockall = { workspace = true }
 serde_json = { workspace = true }
 tower = { workspace = true }
@@ -25,9 +34,3 @@ tower = { workspace = true }
 [features]
 default = []
 integration-tests = []
-# Brings in common's test-utils (RSA keys + mock builders) for Barbican's
-# unit tests. Barbican's own `test_utils` module is `#[cfg(test)]`-gated, so
-# the production binary does not need `common/test-utils` (P4.7). Run
-# `cargo test -p barbican --features test-utils` (also folded into the
-# `test-integration` alias invocation for barbican in CI).
-test-utils = ["common/test-utils"]

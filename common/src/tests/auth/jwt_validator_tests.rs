@@ -30,7 +30,7 @@ mod tests {
             leeway_ms: 5000,
         };
 
-        let validator = JwtValidator::new(jwks_cache, config);
+        let _validator = JwtValidator::new(jwks_cache, config);
 
         // Verify validator was created successfully
         assert!(true);
@@ -53,7 +53,7 @@ mod tests {
             leeway_ms: 5000,
         };
 
-        let validator = JwtValidator::new(jwks_cache.clone(), config);
+        let _validator = JwtValidator::new(jwks_cache.clone(), config);
 
         // Verify validator has the expected fields
         // (We can't easily test actual validation without generating real JWTs)

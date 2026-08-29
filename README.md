@@ -67,7 +67,7 @@ cargo test-integration --workspace   # runs all crates with the integration-test
 
 # Equivalent explicit form
 cargo test -p citadel --features integration-tests
-cargo test -p common --features integration-tests
+cargo test -p common --features integration-tests,test-utils  # common's integration tests use test_utils builders
 ```
 
 > The `common` auth unit tests pass under `cargo test -p common --features auth`
@@ -83,10 +83,13 @@ cargo test -p common --features integration-tests
 - `citadel`:
   - `integration-tests` (bare **marker** feature — same gating)
 - `barbican`:
-  - No local features; depends on `common` with `auth` + an optional
-    `test-utils` feature (`test-utils = ["common/test-utils"]`) used only by
-    Barbican's unit tests. Run `cargo test -p barbican --features test-utils`.
-    This keeps `rsa`/`rand` (common's test-only keygen) **out of the Barbican
+  - No local features; depends on `common` with `auth` (normal dep) plus an
+    additional `common` **dev-dependency** with `test-utils`. Cargo unifies the
+    feature during test compilation, so `cargo test -p barbican` compiles
+    Barbican's unit tests (which use `common::test_utils` builders + mock
+    store) **without needing an explicit `--features test-utils`** — per
+    AGENTS.md, tests run under plain `cargo test`. The normal dependency (auth
+    only) keeps `rsa`/`rand` (common's test-only keygen) **out of the Barbican
     production graph** — verified via `cargo tree -p barbican --edges normal`
     (P4.7). Residual: `mockall` stays in the prod graph via `common` (its
     `#[automock]` on `InboxStore` is unconditional); moving that under
