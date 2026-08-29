@@ -5,13 +5,11 @@ edition = "2024"
 
 [dependencies]
 axum = { workspace = true }
-axum-test = { workspace = true }
 chrono = { workspace = true }
-common = { workspace = true, features = ["auth", "test-utils"] }
+common = { workspace = true, features = ["auth"] }
 futures = { workspace = true }
 jsonwebtoken = { workspace = true }
 jwks = { workspace = true }
-mockall = { workspace = true }
 mongodb = { workspace = true }
 prometheus = { workspace = true }
 reqwest = { workspace = true }
@@ -19,10 +17,20 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
-tower-governor = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+axum-test = { workspace = true }
+mockall = { workspace = true }
 serde_json = { workspace = true }
-tower = { workspace = true }
+
+[features]
+default = []
+integration-tests = []
+# Brings in common's test-utils (RSA keys + mock builders) for Barbican's
+# unit tests. Barbican's own `test_utils` module is `#[cfg(test)]`-gated, so
+# the production binary does not need `common/test-utils` (P4.7). Run
+# `cargo test -p barbican --features test-utils` (also folded into the
+# `test-integration` alias invocation for barbican in CI).
+test-utils = ["common/test-utils"]

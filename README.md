@@ -70,21 +70,27 @@ cargo test -p citadel --features integration-tests
 cargo test -p common --features integration-tests
 ```
 
-> ⚠️ **Known issue**: `common::tests::auth::config_tests::test_from_env_with_custom_values`
-> currently fails (it asserts `allowed_algorithms.contains("RS384")` but
-> `AuthConfig::from_env` only yields the default `RS256`). Fix the test or the
-> config parser before relying on a green run.
+> The `common` auth unit tests pass under `cargo test -p common --features auth`
+> (including `config_tests::test_from_env_with_custom_values`).
 
 ### Feature Flags
 
 - `common`:
   - `auth` (enables JWT authentication: `jsonwebtoken`, `prometheus`, `once_cell`)
-  - `integration-tests` (enables integration test suite)
-  - `test-utils` (enables `auth` plus RSA key generation for testing)
+  - `integration-tests` (bare **marker** feature — gates `#[cfg(feature =
+    "integration-tests")]` tests in `tests/`; it does not enable anything else)
+  - `test-utils` (enables `auth` plus RSA key generation + mock builders for testing)
 - `citadel`:
-  - `integration-tests` (enables integration test suite)
+  - `integration-tests` (bare **marker** feature — same gating)
 - `barbican`:
-  - No local features; depends on `common` with `auth` and `test-utils` features
+  - No local features; depends on `common` with `auth` + an optional
+    `test-utils` feature (`test-utils = ["common/test-utils"]`) used only by
+    Barbican's unit tests. Run `cargo test -p barbican --features test-utils`.
+    This keeps `rsa`/`rand` (common's test-only keygen) **out of the Barbican
+    production graph** — verified via `cargo tree -p barbican --edges normal`
+    (P4.7). Residual: `mockall` stays in the prod graph via `common` (its
+    `#[automock]` on `InboxStore` is unconditional); moving that under
+    `cfg(any(test, feature = "test-utils"))` is a documented follow-up.
 
 ### Dependencies
 
@@ -129,7 +135,10 @@ Creating an inbox takes various parameters:
 Additional metadata may be added here in the future.
 
 > Note: if an existing inbox exists for the specified data warehouse path,
-> the new request will be rejected.
+> the new request is rejected — the fast in-process check returns `400`, and
+> the unique `warehouse_path` index (`uniq_warehouse_path`, created at
+> startup) turns a concurrent race or soft-deleted duplicate into a
+> `409 Conflict` (P1.5/D3).
 
 ### Using an Inbox
 
