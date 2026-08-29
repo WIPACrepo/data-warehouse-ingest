@@ -71,12 +71,12 @@ pub async fn list_jobs(
         }
     }
     
-    let _options = mongodb::options::FindOptions::builder()
+    let options = mongodb::options::FindOptions::builder()
         .limit(params.limit as i64)
         .sort(doc! { "created_at": -1 })
         .build();
-    
-    let mut cursor = jobs_coll.find(filter).await
+
+    let mut cursor = jobs_coll.find(filter).with_options(options).await
         .map_err(|e| AppError::DatabaseError(format!("Failed to query jobs: {}", e)))?;
     
     let mut jobs = Vec::new();
