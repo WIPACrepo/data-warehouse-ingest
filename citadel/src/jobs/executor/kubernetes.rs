@@ -29,14 +29,36 @@ pub struct KubernetesExecutor {
 
 impl KubernetesExecutor {
     pub async fn new(config: CitadelConfig) -> Result<Self> {
-        let client = kube::Client::try_default()
+        // Use the configured kubeconfig path when set, else the default
+        // in-cluster / kubeconfig resolution (P4.5).
+        let client = if let Some(path) = &config.kube_config_path {
+            let kubeconfig = kube::config::Kubeconfig::read_from(path).map_err(|e| {
+                AppError::KubernetesError(format!(
+                    "Failed to load kubeconfig from {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            let kube_config = kube::Config::from_custom_kubeconfig(
+                kubeconfig,
+                &kube::config::KubeConfigOptions::default(),
+            )
             .await
-            .map_err(|e| AppError::KubernetesError(format!("Failed to create K8s client: {}", e)))?;
+            .map_err(|e| AppError::KubernetesError(format!("Failed to load kubeconfig: {}", e)))?;
+            kube::Client::try_from(kube_config).map_err(|e| {
+                AppError::KubernetesError(format!("Failed to create K8s client: {}", e))
+            })?
+        } else {
+            kube::Client::try_default()
+                .await
+                .map_err(|e| AppError::KubernetesError(format!("Failed to create K8s client: {}", e)))?
+        };
 
+        let namespace = config.kube_namespace.clone();
         Ok(Self {
             config,
             client,
-            namespace: "citadel-jobs".to_string(),
+            namespace,
         })
     }
 
@@ -433,5 +455,51 @@ mod tests {
                 }
             }
         }
+    }
+}
+#[cfg(test)]
+mod namespace_tests {
+    use super::*;
+    use mongodb::bson::oid::ObjectId;
+
+    /// P4.5: the configured CITADEL_KUBE_NAMESPACE flows into the K8s job
+    /// spec instead of the hardcoded default.
+    #[test]
+    fn test_configured_namespace_flows_into_spec() {
+        let config = CitadelConfig {
+            kube_namespace: "my-jobs-ns".to_string(),
+            job_image: "citadel:latest".to_string(),
+            bind_address: "0.0.0.0:8081".to_string(),
+            transfer_parallelism: 4,
+            transfer_chunk_size_mb: 16,
+            job_max_duration_secs: 86400,
+            job_metadata_poll_interval_secs: 15,
+            queue_publish_cpu_limit: "2".to_string(),
+            queue_publish_memory_limit: "4Gi".to_string(),
+            queue_delete_cpu_limit: "1".to_string(),
+            queue_delete_memory_limit: "2Gi".to_string(),
+            ..CitadelConfig::default()
+        };
+
+        let job = JobDB::new(
+            "test-job-ns".to_string(),
+            ObjectId::new(),
+            crate::jobs::types::JobType::PublishInbox {
+                inbox_id: ObjectId::new(),
+                notify_catalog: true,
+                notify_lta: true,
+            },
+            "kubernetes",
+        );
+
+        let k8s_job = KubernetesExecutor::create_job_spec_static(
+            &config,
+            &config.kube_namespace,
+            &job,
+            "nonce",
+            "2024-01-01T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(k8s_job.metadata.namespace.as_deref(), Some("my-jobs-ns"));
     }
 }
