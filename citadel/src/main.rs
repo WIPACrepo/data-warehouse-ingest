@@ -62,6 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
+    // Ensure the callback-nonces TTL index (P2.2). Idempotent; a failure is
+    // logged, not fatal.
+    citadel::db::ensure_citadel_indexes(&db_client, &config).await;
+
     // Set up JWKS cache and auth components
     let auth_config = AuthConfig::from_env()
         .map_err(|e| {
@@ -180,7 +184,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poller_config = app_state.config.clone();
     let poller_executor = app_state.executor.clone();
     let poller_db = app_state.db_client.clone();
-    let poller = JobStatusPoller::new(poller_config.as_ref().clone(), poller_executor, poller_db);
+    let poller_barbican = app_state.barbican_client.clone();
+    let poller_metrics = app_state.metrics.clone();
+    let poller = JobStatusPoller::new(
+        poller_config.as_ref().clone(),
+        poller_executor,
+        poller_db,
+        poller_barbican,
+        poller_metrics,
+    );
     tokio::spawn(async move {
         if let Err(e) = poller.run().await {
             error!("Job status poller error: {}", e);

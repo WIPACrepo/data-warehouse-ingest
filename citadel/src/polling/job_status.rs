@@ -10,8 +10,10 @@
 
 use crate::config::CitadelConfig;
 use crate::error::Result;
+use crate::integrations::barbican::InboxTransitioner;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::types::JobStatus;
+use crate::metrics::CitadelMetrics;
 use crate::models::JobDB;
 use futures::StreamExt;
 use mongodb::bson::doc;
@@ -24,18 +26,25 @@ pub struct JobStatusPoller {
     config: CitadelConfig,
     executor: Arc<dyn JobExecutor>,
     db_client: Arc<mongodb::Client>,
+    barbican_client: Arc<dyn InboxTransitioner>,
+    metrics: Arc<CitadelMetrics>,
 }
 
 impl JobStatusPoller {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: CitadelConfig,
         executor: Arc<dyn JobExecutor>,
         db_client: Arc<mongodb::Client>,
+        barbican_client: Arc<dyn InboxTransitioner>,
+        metrics: Arc<CitadelMetrics>,
     ) -> Self {
         Self {
             config,
             executor,
             db_client,
+            barbican_client,
+            metrics,
         }
     }
 
@@ -86,6 +95,10 @@ impl JobStatusPoller {
 
         // 3. Reconciliation: detect jobs where Citadel missed the callback
         self.reconcile_orphaned_jobs(&jobs_coll).await?;
+
+        // 4. Self-heal inbox state: terminal JobDB status but inbox still
+        //    mid-transition (lost callback / Barbican outage during callback).
+        self.reconcile_inbox_transition(&jobs_coll).await?;
 
         Ok(())
     }
@@ -267,6 +280,124 @@ impl JobStatusPoller {
                     }
                     Err(e) => {
                         warn!("Failed to reconcile job {}: {}", job.job_id, e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Self-heal inbox state that is stuck mid-transition.
+    ///
+    /// For jobs whose `JobDB` is in a terminal status (`completed`/`failed`/
+    /// `timed_out`) but whose inbox is still `Publishing`/`Deleting` (or
+    /// `Creating`), re-issue the appropriate complete/failure transition so a
+    /// lost callback or a Barbican outage during the callback does not leave
+    /// the inbox permanently stuck (P1.2, D1).
+    ///
+    /// `Creating` is only re-issued when the job's own terminal status proves
+    /// the create finished (completed => create_complete; failed => create_failure)
+    /// and the inbox `current_job_id` matches this job. Bounded to one attempt
+    /// per tick (the next tick retries if Barbican was down); reconciled
+    /// transitions are logged and metered but never fail the tick.
+    async fn reconcile_inbox_transition(&self, jobs_coll: &mongodb::Collection<JobDB>) -> Result<()> {
+        let terminal_statuses = vec![
+            Self::status_to_string(JobStatus::Completed),
+            Self::status_to_string(JobStatus::Failed),
+            Self::status_to_string(JobStatus::TimedOut),
+        ];
+
+        let filter = doc! {
+            "status": { "$in": terminal_statuses },
+        };
+
+        let mut cursor = jobs_coll
+            .find(filter)
+            .await
+            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to query terminal jobs: {}", e)))?;
+
+        let inboxes_coll = crate::db::inboxes_collection(&self.db_client, &self.config);
+
+        while let Some(job) = cursor
+            .next()
+            .await
+            .transpose()
+            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to iterate terminal jobs: {}", e)))?
+        {
+            // Skip jobs that haven't finished (recently submitted etc.).
+            let terminal_ok = matches!(
+                job.status,
+                JobStatus::Completed | JobStatus::Failed | JobStatus::TimedOut
+            );
+            if !terminal_ok {
+                continue;
+            }
+
+            // Fetch the inbox to see whether it is still stuck mid-transition.
+            let inbox = match inboxes_coll.find_one(doc! { "_id": job.inbox_id }).await {
+                Ok(Some(inbox)) => inbox,
+                Ok(None) | Err(_) => continue, // nothing to heal
+            };
+
+            let inbox_id = job.inbox_id;
+
+            match &job.job_type {
+                crate::jobs::types::JobType::PublishInbox { .. } => {
+                    if !matches!(inbox.status, common::InboxStatus::Publishing) {
+                        continue;
+                    }
+                    // Only heal when this job is the one currently driving the
+                    // inbox (guards against stale jobs overtaking newer ones).
+                    if inbox.current_job_id.as_deref() != Some(job.job_id.as_str()) {
+                        continue;
+                    }
+                    if job.status == JobStatus::Completed {
+                        warn!("Self-heal: inbox {} stuck in Publishing; re-issuing publish_complete for job {}", inbox_id, job.job_id);
+                        let protected_path = inbox.warehouse_path.clone();
+                        if let Err(e) = self.barbican_client
+                            .publish_complete(&inbox_id, &job.job_id, 0, 0, &protected_path)
+                            .await
+                        {
+                            error!("Self-heal publish_complete failed for job {}: {}", job.job_id, e);
+                            self.metrics.barbican_api_errors_total.inc();
+                        }
+                    } else {
+                        warn!("Self-heal: inbox {} stuck in Publishing; re-issuing publish_failure for job {}", inbox_id, job.job_id);
+                        if let Err(e) = self.barbican_client
+                            .publish_failure(&inbox_id, &job.job_id, "publish_failed", "Job terminated without callback; reconciled by poller")
+                            .await
+                        {
+                            error!("Self-heal publish_failure failed for job {}: {}", job.job_id, e);
+                            self.metrics.barbican_api_errors_total.inc();
+                        }
+                    }
+                }
+                crate::jobs::types::JobType::DeleteInbox { .. } => {
+                    if !matches!(inbox.status, common::InboxStatus::Deleting) {
+                        continue;
+                    }
+                    if inbox.current_job_id.as_deref() != Some(job.job_id.as_str()) {
+                        continue;
+                    }
+                    if job.status == JobStatus::Completed {
+                        warn!("Self-heal: inbox {} stuck in Deleting; re-issuing delete_complete for job {}", inbox_id, job.job_id);
+                        if let Err(e) = self.barbican_client
+                            .delete_complete(&inbox_id, &job.job_id)
+                            .await
+                        {
+                            error!("Self-heal delete_complete failed for job {}: {}", job.job_id, e);
+                            self.metrics.barbican_api_errors_total.inc();
+                        }
+                    } else {
+                        warn!("Self-heal: inbox {} stuck in Deleting; re-issuing delete_failure for job {}", inbox_id, job.job_id);
+                        if let Err(e) = self.barbican_client
+                            .delete_failure(&inbox_id, &job.job_id, "delete_failed", "Job terminated without callback; reconciled by poller")
+                            .await
+                        {
+                            error!("Self-heal delete_failure failed for job {}: {}", job.job_id, e);
+                            self.metrics.barbican_api_errors_total.inc();
+                        }
                     }
                 }
             }
