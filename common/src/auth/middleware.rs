@@ -2,7 +2,6 @@
 
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
     middleware::Next,
     response::Response,
 };
@@ -11,6 +10,7 @@ use std::sync::Arc;
 use crate::auth::JwtValidator;
 use crate::auth::claims::Claims;
 use crate::auth::error::AuthError;
+use crate::error::AppError;
 use crate::metrics;
 
 #[derive(Clone)]
@@ -20,11 +20,21 @@ pub struct AuthMiddlewareState {
     pub service_name: String,
 }
 
+/// Authenticate and authorize a request against the configured JWT validator.
+///
+/// Rejections return an [`AppError`], which serializes to a JSON body
+/// `{error, message}` (decision D7) instead of a bare status code:
+/// - missing/invalid `Authorization` header → `AppError::AuthError` (401,
+///   code `auth_error`);
+/// - JWT validation failure → `AppError::AuthError` (401, redacted reason);
+/// - JWKS unavailable/fetch/parse failure → `AppError::ServiceUnavailable`
+///   (503, code `service_unavailable`);
+/// - missing required role → `AppError::Forbidden` (403, code `forbidden`).
 pub async fn auth_middleware(
     State(state): State<Arc<AuthMiddlewareState>>,
     mut request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, AppError> {
     let auth_header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -34,7 +44,9 @@ pub async fn auth_middleware(
         Some(header) if header.starts_with("Bearer ") => &header[7..],
         _ => {
             tracing::warn!("Missing or invalid authorization header");
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(AppError::AuthError(
+                "Missing or invalid Authorization header".to_string(),
+            ));
         }
     };
 
@@ -43,10 +55,14 @@ pub async fn auth_middleware(
         Err(e) => {
             tracing::warn!("JWT validation failed: {}", redact_auth_error(&e));
             return Err(match e {
-                AuthError::JwksNotAvailable | AuthError::JwksFetchFailed(_) | AuthError::JwksParseFailed(_) => {
-                    StatusCode::SERVICE_UNAVAILABLE
+                AuthError::JwksNotAvailable
+                | AuthError::JwksFetchFailed(_)
+                | AuthError::JwksParseFailed(_) => {
+                    AppError::ServiceUnavailable(
+                        "JWT verification temporarily unavailable".to_string(),
+                    )
                 }
-                _ => StatusCode::UNAUTHORIZED,
+                other => AppError::AuthError(redact_auth_error(&other)),
             });
         }
     };
@@ -68,7 +84,10 @@ pub async fn auth_middleware(
         metrics::AUTHZ_CHECK_TOTAL
             .with_label_values(&["denied", &state.service_name])
             .inc();
-        return Err(StatusCode::FORBIDDEN);
+        return Err(AppError::Forbidden(format!(
+            "Missing required role for service '{}'",
+            state.service_name
+        )));
     }
 
     metrics::AUTHZ_CHECK_TOTAL

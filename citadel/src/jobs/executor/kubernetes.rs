@@ -168,6 +168,21 @@ impl KubernetesExecutor {
                 value: Some(config.job_metadata_poll_interval_secs.to_string()),
                 value_from: None,
             },
+            EnvVar {
+                name: "CITADEL_PROGRESS_UPDATE_INTERVAL_SECS".to_string(),
+                value: Some(config.progress_update_interval_secs.to_string()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_MONGODB_URI".to_string(),
+                value: Some(config.mongodb_uri.clone()),
+                value_from: None,
+            },
+            EnvVar {
+                name: "CITADEL_MONGODB_DATABASE".to_string(),
+                value: Some(config.mongodb_database.clone()),
+                value_from: None,
+            },
         ];
         for (name, value) in config.inbox_env_vars() {
             env.push(EnvVar {
@@ -453,6 +468,30 @@ mod tests {
                     assert_eq!(sec.allow_privilege_escalation, Some(false));
                     assert_eq!(sec.read_only_root_filesystem, Some(true));
                 }
+
+                // P4.1: the new job knobs (progress cadence + shared Mongo)
+                // are forwarded to citadel-job so the metadata bail-out poll
+                // and progress reporting work in-cluster.
+                let env = containers[0]
+                    .env
+                    .clone()
+                    .expect("container env must be set");
+                let env_map: BTreeMap<String, String> = env
+                    .into_iter()
+                    .map(|e| (e.name, e.value.unwrap_or_default()))
+                    .collect();
+                assert_eq!(
+                    env_map.get("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS").map(String::as_str),
+                    Some("30")
+                );
+                assert_eq!(
+                    env_map.get("CITADEL_MONGODB_URI").map(String::as_str),
+                    Some("mongodb://localhost:27017")
+                );
+                assert_eq!(
+                    env_map.get("CITADEL_MONGODB_DATABASE").map(String::as_str),
+                    Some("data_warehouse")
+                );
             }
         }
     }

@@ -95,6 +95,18 @@ impl MockExecutor {
                 "CITADEL_JOB_METADATA_POLL_INTERVAL_SECS".to_string(),
                 self.config.job_metadata_poll_interval_secs.to_string(),
             ),
+            (
+                "CITADEL_PROGRESS_UPDATE_INTERVAL_SECS".to_string(),
+                self.config.progress_update_interval_secs.to_string(),
+            ),
+            (
+                "CITADEL_MONGODB_URI".to_string(),
+                self.config.mongodb_uri.clone(),
+            ),
+            (
+                "CITADEL_MONGODB_DATABASE".to_string(),
+                self.config.mongodb_database.clone(),
+            ),
         ];
 
         // Add callback secret if file exists
@@ -336,6 +348,18 @@ mod tests {
         assert_eq!(
             env_map.get("CITADEL_TRANSFER_CHUNK_SIZE_MB"),
             Some(&"16".to_string())
+        );
+        assert_eq!(
+            env_map.get("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS"),
+            Some(&"30".to_string())
+        );
+        assert_eq!(
+            env_map.get("CITADEL_MONGODB_URI"),
+            Some(&"mongodb://localhost:27017".to_string())
+        );
+        assert_eq!(
+            env_map.get("CITADEL_MONGODB_DATABASE"),
+            Some(&"data_warehouse".to_string())
         );
     }
 }
