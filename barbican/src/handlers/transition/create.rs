@@ -6,6 +6,8 @@ use crate::AppState;
 use common::{AppError, AppJson, InboxDB, InboxError, InboxProgress, InboxStatus};
 use serde::{Deserialize, Serialize};
 
+use super::apply_versioned_update;
+
 /// Request body for create start operation
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CreateStartRequest {
@@ -80,16 +82,7 @@ pub async fn create_start(
         }
     };
 
-    state.store
-        .update_one(doc! { "_id": id, "version": inbox.version }, update)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("modified concurrently") {
-                AppError::Conflict("Inbox state was modified concurrently".to_string())
-            } else {
-                AppError::DatabaseError(e.to_string())
-            }
-        })?;
+    apply_versioned_update(&state.store, &id, inbox.version, &update).await?;
 
     Ok(AppJson::new(inbox))
 }
@@ -141,16 +134,7 @@ pub async fn create_progress(
         }
     };
 
-    state.store
-        .update_one(doc! { "_id": id, "version": inbox.version }, update)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("modified concurrently") {
-                AppError::Conflict("Inbox state was modified concurrently".to_string())
-            } else {
-                AppError::DatabaseError(e.to_string())
-            }
-        })?;
+    apply_versioned_update(&state.store, &id, inbox.version, &update).await?;
 
     Ok(AppJson::new(inbox))
 }
@@ -197,16 +181,7 @@ pub async fn create_complete(
         }
     };
 
-    state.store
-        .update_one(doc! { "_id": id, "version": inbox.version }, update)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("modified concurrently") {
-                AppError::Conflict("Inbox state was modified concurrently".to_string())
-            } else {
-                AppError::DatabaseError(e.to_string())
-            }
-        })?;
+    apply_versioned_update(&state.store, &id, inbox.version, &update).await?;
 
     Ok(AppJson::new(inbox))
 }
@@ -261,16 +236,7 @@ pub async fn create_failure(
         }
     };
 
-    state.store
-        .update_one(doc! { "_id": id, "version": inbox.version }, update)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("modified concurrently") {
-                AppError::Conflict("Inbox state was modified concurrently".to_string())
-            } else {
-                AppError::DatabaseError(e.to_string())
-            }
-        })?;
+    apply_versioned_update(&state.store, &id, inbox.version, &update).await?;
 
     Ok(AppJson::new(inbox))
 }

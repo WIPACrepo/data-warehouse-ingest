@@ -38,6 +38,10 @@ impl InboxStore for MongoInboxStore {
         cursor.try_collect().await
     }
 
+    async fn count(&self, filter: Document) -> Result<u64, mongodb::error::Error> {
+        self.collection.count_documents(filter).await
+    }
+
     async fn update_one(
         &self,
         filter: Document,

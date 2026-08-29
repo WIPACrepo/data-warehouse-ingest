@@ -126,6 +126,10 @@ pub enum AppError {
 
     #[error("Internal error: {0}")]
     InternalError(String),
+
+    // -- Rate limiting --
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +218,9 @@ impl IntoResponse for AppError {
             }
             AppError::InternalError(d) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", d.clone())
+            }
+            AppError::TooManyRequests(d) => {
+                (StatusCode::TOO_MANY_REQUESTS, "too_many_requests", d.clone())
             }
         };
 

@@ -21,6 +21,8 @@ pub trait InboxStore: Send + Sync {
         options: FindOptions,
     ) -> Result<Vec<InboxDB>, mongodb::error::Error>;
 
+    async fn count(&self, filter: Document) -> Result<u64, mongodb::error::Error>;
+
     async fn update_one(
         &self,
         filter: Document,
