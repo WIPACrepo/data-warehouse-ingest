@@ -552,6 +552,14 @@ async fn emit_error(
 }
 
 /// Worker task: copy a single file and verify its checksum.
+///
+/// Writes **directly to the final target** (truncate + write + flush) — there
+/// is deliberately no per-file temp name that two workers could collide on
+/// (D10). An incomplete transfer leaves a partial file at the final target,
+/// which is an accepted risk: the run fails wholesale and either removes the
+/// temp transfer dir (atomic mode) or rolls back the manifest (non-atomic
+/// mode). On checksum mismatch the partial target file is removed before the
+/// error is returned.
 async fn copy_file_worker(
     source: PathBuf,
     target: PathBuf,
@@ -569,16 +577,14 @@ async fn copy_file_worker(
         .await
         .map_err(|e| TransferError::StorageError(format!("Failed to open source file {:?}: {}", source, e)))?;
 
-    // Create a temporary file for atomic write.
-    let temp_target = target.with_extension(format!("tmp.{}", std::process::id()));
-
+    // Open the final target directly (truncate any prior partial content).
     let mut target_file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(&temp_target)
+        .open(&target)
         .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to create target file {:?}: {}", temp_target, e)))?;
+        .map_err(|e| TransferError::StorageError(format!("Failed to create target file {:?}: {}", target, e)))?;
 
     let mut hasher = Sha512::new();
     let mut buffer = vec![0u8; chunk_size];
@@ -599,23 +605,18 @@ async fn copy_file_worker(
 
     let expected_checksum = hex::encode(hasher.finalize());
 
-    // Verify checksum of the on-disk target file.
-    let actual_checksum = compute_checksum(&temp_target, chunk_size).await?;
+    // Verify checksum of the on-disk target file (the final path).
+    let actual_checksum = compute_checksum(&target, chunk_size).await?;
     if expected_checksum != actual_checksum {
-        let _ = fs::remove_file(&temp_target).await;
+        // Remove the partial target so a corrupt file is never left behind.
+        if let Err(e) = fs::remove_file(&target).await {
+            warn!("Failed to remove partial target {:?} after checksum mismatch: {}", target, e);
+        }
         return Err(TransferError::FileTransferFailed(format!(
             "Checksum mismatch for {:?}: expected {}, got {}",
             source, expected_checksum, actual_checksum
         )));
     }
-
-    // Atomic rename to final target.
-    fs::rename(&temp_target, &target).await.map_err(|e| {
-        TransferError::StorageError(format!(
-            "Failed to rename temp file {:?} to {:?}: {}",
-            temp_target, target, e
-        ))
-    })?;
 
     counters.add_bytes(total_bytes);
     if let Some(m) = metrics.as_ref() {
