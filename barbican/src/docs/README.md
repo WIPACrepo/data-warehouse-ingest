@@ -55,7 +55,7 @@ Barbican is the user-facing frontend service in the data warehouse ingestion sys
 |  Clients    |               |  (Frontend) |
 +-------------+               +------+------+
                                       |
-                                      | JWT (internal role)
+                                      | Bearer JWT (no role gate, D9)
                                       v
                               +-------------+
                               |  Citadel    |
@@ -81,29 +81,29 @@ See [Architecture](architecture.md) for detailed component breakdown.
 ```
 barbican/src/
 ├── main.rs              # Application entry point
-├── lib.rs               # Library exports and app configuration
+├── lib.rs               # Library exports, AppState, create_app, serve
 ├── config.rs            # Environment configuration loading
-├── auth/
-│   ├── claims.rs        # JWT claims structure and role checking
-│   ├── jwt_validator.rs # JWKS fetching, caching, and token validation
-│   └── middleware.rs    # Axum authentication middleware
+├── db.rs                # ensure_inbox_indexes (unique warehouse_path, P1.5)
+├── metrics.rs           # BarbicanMetrics: inboxes_total gauge + api_requests_total counter (P4.3)
 ├── clients/
-│   └── citadel.rs       # HTTP client for triggering Citadel operations
+│   └── citadel.rs       # CitadelClient: triggers on Citadel /create|publish|delete (D9)
 ├── handlers/
-│   ├── create_inbox.rs  # POST /api/v1/inbox
+│   ├── create_inbox.rs  # POST /api/v1/inbox (202 envelope)
 │   ├── get_inbox.rs     # GET /api/v1/inbox/{id}
-│   ├── list_inboxes.rs  # GET /api/v1/inbox
-│   ├── delete_inbox.rs  # DELETE /api/v1/inbox/{id}
-│   ├── publish_inbox.rs # POST /api/v1/inbox/{id}/publish
+│   ├── list_inboxes.rs  # GET /api/v1/inbox (pagination envelope, offset)
+│   ├── delete_inbox.rs  # DELETE /api/v1/inbox/{id} (202 envelope)
+│   ├── publish_inbox.rs # POST /api/v1/inbox/{id}/publish (202, no body)
 │   ├── health.rs        # GET /health
 │   ├── ready.rs         # GET /ready
-│   └── transition/      # Internal action endpoints
+│   └── transition/      # Internal action endpoints (called only by Citadel)
 │       ├── create.rs    # /create/start, /progress, /complete, /failure
 │       ├── publish.rs   # /publish/start, /progress, /complete, /failure
 │       └── delete.rs    # /delete/start, /progress, /complete, /failure
 ├── middleware/
-│   ├── auth.rs          # JWT validation middleware
-│   └── logging.rs       # Request/response logging
+│   └── mod.rs           # Re-exports common::auth_middleware (auth lives in common::auth)
+├── test_utils/          # Test utilities (cfg(test))
+│   └── fixtures.rs      # create_test_inbox*, create_test_store, create_test_request, create_test_state
+├── tests/               # Unit tests (mirroring src/)
 └── docs/                # This documentation directory
 ```
 
@@ -138,11 +138,11 @@ See [State Machine](state-machine.md) for all valid transitions.
 
 ## Additional Resources
 
-- [Design Plan](01-design-plan.md) - Complete architecture and API specification
-- [Completion Report](02-completion-report.md) - Implementation status and verification
+- [Design Plan](01-design-plan.md) - Historical design (pre-review)
+- [Completion Report](02-completion-report.md) - Historical completion report (pre-review)
 - [Common Crate Documentation](../../common/src/docs/README.md) - Shared types and utilities
-- [Citadel Documentation](../../citadel/PLAN.md) - Backend service specification
+- [Citadel Documentation](../../citadel/src/docs/README.md) - Backend service specification
 
 ---
 
-*Last Updated: 2026-08-17*
+*Last Updated: 2026-08-29 (review-driven changes)*

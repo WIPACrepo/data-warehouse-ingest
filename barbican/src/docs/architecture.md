@@ -35,7 +35,7 @@ This document describes the system architecture, component relationships, and mo
 |  Clients    |               |  (Frontend) |
 +-------------+               +------+------+
                                       |
-                                      | JWT (internal role)
+                                      | Bearer JWT (no role gate, D9)
                                       v
                               +-------------+
                               |  Citadel    |
@@ -68,7 +68,7 @@ This document describes the system architecture, component relationships, and mo
 
 1. **External Client** → Creates inbox metadata via Barbican API (with JWT auth)
 2. **Barbican** → Validates request, creates inbox record with status `Active`
-3. **Barbican** → Automatically triggers Citadel create operation (with internal JWT)
+3. **Barbican** → Automatically triggers Citadel create operation (Bearer service token)
 4. **Citadel** → Creates physical directory structure
 5. **Citadel** → Reports progress back to Barbican via `/create/progress`
 6. **Citadel** → Calls Barbican's `/create/complete` or `/create/failure` endpoint
@@ -81,7 +81,7 @@ This document describes the system architecture, component relationships, and mo
 |-------------|-----------|----------|------|
 | Client → Barbican | External | HTTP/REST | JWT (user roles) |
 | Barbican → Citadel | Internal | HTTP/REST | JWT (service account) |
-| Citadel → Barbican | Internal | HTTP/REST | JWT (internal role) |
+| Citadel → Barbican | Internal | HTTP/REST | Bearer JWT (no role gate — D9; trust delegated to Citadel) |
 | Barbican → MongoDB | Internal | MongoDB Wire | Native auth |
 | Citadel → MongoDB | Internal | MongoDB Wire | Native auth |
 
@@ -91,49 +91,43 @@ This document describes the system architecture, component relationships, and mo
 
 ```
 barbican/src/
-├── main.rs                  # Application entry point, server startup
+├── main.rs                  # Application entry point, server startup, metrics server
 ├── lib.rs                   # Library exports, router configuration, AppState
 ├── config.rs                # Environment configuration loading and validation
-│
-├── auth/                    # Authentication module
-│   ├── mod.rs               # Module exports
-│   ├── claims.rs            # JWT claims structure, role extraction
-│   ├── jwt_validator.rs     # JWKS fetching, caching, token validation
-│   └── middleware.rs        # Axum authentication middleware
+├── db.rs                    # ensure_inbox_indexes (unique warehouse_path, P1.5)
+├── metrics.rs               # BarbicanMetrics (inboxes_total gauge, api_requests counter, P4.3)
 │
 ├── clients/                 # External service clients
 │   ├── mod.rs               # Module exports
-│   └── citadel.rs           # HTTP client for Citadel API calls
+│   └── citadel.rs           # CitadelClient: triggers on Citadel /create|publish|delete
 │
 ├── handlers/                # HTTP request handlers
 │   ├── mod.rs               # Module exports
-│   ├── create_inbox.rs      # POST /api/v1/inbox
+│   ├── create_inbox.rs      # POST /api/v1/inbox (202 envelope)
 │   ├── get_inbox.rs         # GET /api/v1/inbox/{id}
-│   ├── list_inboxes.rs      # GET /api/v1/inbox
-│   ├── delete_inbox.rs      # DELETE /api/v1/inbox/{id}
-│   ├── publish_inbox.rs     # POST /api/v1/inbox/{id}/publish
+│   ├── list_inboxes.rs      # GET /api/v1/inbox (pagination envelope, offset)
+│   ├── delete_inbox.rs      # DELETE /api/v1/inbox/{id} (202 envelope)
+│   ├── publish_inbox.rs     # POST /api/v1/inbox/{id}/publish (202, no body)
 │   ├── health.rs            # GET /health
 │   ├── ready.rs             # GET /ready
-│   └── transition/          # Internal action endpoints
-│       ├── mod.rs           # Transition module exports
+│   └── transition/          # Internal action endpoints (called only by Citadel)
+│       ├── mod.rs           # Transition module exports + apply_versioned_update (P1.1)
 │       ├── create.rs        # /create/start, /progress, /complete, /failure
 │       ├── publish.rs       # /publish/start, /progress, /complete, /failure
 │       └── delete.rs        # /delete/start, /progress, /complete, /failure
 │
-├── middleware/              # Axum middleware
-│   ├── mod.rs               # Module exports
-│   ├── auth.rs              # JWT validation middleware
-│   └── logging.rs           # Request/response logging
+├── middleware/              # Re-exports (auth lives in common::auth)
+│   └── mod.rs               # Re-exports common::auth_middleware
 │
-├── test_utils/              # Test utilities
-│   ├── mod.rs               # Test module exports
-│   ├── fixtures.rs          # Test inbox fixtures
-│   └── mock_store.rs        # Mock InboxStore for unit tests
+├── test_utils/              # Test utilities (cfg(test))
+│   └── fixtures.rs          # Test inbox fixtures (create_test_store/fixtures/state)
 │
-└── tests/                   # Integration tests
+└── tests/                   # Unit/integration tests
     ├── mod.rs               # Test module exports
     ├── main_tests.rs        # Health endpoint tests
-    └── integration_tests.rs # Full lifecycle tests
+    ├── metrics_tests.rs     # Barbican metrics tests (P4.3)
+    ├── integration_tests.rs # Handler tests
+    └── handlers/            # Per-handler tests
 ```
 
 ### Shared Library (common crate)
@@ -276,7 +270,7 @@ External Request
 
 **Rationale**:
 - Consistent authentication mechanism
-- Role-based access control for internal endpoints
+- State-transition endpoints gated by the generic auth layer (no role gate, D9)
 - Audit trail of Citadel operations
 - No special authentication paths needed
 
@@ -312,7 +306,8 @@ External Request
 ### Authentication Layers
 
 1. **External Clients**: JWT with user roles (read, write, admin)
-2. **Citadel Service**: JWT with internal role
+2. **Citadel Service**: Bearer JWT — **no role gate** (D9); trust is
+   delegated to Citadel, the only caller of the state-transition endpoints
 3. **MongoDB**: Native authentication and TLS
 4. **Inter-service**: Mutual TLS (recommended for production)
 
@@ -321,9 +316,9 @@ External Request
 | Endpoint Pattern | Required Role(s) |
 |-----------------|------------------|
 | `POST /api/v1/inbox` | `write` or `admin` |
-| `GET /api/v1/inbox` | `read`, `write`, `internal`, or `admin` |
+| `GET /api/v1/inbox` | `read`, `write`, or `admin` |
 | `DELETE /api/v1/inbox/{id}` | `write` or `admin` |
-| Internal action endpoints | `internal` or `admin` |
+| Internal action endpoints | (none — valid Bearer JWT only; called only by Citadel) |
 | `/health`, `/ready` | None (public) |
 
 ### Security Measures
@@ -331,8 +326,11 @@ External Request
 - **Algorithm Whitelist**: Only RS256 allowed, `alg: none` explicitly rejected
 - **Token Validation**: Expiration, issuer, audience, signature
 - **Input Sanitization**: All string inputs validated
-- **Path Traversal Prevention**: File paths validated against base directory
-- **Rate Limiting**: Configurable per-endpoint limits (via tower-governor)
+- **Path Traversal Prevention**: warehouse-path containment is enforced by
+  **Citadel** (`CITADEL_PROTECTED_BASE_PATH` + `validate_warehouse_path`),
+  not by Barbican (D9/D11)
+- **Rate Limiting**: not implemented in Barbican (edge proxy recommended);
+  queue saturation is 429 at Citadel (D8)
 
 ---
 

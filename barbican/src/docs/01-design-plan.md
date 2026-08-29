@@ -1,5 +1,12 @@
 # Design Plan for Barbican Project (Revised for Citadel Integration)
 
+> ⚠️ **Historical document** (2026-08-17). This was the design written before
+> the review-driven changes. It is retained for record; the **current**
+> behavior is described by [README.md](README.md), [api-reference.md](api-reference.md),
+> and [configuration.md](configuration.md). In particular, `internal` roles /
+> `BARBICAN_INTERNAL_ROLES` and the `validate_path` helper were **removed**
+> (D9) — see the current docs.
+
 This document outlines the complete design for the `barbican` project - a frontend service that manages inbox metadata and provides the API layer for inbox lifecycle operations. Barbican owns the MongoDB inbox collection and coordinates all state changes via action-based API endpoints.
 
 **Last Updated:** 2026-08-17  

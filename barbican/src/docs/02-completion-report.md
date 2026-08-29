@@ -1,5 +1,12 @@
 # Barbican Project - COMPLETION REPORT
 
+> ⚠️ **Historical document** (2026-08-17). Written at the completion of the
+> original build, before the review-driven changes (optimistic locking,
+> unique warehouse_path index, 202 envelopes, queue 429, D9/D10/D11, etc.).
+> Retained for record; the current state is described by [README.md]
+> (README.md), [api-reference.md](api-reference.md), and
+> [configuration.md](configuration.md).
+
 **Date:** 2026-08-17  
 **Status:** ✅ **COMPLETE** - All Requirements Implemented
 
@@ -160,11 +167,8 @@ export BARBICAN_CITADEL_API_URL="http://citadel:8081"
 export BARBICAN_CITADEL_SERVICE_TOKEN_FILE="/path/to/token"
 export BARBICAN_PROMETHEUS_PORT="9091"
 export BARBICAN_REQUIRED_ROLES="read,write"
-export BARBICAN_INTERNAL_ROLES="internal"
 export BARBICAN_ALLOWED_ALGORITHMS="RS256"
 export BARBICAN_JWKS_REFRESH_SECS="60"
-export BARBICAN_MONGODB_TIMEOUT_SECS="30"
-export BARBICAN_MONGODB_RETRY_MAX="3"
 export BARBICAN_CITADEL_API_TIMEOUT_SECS="30"
 export BARBICAN_CITADEL_API_RETRY_MAX="3"
 export BARBICAN_INBOX_BASE_PATH="./data/inboxes"

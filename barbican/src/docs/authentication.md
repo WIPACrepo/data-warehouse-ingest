@@ -123,27 +123,38 @@ BARBICAN_ALLOWED_ALGORITHMS=RS256
 
 ### Error Responses
 
-**401 Unauthorized** - Invalid or missing token:
+Auth rejections return **JSON bodies** via `common::auth_middleware` (decision
+D7) — never bare status codes.
+
+**401 Unauthorized** - Missing/invalid token:
 ```json
 {
-  "error": "INVALID_TOKEN",
-  "message": "JWT token signature verification failed"
+  "error": "auth_error",
+  "message": "Missing or invalid Authorization header"
 }
 ```
 
-**401 Unauthorized** - Token expired:
+**401 Unauthorized** - JWT validation failure (redacted reason):
 ```json
 {
-  "error": "TOKEN_EXPIRED",
-  "message": "JWT token has expired"
+  "error": "auth_error",
+  "message": "Invalid token"
 }
 ```
 
 **403 Forbidden** - Insufficient role:
 ```json
 {
-  "error": "INSUFFICIENT_ROLE",
-  "message": "Required role 'write' not found in token"
+  "error": "forbidden",
+  "message": "Missing required role for service 'barbican'"
+}
+```
+
+**503 Service Unavailable** - JWKS unavailable:
+```json
+{
+  "error": "service_unavailable",
+  "message": "JWT verification temporarily unavailable"
 }
 ```
 
@@ -220,9 +231,9 @@ async fn maybe_refresh_jwks(&self) -> Result<(), JwtError> {
 | Role | Description |
 |------|-------------|
 | `admin` | Full access to all endpoints |
-| `write` | Create, update, and delete inboxes |
+| `write` | Create, publish, delete inboxes |
 | `read` | Query inbox metadata only |
-| `internal` | Access to Citadel callback endpoints |
+| (no `internal`) | There is **no internal role** (D9) — see below |
 
 ### Endpoint Authorization
 
@@ -231,19 +242,19 @@ async fn maybe_refresh_jwks(&self) -> Result<(), JwtError> {
 | Endpoint | Required Roles |
 |----------|----------------|
 | `POST /api/v1/inbox` | `write`, `admin` |
-| `GET /api/v1/inbox` | `read`, `write`, `internal`, `admin` |
-| `GET /api/v1/inbox/{id}` | `read`, `write`, `internal`, `admin` |
+| `GET /api/v1/inbox` | `read`, `write`, `admin` |
+| `GET /api/v1/inbox/{id}` | `read`, `write`, `admin` |
 | `DELETE /api/v1/inbox/{id}` | `write`, `admin` |
 | `POST /api/v1/inbox/{id}/publish` | `write`, `admin` |
 
-#### Internal Endpoints (Citadel Callbacks)
+#### Internal Endpoints (State Transitions)
 
 | Endpoint Pattern | Required Roles |
 |------------------|----------------|
-| `/api/v1/inbox/{id}/*/start` | `internal`, `admin` |
-| `/api/v1/inbox/{id}/*/progress` | `internal`, `admin` |
-| `/api/v1/inbox/{id}/*/complete` | `internal`, `admin` |
-| `/api/v1/inbox/{id}/*/failure` | `internal`, `admin` |
+| `/api/v1/inbox/{id}/*/start` | (none — valid Bearer JWT only) |
+| `/api/v1/inbox/{id}/*/progress` | (none — valid Bearer JWT only) |
+| `/api/v1/inbox/{id}/*/complete` | (none — valid Bearer JWT only) |
+| `/api/v1/inbox/{id}/*/failure` | (none — valid Bearer JWT only) |
 
 #### Public Endpoints
 
@@ -255,28 +266,32 @@ async fn maybe_refresh_jwks(&self) -> Result<(), JwtError> {
 ### Role Hierarchy
 
 ```
-admin ⊃ {write, internal, read}
+admin ⊃ {write, read}
 write ⊃ {read}
-internal ⊃ {read}
 ```
 
 - `admin` can access all endpoints
 - `write` can access read endpoints and write operations
-- `internal` can access read endpoints and Citadel callbacks
 - `read` can only query inbox metadata
+
+> **Trust model (D9)**: the state-transition endpoints are reachable by any
+> valid Bearer token — there is no role gate. In a well-deployed network they
+> are **not publicly addressable**: Citadel is the only legitimate caller and
+> authenticates to Barbican. If agent-grade mutual-auth or role gating is
+> ever needed, that is a separate, dedicated task — do not assume it exists
+> here.
 
 ### Configuration
 
 ```bash
-# Comma-separated list of accepted roles
+# Comma-separated list of accepted roles (external routes only)
 BARBICAN_REQUIRED_ROLES=read,write
-
-# Roles allowed to access internal endpoints
-BARBICAN_INTERNAL_ROLES=internal
 
 # Admin role (has all permissions)
 BARBICAN_ADMIN_ROLE=admin
 ```
+
+(`BARBICAN_INTERNAL_ROLES` does **not** exist.)
 
 ---
 
@@ -284,13 +299,13 @@ BARBICAN_ADMIN_ROLE=admin
 
 ### Citadel Service Account
 
-Citadel authenticates to Barbican using a service account:
+Citadel authenticates to Barbican using a service account (any valid Bearer
+token — no role requirement, D9):
 
 **Setup:**
 1. Create service account in Keycloak
-2. Assign `internal` role to service account
-3. Generate JWT token (or use client credentials grant)
-4. Store token in file referenced by `BARBICAN_CITADEL_SERVICE_TOKEN_FILE`
+2. Generate JWT token (or use client credentials grant)
+3. Store token in file referenced by `BARBICAN_CITADEL_SERVICE_TOKEN_FILE`
 
 **Token File:**
 ```bash
@@ -359,10 +374,10 @@ Response:
 
 ### Rate Limiting
 
-- **Per-IP Limits**: 100 requests/minute for external endpoints
-- **Per-Service Limits**: 1000 requests/minute for internal endpoints
 - **JWKS Refresh**: Max 1 refresh/minute to prevent abuse
-- **Failed Auth**: Exponential backoff after repeated failures
+- Edge rate limiting per IP / per service is **not implemented** (see
+  [api-reference.md](api-reference.md#rate-limiting)); enforce at an edge
+  proxy if needed.
 
 ### Audit Logging
 
@@ -513,12 +528,15 @@ pub async fn validate_auth<B>(
 | `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server URL |
 | `BARBICAN_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
 | `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Client ID for audience validation |
-| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(required)* | Client secret for service account |
-| `BARBICAN_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated) |
-| `BARBICAN_INTERNAL_ROLES` | `internal` | Roles for internal endpoints |
+| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(optional)* | Only checked for non-emptiness at startup (JWT validation is JWKS-based) |
+| `BARBICAN_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated, external routes) |
 | `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms |
 | `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval |
-| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to Citadel service token |
+| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to the Citadel service token used for Barbican → Citadel triggers |
+
+> `BARBICAN_INTERNAL_ROLES` does not exist (D9); the state-transition
+> endpoints require only a valid Bearer JWT. See
+> [Role-Based Access Control](#role-based-access-control).
 
 ### Example Configuration
 
@@ -535,7 +553,6 @@ export BARBICAN_JWKS_REFRESH_SECS="60"
 
 # Roles
 export BARBICAN_REQUIRED_ROLES="read,write"
-export BARBICAN_INTERNAL_ROLES="internal,admin"
 
 # Citadel Integration
 export BARBICAN_CITADEL_SERVICE_TOKEN_FILE="/etc/barbican/citadel.jwt"
