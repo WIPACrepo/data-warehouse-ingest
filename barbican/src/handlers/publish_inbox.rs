@@ -1,26 +1,34 @@
 use axum::{
-    Json,
     extract::{Path, State},
+    http::StatusCode,
+    Json,
 };
 use mongodb::bson::{doc, oid::ObjectId};
+use serde::Serialize;
 use std::sync::Arc;
 
 use crate::AppState;
-use common::{AppError, AppJson, InboxDB, InboxStatus};
-use serde::{Deserialize, Serialize};
+use common::{AppError, InboxStatus};
 
-/// Request body for publish operation (currently empty, reserved for future use)
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct PublishRequest {}
+/// Response body for inbox publish (202 Accepted)
+#[derive(Debug, Serialize)]
+pub struct PublishInboxResponse {
+    pub inbox_id: String,
+    pub status: String,
+    pub message: String,
+}
 
 /// Handler to publish an inbox
+///
+/// Takes no request body. Validates the inbox is `Ready`, transitions it to
+/// `Publishing`, fires the Citadel publish trigger asynchronously, and
+/// returns `202 Accepted`.
 pub async fn publish_inbox(
     State(state): State<Arc<AppState>>,
     Path(id): Path<ObjectId>,
-    Json(_input): Json<PublishRequest>,
-) -> Result<AppJson<InboxDB>, AppError> {
+) -> Result<(StatusCode, Json<PublishInboxResponse>), AppError> {
     // Find the inbox first
-    let mut inbox = state.store
+    let inbox = state.store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -56,34 +64,57 @@ pub async fn publish_inbox(
         ));
     }
 
-    // Update status to Publishing
-    inbox.status = InboxStatus::Publishing;
-    inbox.updated_at = chrono::Utc::now();
-
-    // Update in database
+    // Update status to Publishing (version-conditional optimistic lock)
     let update = doc! {
         "$set": {
             "status": "publishing",
             "updated_at": mongodb::bson::DateTime::now(),
+            "version": inbox.version + 1,
         }
     };
 
-    state.store
-        .update_one(doc! { "_id": id }, update)
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    crate::handlers::transition::apply_versioned_update(
+        &state.store,
+        &id,
+        inbox.version,
+        &update,
+    )
+    .await?;
 
-    // Trigger Citadel publish operation
+    // Trigger Citadel publish operation (fire-and-forget). On failure, apply
+    // the in-Barbican fallback (D2) so the inbox doesn't stay `Publishing`.
     if let Some(ref citadel) = state.citadel_client {
         let citadel_clone = citadel.clone();
-        let inbox_id_str = id.to_hex();
+        let store = state.store.clone();
         tokio::spawn(async move {
-            match citadel_clone.trigger_publish(&inbox_id_str).await {
+            match citadel_clone.trigger_publish(&id.to_hex()).await {
                 Ok(resp) => tracing::info!("Citadel publish triggered: job_id={}", resp.job_id),
-                Err(e) => tracing::error!("Failed to trigger Citadel publish: {}", e),
+                Err(e) => {
+                    tracing::error!("Failed to trigger Citadel publish: {}", e);
+                    if let Err(ferr) = crate::handlers::transition::apply_trigger_failure(
+                        &store,
+                        &id,
+                        "citadel_trigger_failed",
+                        &format!("Citadel publish trigger failed: {}", e),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "Failed to apply publish-trigger failure fallback: {}",
+                            ferr
+                        );
+                    }
+                }
             }
         });
     }
 
-    Ok(AppJson::new(inbox))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PublishInboxResponse {
+        inbox_id: id.to_hex(),
+        status: "publishing".to_string(),
+            message: "Inbox publish operation initiated".to_string(),
+        }),
+    ))
 }

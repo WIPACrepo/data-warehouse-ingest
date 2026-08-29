@@ -79,6 +79,7 @@
 
 pub mod clients;
 pub mod config;
+pub mod db;
 pub mod docs;
 pub mod handlers;
 pub mod middleware;
@@ -195,6 +196,12 @@ pub async fn serve(client: mongodb::Client, config: Config) {
 
     let collection: Collection<InboxDB> =
         db_collection(&client, &config.mongodb_database, &config.mongodb_inbox_collection);
+
+    // Ensure the unique warehouse_path index (P1.5, decision D3) so that
+    // concurrent duplicate-path creates are rejected with a 409, not just the
+    // fast in-process check. Idempotent; failures are logged, not fatal.
+    crate::db::ensure_inbox_indexes(&collection).await;
+
     let store = Arc::new(MongoInboxStore::new(collection));
 
     let state = Arc::new(AppState::new(store, config));

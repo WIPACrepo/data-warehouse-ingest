@@ -1,50 +1,71 @@
 use axum::extract::{Query, State};
 use mongodb::bson::doc;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::AppState;
 use common::{AppError, AppJson, InboxDB};
-use serde::Deserialize;
 
 /// Query parameters for listing inboxes
 #[derive(Debug, Deserialize)]
 pub struct ListInboxesQuery {
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: u64,
     #[serde(default)]
-    pub limit: Option<u64>,
-    #[serde(default)]
-    pub skip: Option<u64>,
+    pub offset: u64,
 }
 
-/// Handler to list all inboxes with optional filtering
+fn default_limit() -> u64 {
+    100
+}
+
+/// Paginated inbox list response envelope
+#[derive(Debug, Serialize)]
+pub struct ListInboxesResponse {
+    pub inboxes: Vec<InboxDB>,
+    pub total: u64,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
+}
+
+/// Handler to list all inboxes with optional filtering and pagination
 pub async fn list_inboxes(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListInboxesQuery>,
-) -> Result<AppJson<Vec<InboxDB>>, AppError> {
+) -> Result<AppJson<ListInboxesResponse>, AppError> {
     let mut filter = doc! {};
-    
+
     // Filter by status if provided
     if let Some(status) = params.status {
         filter.insert("status", status);
     }
 
+    let limit = params.limit.min(1000);
+
     let mut find_options = mongodb::options::FindOptions::default();
-    
-    // Apply limit if provided
-    if let Some(limit) = params.limit {
-        find_options.limit = Some(limit as i64);
-    }
-    
-    // Apply skip if provided
-    if let Some(skip) = params.skip {
-        find_options.skip = Some(skip);
-    }
+    find_options.limit = Some(limit as i64);
+    find_options.skip = Some(params.offset);
 
     let results = state.store
-        .find_many(filter, find_options)
+        .find_many(filter.clone(), find_options)
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
-    Ok(AppJson::new(results))
+    let total = state.store
+        .count(filter)
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+
+    let has_more = params.offset + (results.len() as u64) < total;
+
+    Ok(AppJson::new(ListInboxesResponse {
+        inboxes: results,
+        total,
+        limit,
+        offset: params.offset,
+        has_more,
+    }))
 }

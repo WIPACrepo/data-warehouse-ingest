@@ -34,7 +34,12 @@ mod tests {
             .expect_update_one()
             .with(predicate::always(), predicate::always())
             .times(1)
-            .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+            .returning(|_, _| {
+                let mut res = mongodb::results::UpdateResult::default();
+                res.matched_count = 1;
+                res.modified_count = 1;
+                Ok(res)
+            });
 
         let store = Arc::new(mock_store);
         let state = create_test_state(store.clone());
@@ -47,14 +52,13 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -80,8 +84,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -115,8 +118,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -150,8 +152,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -187,8 +188,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -221,8 +221,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -245,8 +244,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/inbox/invalid-id/publish")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("{}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await

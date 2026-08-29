@@ -127,7 +127,7 @@ async fn test_full_inbox_lifecycle() {
         .await
         .unwrap();
 
-    assert_eq!(create_response.status(), StatusCode::OK);
+    assert_eq!(create_response.status(), StatusCode::ACCEPTED);
 
     // Step 2: Retrieve inbox
     let get_response = app
@@ -189,7 +189,12 @@ async fn test_delete_inbox() {
         .expect_update_one()
         .with(predicate::always(), predicate::always())
         .times(1)
-        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+        .returning(|_, _| {
+            let mut res = mongodb::results::UpdateResult::default();
+            res.matched_count = 1;
+            res.modified_count = 1;
+            Ok(res)
+        });
 
     let store = Arc::new(mock_store);
     let state = create_test_state(store.clone());
@@ -208,7 +213,7 @@ async fn test_delete_inbox() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 }
 
 /// Test publish operation
@@ -247,7 +252,12 @@ async fn test_publish_inbox() {
         .expect_update_one()
         .with(predicate::always(), predicate::always())
         .times(1)
-        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+        .returning(|_, _| {
+            let mut res = mongodb::results::UpdateResult::default();
+            res.matched_count = 1;
+            res.modified_count = 1;
+            Ok(res)
+        });
 
     let store = Arc::new(mock_store);
     let state = create_test_state(store.clone());
@@ -267,5 +277,5 @@ async fn test_publish_inbox() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 }

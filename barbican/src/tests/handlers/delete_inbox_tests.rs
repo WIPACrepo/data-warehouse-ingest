@@ -34,7 +34,12 @@ mod tests {
             .expect_update_one()
             .with(predicate::always(), predicate::always())
             .times(1)
-            .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+            .returning(|_, _| {
+                let mut res = mongodb::results::UpdateResult::default();
+                res.matched_count = 1;
+                res.modified_count = 1;
+                Ok(res)
+            });
 
         let store = Arc::new(mock_store);
         let state = create_test_state(store.clone());
@@ -53,7 +58,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
