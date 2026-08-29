@@ -144,8 +144,8 @@ Unit tests live in `common/src/tests/`, one file per source module, mirroring `s
 common/src/tests/
 ├── mod.rs               # declares the test submodules
 ├── adapters_tests.rs    # MongoInboxStore type/behavior checks
+├── auth/                # auth middleware/claims/JWKS tests
 ├── config_tests.rs      # logging/shutdown utilities
-├── config_tests_tests.rs
 ├── db_tests.rs          # db helpers (some conditionally run)
 ├── error_tests.rs       # AppError/AppJson
 ├── metrics_tests.rs     # metrics app/router

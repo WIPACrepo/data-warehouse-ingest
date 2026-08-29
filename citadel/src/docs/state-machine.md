@@ -104,12 +104,13 @@ Where: [`handlers/publish_inbox.rs`](../src/handlers/publish_inbox.rs) and [`han
 
 1. `JobDB::new` creates the record with `status = Queued`
 2. `jobs_collection.insert_one(&job)`
-3. Barbican inbox transition to `publishing` / `deleting`
-4. `app_state.executor.submit(&job)` returns an `executor_id`
-5. `job.executor.executor_id = Some(executor_id)`; `job.status = Running`
-6. `jobs_collection.replace_one(...)`
+3. Quota check: `count_documents` over `[queued, running, cancelling]` jobs of the same type; at/above `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` (10) / `CITADEL_QUEUE_DELETE_RATE_LIMIT` (20) → roll back the JobDB and return `429 Too Many Requests` (D8)
+4. Barbican inbox transition to `publishing` / `deleting`
+5. `app_state.executor.submit(&job)` returns an `executor_id`
+6. `job.executor.executor_id = Some(executor_id)`; `job.status = Running`
+7. `jobs_collection.replace_one(...)`
 
-> **Note**: `JobProcessor` (`jobs/processor.rs`) also implements permit acquisition + `executor.submit`; the handlers currently perform submission directly. The `JobQueue` semaphores (`queue_publish_rate_limit` / `queue_delete_rate_limit`) bound concurrency per type.
+> **Note**: Queue admission is enforced by a **MongoDB-backed in-flight count** (no semaphore): the `JobQueue`/`JobProcessor` modules were removed (they had no callers). The counter is the source of truth for both submit paths.
 
 ### Running → Completed
 
@@ -118,7 +119,9 @@ Where: [`handlers/job_callback.rs`](../src/handlers/job_callback.rs).
 - Callback received with `status = "completed"` and `result.success == true`
 - `job.status = Completed`
 - `job.result = Some(JobResult { success, files_transferred, total_bytes, completed_at })`
-- **Planned**: notify catalog (must succeed) → notify LTA. Currently `NoOp`/commented in the callback handler.
+- Terminal JobDB write is **optimistic-locked** (`{job_id, version}` filter + `$inc version`) so a delayed/stale callback can't overwrite a newer version (P2.3)
+- Then: notify catalog → (if catalog succeeded) notify LTA (`notify_errors_total{target}` + `errors` push on failure)
+- Finally: forward the terminal state to Barbican (`publish_complete` / `delete_complete`) — non-fatal, metered (P1.2, D1)
 
 ### Running → Failed
 
@@ -133,7 +136,7 @@ Where: [`handlers/job_callback.rs`](../src/handlers/job_callback.rs).
 ### Running → TimedOut
 
 - Callback with `status = "timed_out"` → `job.status = TimedOut`
-- **Planned**: background poller detects K8s jobs exceeding `CITADEL_JOB_MAX_DURATION_SECS` (loop currently logs only)
+- The `JobStatusPoller` also detects K8s jobs exceeding `CITADEL_JOB_MAX_DURATION_SECS`, marks them `timed_out` (with the same optimistic-locked terminal write), and re-issues the matching Barbican failure transition so the inbox is never left mid-publish/delete (P1.2 self-healing).
 
 ### Running → Cancelling → Cancelled
 
@@ -155,12 +158,14 @@ Jobs are tagged with a type in `JobType` (from [`jobs/types.rs`](../src/jobs/typ
 | `PublishInbox { inbox_id, notify_catalog, notify_lta }` | publish | Transfer inbox files to protected warehouse; then notify catalog + LTA |
 | `DeleteInbox { inbox_id }` | delete | Remove the inbox directory and clean up |
 
-The `queue.rs` `JobQueue` gives publish and delete jobs **independent** concurrency limits:
+Queue admission is enforced by a **MongoDB-backed in-flight count** (no semaphore) per job type:
 
 | Queue | Limiter | Env Override |
 |-------|---------|--------------|
-| Publish | publish semaphore | `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` (default 10) |
-| Delete | delete semaphore | `CITADEL_QUEUE_DELETE_RATE_LIMIT` (default 20) |
+| Publish | in-flight count of `[queued, running, cancelling]` publish jobs | `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` (default 10) |
+| Delete | in-flight count of `[queued, running, cancelling]` delete jobs | `CITADEL_QUEUE_DELETE_RATE_LIMIT` (default 20) |
+
+When the count is at/above the limit the handler returns `429 Too Many Requests` and rolls back the just-inserted JobDB (D8).
 
 ---
 

@@ -117,8 +117,8 @@ common/src/
 ├── tests/               # Unit tests (per-module, mirroring src/)
 │   ├── mod.rs
 │   ├── adapters_tests.rs
+│   ├── auth/            # auth middleware/claims/JWKS tests
 │   ├── config_tests.rs
-│   ├── config_tests_tests.rs
 │   ├── db_tests.rs
 │   ├── error_tests.rs
 │   ├── metrics_tests.rs

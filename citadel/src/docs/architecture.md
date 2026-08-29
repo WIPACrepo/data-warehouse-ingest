@@ -36,7 +36,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 |---------|-------|-------|
 | Inbox metadata CRUD | Barbican | Single source of truth for inbox state |
 | Inbox MongoDB writes | Barbican | Citadel never writes to the inbox collection directly |
-| Inbox reads | Both | Citadel reads via the Barbican API and/or MongoDB |
+| Inbox reads | Both | Citadel reads metadata from the shared MongoDB (`inboxes`, read-only); state transitions via the Barbican API |
 | Inbox state transitions | Barbican (via API) | Citadel calls Barbican to transition state |
 | Physical directories | Citadel | Inbox base path, protected base path |
 | Jobs collection (`jobs`) | Citadel | Citadel-owned collection |
@@ -179,14 +179,14 @@ citadel/src/
 ├── job_main.rs          # citadel-job binary entry point (transfer worker + callback)
 ├── lib.rs               # Library exports and AppState (shared dependencies)
 ├── config.rs            # CitadelConfig (+ nested InboxConfig): CITADEL_* environment loading
-├── error.rs             # Error types using common::AppError, Result, StatusCode mapping, sanitized IntoResponse
+├── error.rs             # Thin re-export of common::AppError (+ Result alias)
 ├── db.rs                # MongoDB client setup, collection helpers, collection name constants
 ├── models.rs            # JobDB, JobError, JobResult, CallbackNonceDB, FileInfo, TransferResult
 ├── metrics.rs           # CitadelMetrics: Prometheus registry + counters/histogram/gauge
 ├── secret_reloader.rs   # Callback secret file loading + notify-based hot reload
-├── middleware/          # Axum middleware
+├── middleware/          # Re-exports (auth lives in common::auth)
 │   ├── mod.rs           # Module exports
-│   ├── auth.rs          # auth_middleware: JWT extraction, validation, role gate
+│   ├── auth.rs          # Re-exports common::auth_middleware / ClaimsExtractor
 │   └── logging.rs       # Request logging middleware
 ├── handlers/            # HTTP handlers
 │   ├── mod.rs           # Module exports
@@ -197,13 +197,12 @@ citadel/src/
 │   ├── list_jobs.rs     # GET /api/v1/jobs
 │   ├── cancel_job.rs    # POST /api/v1/job/{job_id}/cancel
 │   ├── job_callback.rs  # POST /api/v1/job/callback (secret + timestamp + nonce validation)
+│   ├── job_progress.rs  # POST /api/v1/job/progress (P4.1: progress forwarding → Barbican)
 │   ├── health.rs        # GET /health
 │   └── ready.rs         # GET /ready
 ├── jobs/                # Job model and execution
 │   ├── mod.rs           # Module exports
 │   ├── types.rs         # JobType, JobStatus, JobProgress, JobExecutorInfo, JobStatusDetail, Job
-│   ├── queue.rs         # JobQueue: publish/delete semaphores with rate limits
-│   ├── processor.rs     # JobProcessor: permit acquisition + executor submission
 │   └── executor/
 │       ├── mod.rs       # JobExecutor trait (submit/cancel/status)
 │       ├── kubernetes.rs# KubernetesExecutor: K8s Job spec + submit/cancel/status
@@ -214,14 +213,14 @@ citadel/src/
 │   ├── transfer.rs      # Recursive transfer engine: lock → scan → collect (symlink-safe) →
 │   │                    #   parallel copy+verify → atomic commit → cleanup; audit events
 │   ├── checksum.rs      # SHA-512 checksum utilities
-│   └── progress.rs      # ProgressTracker: in-job progress state (per-job process)
+│   └── progress.rs      # ProgressTracker: wired into citadel-job + submitted through Citadel (P4.1)
 ├── integrations/        # External integrations
 │   ├── mod.rs           # Module exports
-│   ├── barbican.rs      # BarbicanClient: transition_inbox_state (retry/backoff); inbox reads via MongoDB
+│   ├── barbican.rs      # BarbicanClient: state transitions (retry/backoff + circuit breaker); InboxTransitioner trait
 │   ├── catalog.rs       # CatalogNotifier trait + NoOp/HTTP implementations
 │   └── lta.rs           # LtaNotifier trait + NoOp/HTTP implementations
 ├── polling/             # Background reconciliation
-│   └── job_status.rs    # JobStatusPoller: K8s job status, timeout detection, reconciliation
+│   └── job_status.rs    # JobStatusPoller: active; K8s status, timeouts, terminal-state self-healing
 └── docs/                # This documentation directory
 ```
 
@@ -337,13 +336,16 @@ POST /api/v1/inbox/{id}/publish (or delete)
 Validate JWT (write role)
   │
   ▼
-Fetch inbox metadata (Barbican API)
+Read inbox metadata (shared MongoDB, `inboxes` collection, read-only)
   │
   ▼
 Validate state (inbox_path present)
   │
   ▼
 Create JobDB record (jobs collection)  ──► status=Queued
+  │
+  ▼
+Quota check (MongoDB in-flight count)  ──► 429 if at/above limit (D8)
   │
   ▼
 Transition inbox state (Barbican API)   ──► publishing/deleting

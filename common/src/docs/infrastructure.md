@@ -28,11 +28,14 @@ pub trait InboxStore: Send + Sync {
     async fn find_one(&self, filter: Document) -> Result<Option<InboxDB>, mongodb::error::Error>;
     async fn find_many(&self, filter: Document, options: FindOptions)
         -> Result<Vec<InboxDB>, mongodb::error::Error>;
+    async fn count(&self, filter: Document) -> Result<u64, mongodb::error::Error>;
     async fn update_one(&self, filter: Document, update: Document)
         -> Result<UpdateResult, mongodb::error::Error>;
     async fn delete_one(&self, filter: Document) -> Result<DeleteResult, mongodb::error::Error>;
 }
 ```
+
+`count` backs Barbican's paginated `GET /api/v1/inbox` envelope (`total` + `has_more` via `count_documents`).
 
 ### The MongoDB adapter
 
@@ -59,37 +62,67 @@ The trait is the seam that keeps Barbican's handler logic testable in-process (m
 
 ### `AppError`
 
-Defined in `common/src/error.rs`, `AppError` is the unified error enum that both services convert into HTTP responses. Variants cover JSON rejection and domain errors:
+Defined in `common/src/error.rs`, `AppError` is the unified error enum that both services convert into HTTP responses. Variants cover JSON rejection, domain, job, callback, storage, Kubernetes, database, auth, and rate-limiting errors:
 
 ```rust
 pub enum AppError {
     JsonRejection(axum::extract::rejection::JsonRejection),
-    InboxNotFound(String),
-    InboxNotDeletable(String),
-    InboxAlreadyPublishing(String),
-    InvalidPublishParameters(String),
+    // Inbox / domain
+    InboxNotFound(String), InboxNotDeletable(String),
+    InboxAlreadyPublishing(String), InvalidPublishParameters(String),
+    InvalidStateTransition(String), ValidationError(String), Conflict(String),
+    // Jobs
+    JobNotFound(String), JobTimeout(String),
+    // Callbacks
+    InvalidCallbackSecret, CallbackTimestampExpired, CallbackNonceReused,
+    // Storage
+    StorageError(String), FileNotFound(String),
+    FileTransferFailed(String), ChecksumMismatch(String),
+    // Kubernetes
+    KubernetesError(String), K8sApiError(String),
+    // Database
     DatabaseError(String),
-    ValidationError(String),
-    Conflict(String),
-    InvalidStateTransition(String),
+    // Auth
+    AuthError(String), Forbidden(String),
+    // Infrastructure
+    BadGateway(String), ServiceUnavailable(String), InternalError(String),
+    // Rate limiting
+    TooManyRequests(String),
 }
 ```
 
-The `IntoResponse` impl maps each variant to an HTTP status and a JSON body of shape `{ "message": "..." }`:
+The `IntoResponse` impl maps each variant to an HTTP status and a **JSON body of shape `{ "error": "...", "message": "..." }`** where `error` is a lowercase snake_case code and `message` is a human-readable string (there is no `details` field; client errors carry only what the doc contract promises):
 
-| Variant | HTTP Status | Message |
-|---------|-------------|---------|
-| `JsonRejection` | (from rejection) | rejection body text |
-| `InboxNotFound` | `404 Not Found` | "Inbox not found" |
-| `InboxNotDeletable` | `409 Conflict` | "Inbox cannot be deleted" |
-| `InboxAlreadyPublishing` | `409 Conflict` | "Inbox is already publishing" |
-| `InvalidPublishParameters` | `400 Bad Request` | "Invalid publish parameters" |
-| `DatabaseError` | `500 Internal Server Error` | "Database error: {e}" |
-| `ValidationError` | `400 Bad Request` | variant message |
-| `Conflict` | `409 Conflict` | variant message |
-| `InvalidStateTransition` | `422 Unprocessable Entity` | variant message |
+| Variant | HTTP Status | `error` code |
+|---------|-------------|--------------|
+| `JsonRejection` | (from rejection) | `invalid_json` |
+| `InboxNotFound` | `404 Not Found` | `inbox_not_found` |
+| `InboxNotDeletable` | `409 Conflict` | `inbox_not_deletable` |
+| `InboxAlreadyPublishing` | `409 Conflict` | `inbox_already_publishing` |
+| `InvalidPublishParameters` | `400 Bad Request` | `invalid_publish_parameters` |
+| `InvalidStateTransition` | `422 Unprocessable Entity` | `invalid_state_transition` |
+| `ValidationError` | `400 Bad Request` | `validation_error` |
+| `Conflict` | `409 Conflict` | `conflict` |
+| `JobNotFound` | `404 Not Found` | `job_not_found` |
+| `JobTimeout` | `504 Gateway Timeout` | `job_timeout` |
+| `StorageError` | `500 Internal Server Error` | `storage_error` |
+| `FileNotFound` | `404 Not Found` | `file_not_found` |
+| `FileTransferFailed` | `500 Internal Server Error` | `file_transfer_failed` |
+| `ChecksumMismatch` | `500 Internal Server Error` | `checksum_mismatch` |
+| `KubernetesError` | `503 Service Unavailable` | `kubernetes_error` |
+| `K8sApiError` | `503 Service Unavailable` | `k8s_api_error` |
+| `InvalidCallbackSecret` | `401 Unauthorized` | `invalid_callback_secret` |
+| `CallbackTimestampExpired` | `401 Unauthorized` | `callback_timestamp_expired` |
+| `CallbackNonceReused` | `401 Unauthorized` | `callback_nonce_reused` |
+| `DatabaseError` | `500 Internal Server Error` | `database_error` |
+| `AuthError` | `401 Unauthorized` | `auth_error` |
+| `Forbidden` | `403 Forbidden` | `forbidden` |
+| `BadGateway` | `502 Bad Gateway` | `bad_gateway` |
+| `ServiceUnavailable` | `503 Service Unavailable` | `service_unavailable` |
+| `InternalError` | `500 Internal Server Error` | `internal_error` |
+| `TooManyRequests` | `429 Too Many Requests` | `too_many_requests` |
 
-Full error details are logged at `debug` level; clients see only the sanitized message.
+Server errors are logged at `error!`, client errors at `warn!`, everything else at `debug!`; clients see only the sanitized `{error, message}` body.
 
 ### `AppJson`
 
@@ -131,18 +164,21 @@ Returns a future that completes on SIGINT (Ctrl+C) or SIGTERM (Unix), logging "S
 
 ## Database Helpers
 
-Defined in `common/src/db.rs`:
+Defined in `common/src/db.rs`. All helpers take **explicit arguments** — they do not read environment variables:
 
 ```rust
-pub async fn db_setup() -> Client;        // connect + ping, verify reachability
-pub fn db_database(client: Client) -> Database;   // Database for DATABASE_NAME
-pub fn db_collection<T: Send + Sync>(client: Client, name: &str) -> Collection<T>;
+pub async fn db_setup(uri: &str, name: &str) -> Result<Client, AppError>;
+pub async fn db_setup_with_shutdown<S, F>(uri: &str, name: &str, shutdown: S) -> Result<Client, AppError>
+    where S: Fn() -> F + Send + Sync, F: Future<Output = ()> + Send + 'static;
+pub fn db_database(client: &Client, name: &str) -> Database;
+pub fn db_collection<T: Send + Sync>(client: &Client, db_name: &str, collection_name: &str) -> Collection<T>;
 ```
 
-- `db_setup` reads `DATABASE_URL` (default `mongodb://localhost:27017`) and `DATABASE_NAME` (default `data-warehouse-ingress`), connects, and pings the database to confirm it is reachable.
-- `db_database`/`db_collection` resolve the database/collection from the same `DATABASE_NAME` env var, so both services address the same database unless configured otherwise.
+- `db_setup(uri, name)` connects and pings the database to confirm it is reachable; both services pass their `mongodb_uri`/`mongodb_database` config. `db_setup_with_shutdown` additionally allows the connect/ping to be interrupted by a shutdown signal (used by Barbican's `main.rs`).
+- `db_database`/`db_collection` resolve a `Database`/`Collection<T>` from an explicit name, so both services address the same shared `inboxes` collection by passing the same database name.
+- The `common/src/tests/db_tests.rs` unit tests read their own environment for the fixtures they use — that is test infrastructure, not part of the library's API contract.
 
-Barbican uses these in `main.rs` (`db_setup`) and `serve` (`db_collection`). Citadel's `db.rs` builds its `Collection<common::models::InboxDB>` for the shared `inboxes` collection.
+Barbican calls `db_setup_with_shutdown` in `main.rs` and `db_collection` in `serve`; Citadel's `db.rs` builds its `Collection<common::models::InboxDB>` for the shared `inboxes` collection the same way.
 
 ---
 
@@ -151,10 +187,11 @@ Barbican uses these in `main.rs` (`db_setup`) and `serve` (`db_collection`). Cit
 Defined in `common/src/metrics.rs`, built on `axum-prometheus`:
 
 - `metrics_app()` — returns an `axum::Router` with a `GET /metrics` endpoint rendering Prometheus metrics (with pre-configured duration buckets for `http_requests_duration_seconds`).
-- `start_metrics_server()` — binds `127.0.0.1:3001` and serves the metrics app **on a separate port** from the main API, spawning it as a background task.
+- `start_metrics_server(port)` — binds **`0.0.0.0:{port}`** and serves the metrics app on a separate port from the main API, spawning it as a background task. The caller supplies the port from its service config (Barbican `prometheus_port` 9091, Citadel 9090); the server is reachable on all interfaces, not just loopback.
+- `start_metrics_server_with_router(port, router)` — same binding (also `0.0.0.0:{port}`) but serves a caller-provided router. Services with their own Prometheus registry (Citadel's `CitadelMetrics`, Barbican's `BarbicanMetrics`) pass a `/metrics` router that renders it; `start_metrics_server` is the thin wrapper that uses `metrics_app()`.
 - `router_prometheus(router)` — adds the `PrometheusMetricLayer` to a router.
 
-Services call `common::start_metrics_server()` for the dedicated metrics port and/or wrap their main router with `router_prometheus`.
+Services call `common::start_metrics_server_with_router(port, own_router)` for the dedicated metrics port (so their registry is rendered) and/or wrap their main router with `router_prometheus`.
 
 ---
 
