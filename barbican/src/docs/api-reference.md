@@ -102,11 +102,16 @@ Content-Type: application/json
 ```json
 {
   "inbox_id": "507f1f77bcf86cd799439011",
-  "status": "creating",
-  "warehouse_path": "/data/warehouse/example",
+  "status": "active",
   "message": "Inbox creation initiated"
 }
 ```
+
+The record is inserted in the `active` state and the Citadel `create` trigger
+fires asynchronously (fire-and-forget). A duplicate `warehouse_path` is
+rejected: the fast in-process check returns `400`, and the unique index on
+`warehouse_path` turns a concurrent race (or a soft-deleted duplicate) into a
+`409 Conflict` (P1.5/D3).
 
 ---
 
@@ -120,7 +125,7 @@ GET /api/v1/inbox/{id}
 Authorization: Bearer <jwt_token>
 ```
 
-**Required Role:** `read`, `write`, `internal`, or `admin`
+**Required Role:** `read`, `write`, or `admin`
 
 **Response (200 OK):**
 ```json
@@ -148,22 +153,27 @@ GET /api/v1/inbox
 Authorization: Bearer <jwt_token>
 ```
 
-**Required Role:** `read`, `write`, `internal`, or `admin`
+**Required Role:** `read`, `write`, or `admin`
 
 **Query Parameters:**
 - `status` - Filter by status (optional)
 - `limit` - Maximum results (default: 100)
 - `offset` - Pagination offset (default: 0)
 
-**Response (200 OK):**
+**Response (200 OK) — pagination envelope:**
 ```json
 {
-  "inboxes": [...],
+  "inboxes": [ ... ],
   "total": 50,
   "limit": 100,
-  "offset": 0
+  "offset": 0,
+  "has_more": false
 }
 ```
+
+`total` is the count matching the same `status` filter (`count_documents`);
+`has_more = offset + len(inboxes) < total`. `offset` replaces the previously
+documented `skip` parameter (P1.4).
 
 ---
 
@@ -202,6 +212,9 @@ Authorization: Bearer <jwt_token>
 
 **Required Role:** `write` or `admin`
 
+**No request body** — the publish operation takes no payload (the request
+must simply be `POST`ed; `Content-Type` is not required).
+
 **Response (202 Accepted):**
 ```json
 {
@@ -215,9 +228,18 @@ Authorization: Bearer <jwt_token>
 
 ## Internal API Endpoints
 
-Internal endpoints follow the action pattern: `{operation}/{action}` where action is one of `start`, `progress`, `complete`, `failure`.
+Internal endpoints follow the action pattern: `{operation}/{action}` where
+action is one of `start`, `progress`, `complete`, `failure`. They are invoked
+**only by Citadel** (through `Citadel`'s `BarbicanClient`) as part of the D9
+coordination model — Barbican's external routes never call them.
 
-**Required Role:** `internal` or `admin`
+**Authentication:** the generic auth layer (valid Bearer JWT); there is **no
+`internal` role gate** — trust is delegated to Citadel, which is the only
+caller in a well-deployed network. (An agent-grade mutual-auth boundary is a
+separate, dedicated task; see [Authentication](authentication.md).)
+
+All actions validate the expected prior state and use optimistic locking
+(`{_id, version}`), so a stale/duplicate call returns `409 Conflict`.
 
 ### Create Operation
 
@@ -228,10 +250,17 @@ POST /api/v1/inbox/{id}/create/start
 
 Transition: `Active` → `Creating`
 
+Request Body:
+```json
+{ "job_id": "uuid-string" }
+```
+
 #### Create Progress
 ```http
 POST /api/v1/inbox/{id}/create/progress
 ```
+
+Transition: `Creating` → `Creating` (progress field updated)
 
 Request Body:
 ```json
@@ -262,71 +291,238 @@ Request Body:
 
 #### Create Failure
 ```http
-POST /api/v1/inbox/{id}/create failure
+POST /api/v1/inbox/{id}/create/failure
 ```
 
 Transition: `Creating` → `Failed`
 
-Request---
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "error_code": "citadel_trigger_failed",
+  "error_message": "Citadel create trigger failed",
+  "total_bytes": 0,
+  "transferred_bytes": 0
+}
+```
 
+---
+
+### Publish Operation
+
+#### Start Publish
+```http
+POST /api/v1/inbox/{id}/publish/start
+```
+
+Transition: `Ready` → `Publishing`
+
+Request Body:
+```json
+{ "job_id": "uuid-string" }
+```
+
+#### Publish Progress
+```http
+POST /api/v1/inbox/{id}/publish/progress
+```
+
+Transition: `Publishing` → `Publishing` (progress field updated)
+
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "phase": "transferring",
+  "total_files": 100,
+  "processed_files": 42,
+  "total_bytes": 1048576,
+  "transferred_bytes": 524288
+}
+```
+
+#### Publish Complete
+```http
+POST /api/v1/inbox/{id}/publish/complete
+```
+
+Transition: `Publishing` → `Published`
+
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "files_transferred": 420,
+  "total_bytes": 1048576,
+  "protected_path": "/data/protected/507f1f77bcf86cd799439011"
+}
+```
+
+> `protected_path` is **accepted but unused** (D11): Barbican neither
+> validates nor stores it — it exists only for shape-compat with Citadel's
+> `BarbicanClient`. The final warehouse path is Citadel's
+> `CITADEL_PROTECTED_BASE_PATH` decision.
+
+#### Publish Failure
+```http
+POST /api/v1/inbox/{id}/publish/failure
+```
+
+Transition: `Publishing` → `Failed`
+
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "error_code": "publish_failed",
+  "error_message": "Publish job reported failure",
+  "files_transferred": 10,
+  "total_bytes": 1048576
+}
+```
+
+---
+
+### Delete Operation
+
+#### Start Delete
+```http
+POST /api/v1/inbox/{id}/delete/start
+```
+
+Transition: `Ready`/`Failed` → `Deleting`
+
+Request Body:
+```json
+{ "job_id": "uuid-string" }
+```
+
+#### Delete Progress
+```http
+POST /api/v1/inbox/{id}/delete/progress
+```
+
+Transition: `Deleting` → `Deleting` (progress field updated)
+
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "phase": "deleting",
+  "total_bytes": 1048576,
+  "deleted_bytes": 524288
+}
+```
+
+#### Delete Complete
+```http
+POST /api/v1/inbox/{id}/delete/complete
+```
+
+Transition: `Deleting` → `Deleted`
+
+Request Body:
+```json
+{ "job_id": "uuid-string" }
+```
+
+#### Delete Failure
+```http
+POST /api/v1/inbox/{id}/delete/failure
+```
+
+Transition: `Deleting` → `Failed`
+
+Request Body:
+```json
+{
+  "job_id": "uuid-string",
+  "error_code": "delete_failed",
+  "error_message": "Delete job reported failure",
+  "total_bytes": 0,
+  "deleted_bytes": 0
+}
+```
+
+---
 ## Error Responses
 
 All errors follow a consistent JSON format:
 
 ```json
 {
-  "error": "ERROR_CODE",
-  "message": "Human-readable description",
-  "details": {}
+  "error": "conflict",
+  "message": "Inbox state was modified concurrently"
 }
 ```
 
+`error` is a lowercase snake_case code; `message` is human-readable. There is
+no `details` field. The body is produced by `common::AppError::IntoResponse`
+(see [common infrastructure](../../../common/src/docs/infrastructure.md)).
+
 ### HTTP Status Codes
 
-| Code | Meaning | Example |
-|------|---------|---------|
-| 400 | Bad Request | Invalid JSON, missing required fields |
-| 401 | Unauthorized | Missing or invalid JWT |
-| 403 | Forbidden | Insufficient role permissions |
-| 404 | Not Found | Inbox ID doesn't exist |
-| 409 | Conflict | Optimistic lock failure, duplicate inbox |
-| 422 | Unprocessable Entity | Invalid state transition |
-| 429 | Too Many Requests | Rate limit exceeded |
-| 500 | Internal Server Error | Unexpected server error |
-| 502 | Bad Gateway | Citadel API unavailable |
-| 503 | Service Unavailable | MongoDB down, service starting |
+| Code | Meaning | `error` code |
+|------|---------|--------------|
+| 400 | Bad Request | `invalid_json`, `validation_error`, `invalid_publish_parameters` |
+| 401 | Unauthorized | `auth_error`, `invalid_callback_secret` |
+| 403 | Forbidden | `forbidden` |
+| 404 | Not Found | `inbox_not_found` |
+| 409 | Conflict | `conflict` (optimistic lock / duplicate warehouse path) |
+| 422 | Unprocessable Entity | `invalid_state_transition` |
+| 429 | Too Many Requests | `too_many_requests` (queue saturation at Citadel) |
+| 500 | Internal Server Error | `internal_error`, `database_error`, etc. |
+| 502 | Bad Gateway | `bad_gateway` (Citadel API unavailable) |
+| 503 | Service Unavailable | `service_unavailable` (MongoDB down, JWKS unavailable) |
 
 ### Example Error Responses
 
-**401 Unauthorized:**
+**401 Unauthorized** (missing/invalid token, emitted by `common::auth_middleware`):
 ```json
 {
-  "error": "INVALID_TOKEN",
-  "message": "JWT token signature verification failed"
+  "error": "auth_error",
+  "message": "Missing or invalid Authorization header"
 }
 ```
 
 **403 Forbidden:**
 ```json
 {
-  "error": "INSUFFICIENT_ROLE",
-  "message": "Required role 'write' not found in token"
+  "error": "forbidden",
+  "message": "Missing required role for service 'barbican'"
 }
 ```
 
 **409 Conflict:**
 ```json
 {
-  "error": "OPTIMISTIC_LOCK_FAILURE",
-  "message": "Inbox was modified concurrently, please retry"
+  "error": "conflict",
+  "message": "Inbox state was modified concurrently"
 }
 ```
 
 **422 Unprocessable Entity:**
 ```json
 {
-  "error": "INVALID_STATE_TRANSITION",
+  "error": "invalid_state_transition",
   "message": "Cannot publish inbox in state 'creating', expected 'ready'"
+}
+```
+
+**429 Too Many Requests:**
+```json
+{
+  "error": "too_many_requests",
+  "message": "Queue rate limit reached; try again later"
+}
+```
+
+**503 Service Unavailable:**
+```json
+{
+  "error": "service_unavailable",
+  "message": "JWT verification temporarily unavailable"
 }
 ```
 
@@ -334,20 +530,13 @@ All errors follow a consistent JSON format:
 
 ## Rate Limiting
 
-Rate limits are applied per endpoint and per client:
-
-| Endpoint Type | Limit | Window |
-|--------------|-------|--------|
-| External API | 100 requests | 1 minute per IP |
-| Internal API | 1000 requests | 1 minute per service account |
-| Health/Ready | No limit | - |
-
-Rate limit headers are included in responses:
-```http
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 95
-X-RateLimit-Reset: 1640000000
-```
+- **Queue saturation (Citadel, enforced)**: publish/delete submissions beyond
+  `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` / `CITADEL_QUEUE_DELETE_RATE_LIMIT`
+  return `429 Too Many Requests` (`too_many_requests`) from the Citadel
+  handlers (calls into the inbox's `publish`/`delete` endpoints).
+- **Edge rate limiting (NOT implemented)**: no per-IP/per-client throttling
+  (`tower-governor` is not wired) and no `X-RateLimit-*` headers are emitted.
+  If an edge proxy is used, enforce limits there.
 
 ---
 
