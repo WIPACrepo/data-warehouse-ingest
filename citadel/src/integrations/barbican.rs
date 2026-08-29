@@ -7,7 +7,96 @@ use crate::config::CitadelConfig;
 use crate::error::{AppError, Result};
 use common::models::InboxDB;
 use mongodb::bson::oid::ObjectId;
+use std::sync::Arc;
 use tracing::{error, warn};
+
+/// Trait abstracting the Barbican state-coordination endpoints.
+///
+/// Extracted from [`BarbicanClient`] so callers (notably the job callback
+/// handler and the status poller) can be unit-tested against a mock without a
+/// live HTTP client. All methods mirror the corresponding
+/// `POST /api/v1/inbox/{id}/{operation}/{action}` Barbican endpoints and
+/// return the updated `InboxDB`.
+#[async_trait::async_trait]
+#[cfg_attr(test, mockall::automock)]
+pub trait InboxTransitioner: Send + Sync {
+    /// `create/start` — Active -> Creating
+    async fn create_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB>;
+    /// `create/progress`
+    async fn create_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB>;
+    /// `create/complete` — Creating -> Ready
+    async fn create_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        inbox_path: &str,
+    ) -> Result<InboxDB>;
+    /// `create/failure` — Creating -> Failed
+    async fn create_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB>;
+    /// `publish/start` — Ready -> Publishing
+    async fn publish_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB>;
+    /// `publish/progress`
+    async fn publish_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_files: u64,
+        processed_files: u64,
+        total_bytes: u64,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB>;
+    /// `publish/complete` — Publishing -> Published
+    async fn publish_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        files_transferred: u64,
+        total_bytes: u64,
+        protected_path: &str,
+    ) -> Result<InboxDB>;
+    /// `publish/failure` — Publishing -> Failed
+    async fn publish_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB>;
+    /// `delete/start` — Ready/Failed -> Deleting
+    async fn delete_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB>;
+    /// `delete/progress`
+    async fn delete_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_bytes: u64,
+        deleted_bytes: u64,
+    ) -> Result<InboxDB>;
+    /// `delete/complete` — Deleting -> Deleted
+    async fn delete_complete(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB>;
+    /// `delete/failure` — Deleting -> Failed
+    async fn delete_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB>;
+}
 
 /// Barbican API client
 pub struct BarbicanClient {
@@ -59,6 +148,194 @@ struct PublishCompleteRequest {
     files_transferred: u64,
     total_bytes: u64,
     protected_path: String,
+}
+
+#[async_trait::async_trait]
+impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
+    async fn create_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        (**self).create_start(inbox_id, job_id).await
+    }
+    async fn create_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB> {
+        (**self).create_progress(inbox_id, job_id, phase, transferred_bytes).await
+    }
+    async fn create_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        inbox_path: &str,
+    ) -> Result<InboxDB> {
+        (**self).create_complete(inbox_id, job_id, inbox_path).await
+    }
+    async fn create_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        (**self).create_failure(inbox_id, job_id, error_code, error_message).await
+    }
+    async fn publish_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        (**self).publish_start(inbox_id, job_id).await
+    }
+    async fn publish_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_files: u64,
+        processed_files: u64,
+        total_bytes: u64,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB> {
+        (**self).publish_progress(inbox_id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes).await
+    }
+    async fn publish_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        files_transferred: u64,
+        total_bytes: u64,
+        protected_path: &str,
+    ) -> Result<InboxDB> {
+        (**self).publish_complete(inbox_id, job_id, files_transferred, total_bytes, protected_path).await
+    }
+    async fn publish_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        (**self).publish_failure(inbox_id, job_id, error_code, error_message).await
+    }
+    async fn delete_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        (**self).delete_start(inbox_id, job_id).await
+    }
+    async fn delete_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_bytes: u64,
+        deleted_bytes: u64,
+    ) -> Result<InboxDB> {
+        (**self).delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes).await
+    }
+    async fn delete_complete(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        (**self).delete_complete(inbox_id, job_id).await
+    }
+    async fn delete_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        (**self).delete_failure(inbox_id, job_id, error_code, error_message).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InboxTransitioner impl for BarbicanClient
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl InboxTransitioner for BarbicanClient {
+    async fn create_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        self.create_start(inbox_id, job_id).await
+    }
+    async fn create_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB> {
+        self.create_progress(inbox_id, job_id, phase, transferred_bytes).await
+    }
+    async fn create_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        inbox_path: &str,
+    ) -> Result<InboxDB> {
+        self.create_complete(inbox_id, job_id, inbox_path).await
+    }
+    async fn create_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        self.create_failure(inbox_id, job_id, error_code, error_message).await
+    }
+    async fn publish_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        self.publish_start(inbox_id, job_id).await
+    }
+    async fn publish_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_files: u64,
+        processed_files: u64,
+        total_bytes: u64,
+        transferred_bytes: u64,
+    ) -> Result<InboxDB> {
+        self.publish_progress(inbox_id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes).await
+    }
+    async fn publish_complete(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        files_transferred: u64,
+        total_bytes: u64,
+        protected_path: &str,
+    ) -> Result<InboxDB> {
+        self.publish_complete(inbox_id, job_id, files_transferred, total_bytes, protected_path).await
+    }
+    async fn publish_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        self.publish_failure(inbox_id, job_id, error_code, error_message).await
+    }
+    async fn delete_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        self.delete_start(inbox_id, job_id).await
+    }
+    async fn delete_progress(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        phase: &str,
+        total_bytes: u64,
+        deleted_bytes: u64,
+    ) -> Result<InboxDB> {
+        self.delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes).await
+    }
+    async fn delete_complete(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
+        self.delete_complete(inbox_id, job_id).await
+    }
+    async fn delete_failure(
+        &self,
+        inbox_id: &ObjectId,
+        job_id: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<InboxDB> {
+        self.delete_failure(inbox_id, job_id, error_code, error_message).await
+    }
 }
 
 // ---------------------------------------------------------------------------

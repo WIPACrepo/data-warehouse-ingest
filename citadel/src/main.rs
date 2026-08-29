@@ -18,7 +18,7 @@ use tracing::{info, error};
 use citadel::config::CitadelConfig;
 use citadel::middleware::auth::auth_middleware;
 use citadel::handlers;
-use citadel::integrations::barbican::BarbicanClient;
+use citadel::integrations::barbican::{BarbicanClient, InboxTransitioner};
 use citadel::integrations::catalog::{CatalogNotifier, NoOpCatalogNotifier};
 use citadel::integrations::lta::{LtaNotifier, NoOpLtaNotifier};
 use citadel::jobs::executor::{JobExecutor, KubernetesExecutor, MockExecutor};
@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_manager = StorageManager::new(&config);
 
     // Set up Barbican client
-    let barbican_client = BarbicanClient::new(config.clone());
+    let barbican_client: Arc<dyn InboxTransitioner> = Arc::new(BarbicanClient::new(config.clone()));
 
     // Set up job executor
     let executor: Arc<dyn JobExecutor> = match config.job_executor {
@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(config.clone()),
         auth_state,
         storage_manager: Arc::new(storage_manager),
-        barbican_client: Arc::new(barbican_client),
+        barbican_client: barbican_client.clone(),
         executor,
         catalog_notifier,
         lta_notifier,

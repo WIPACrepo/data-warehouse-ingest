@@ -47,7 +47,7 @@ use std::sync::Arc;
 use mongodb::Client;
 use tokio::sync::RwLock;
 use crate::storage::manager::StorageManager;
-use crate::integrations::barbican::BarbicanClient;
+use crate::integrations::barbican::InboxTransitioner;
 use crate::jobs::executor::JobExecutor;
 use crate::integrations::catalog::CatalogNotifier;
 use crate::integrations::lta::LtaNotifier;
@@ -59,7 +59,8 @@ pub struct AppState {
     pub config: Arc<CitadelConfig>,
     pub auth_state: Arc<AuthMiddlewareState>,
     pub storage_manager: Arc<StorageManager>,
-    pub barbican_client: Arc<BarbicanClient>,
+    /// Barbican state-transition client (trait object for testability)
+    pub barbican_client: Arc<dyn InboxTransitioner>,
     pub executor: Arc<dyn JobExecutor>,
     pub catalog_notifier: Arc<dyn CatalogNotifier>,
     pub lta_notifier: Arc<dyn LtaNotifier>,
