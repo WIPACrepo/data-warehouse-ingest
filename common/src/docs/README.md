@@ -58,7 +58,7 @@ Both services depend on `common` via the workspace (`common = { path = "common" 
 |  Clients    |               |  (Frontend) |
 +-------------+               +------+------+
                                       |
-                                      | JWT (internal role)
+                                      | service token
                                       v
                               +-------------+
                               |  Citadel    |

@@ -44,7 +44,7 @@ Barbican is a long-running HTTP service that:
 |  Clients    |               |  (Frontend) |
 +-------------+               +------+------+
                                       |
-                                      | JWT (internal role)
+                                      | service token
                                       v
                               +-------------+
                               |  Citadel    |
