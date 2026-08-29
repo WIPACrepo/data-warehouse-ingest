@@ -97,38 +97,31 @@ citadel/src/
 ├── job_main.rs          # citadel-job binary entry point (file transfer worker)
 ├── lib.rs               # Library exports and AppState
 ├── config.rs            # CITADEL_* environment configuration loading
-├── error.rs             # Error types using common::AppError, status-code mapping, sanitized responses
+├── error.rs             # Thin re-export of common::AppError (+ Result alias)
 ├── db.rs                # MongoDB client setup and collection helpers
 ├── models.rs            # JobDB, CallbackNonceDB, TransferResult, FileInfo
 ├── metrics.rs           # Prometheus metrics registry and collectors
-├── auth/
-│   ├── jwt_validator.rs # JWKS fetch/cache, Claim parsing, JWT validation
-│   └── mod.rs           # Auth exports (AuthState, Claims, JwksCache)
-├── middleware/
-│   ├── auth.rs          # Axum auth middleware (JWT extraction + role check)
+├── middleware/          # Re-exports (auth lives in common::auth)
+│   ├── auth.rs          # Re-exports common::auth_middleware / ClaimsExtractor
 │   └── logging.rs       # Request logging middleware
-├── handlers/            # HTTP handlers (create/publish/delete inbox, job CRUD, callback, health)
+├── handlers/            # HTTP handlers (create/publish/delete inbox, job CRUD, callback, progress, health)
 ├── jobs/
 │   ├── types.rs         # JobType, JobStatus, JobProgress, JobExecutorInfo
-│   ├── queue.rs         # Per-type rate-limited semaphores (publish/delete)
-│   ├── processor.rs     # Job lifecycle orchestration (permit + submit)
 │   └── executor/
 │       ├── mod.rs       # JobExecutor trait
-│       ├── kubernetes.rs# K8s executor (stub: not fully implemented)
-│       └── mock.rs      # Mock executor (returns immediately)
+│       ├── kubernetes.rs# K8s executor: job spec + submit/cancel/status
+│       └── mock.rs      # Mock executor (spawns local citadel-job processes)
 ├── storage/
 │   ├── manager.rs       # create_inbox, delete_inbox, transfer_files, validate_path
 │   ├── transfer.rs      # copy-verify-delete transfer engine, InboxLock (chmod 555)
 │   ├── checksum.rs      # SHA-512 checksum utilities
-│   ├── lock.rs          # Inbox lock helper
-│   └── progress.rs      # Transfer progress tracking
+│   └── progress.rs      # ProgressTracker: wired into citadel-job + submitted through Citadel (P4.1)
 ├── integrations/
-│   ├── barbican.rs      # BarbicanClient (state transitions + get inbox, retry/backoff)
+│   ├── barbican.rs      # BarbicanClient (state transitions, retry/backoff + circuit breaker)
 │   ├── catalog.rs       # CatalogNotifier trait + NoOp implementation
-│   ├── lta.rs           # LtaNotifier trait + NoOp implementation
-│   └── kubernetes.rs    # K8s job integration (stub: spec creation not implemented)
+│   └── lta.rs           # LtaNotifier trait + NoOp implementation
 ├── polling/
-│   └── job_status.rs    # Background K8s job status poller (stub: log-only loop)
+│   └── job_status.rs    # JobStatusPoller: active — status polling, timeouts, terminal-state self-healing
 └── docs/                # This documentation directory
 ```
 

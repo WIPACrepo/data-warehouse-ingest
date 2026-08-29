@@ -143,11 +143,20 @@ CITADEL_ALLOWED_ALGORITHMS=RS256
 
 ### Error Responses
 
+Auth rejections return **JSON bodies** via `common::auth_middleware` (decision D7) — never bare status codes:
+
 **401 Unauthorized** - Missing/invalid token:
 ```json
 {
-  "error": "invalid_jwt",
-  "message": "Authentication required"
+  "error": "auth_error",
+  "message": "Missing or invalid Authorization header"
+}
+```
+JWT validation failures map to the redacted reason:
+```json
+{
+  "error": "auth_error",
+  "message": "Invalid token"
 }
 ```
 
@@ -155,11 +164,19 @@ CITADEL_ALLOWED_ALGORITHMS=RS256
 ```json
 {
   "error": "forbidden",
-  "message": "Access denied"
+  "message": "Missing required role for service 'citadel'"
 }
 ```
 
-(Note: for most errors the code maps responses to a generic message; see [`error.rs`](../src/error.rs).)
+**503 Service Unavailable** - JWKS unavailable (could not fetch/parse signing keys):
+```json
+{
+  "error": "service_unavailable",
+  "message": "JWT verification temporarily unavailable"
+}
+```
+
+(The message strings are examples of the shape; the serialized `{error, message}` body is produced by `common::AppError::IntoResponse` — see [`common/src/docs/infrastructure.md`](../../../common/src/docs/infrastructure.md).)
 
 ---
 
@@ -208,7 +225,7 @@ CITADEL_JWKS_REFRESH_SECS=60
 | `admin` | Full access, including job cancellation |
 | `write` | Create, publish, delete inboxes (inbox ops) |
 | `read` | Enumerate and read jobs only |
-| `internal` | *Planned* for job callback authentication |
+| (no `internal`) | Barbican coordination does **not** use an internal role — see [Callback Security](#callback-security-and-the-citadel-job-trust-edge) |
 
 ### Endpoint Authorization
 
@@ -232,7 +249,8 @@ CITADEL_JWKS_REFRESH_SECS=60
 
 | Endpoint | Required Roles |
 |----------|----------------|
-| `POST /api/v1/job/callback` | timestamp + nonce (not JWT roles) |
+| `POST /api/v1/job/callback` | service JWT (route is inside the auth layer) **+** timestamp + nonce + `X-Callback-Secret` |
+| `POST /api/v1/job/progress` | service JWT **+** timestamp + nonce + `X-Callback-Secret` (P4.1) |
 | `GET /health` | None (public) |
 | `GET /ready` | None (public) |
 
@@ -245,11 +263,10 @@ impl Claims {
     pub fn is_admin(&self) -> bool;                 // has_role("admin")
     pub fn can_write(&self) -> bool;                // admin || write
     pub fn can_read(&self) -> bool;                 // admin || read || write
-    pub fn is_internal(&self) -> bool;              // has_role("internal")
 }
 ```
 
-`req.middleware` (`auth_middleware`) validates the JWT, requires at least one role from `CITADEL_REQUIRED_ROLES`, and inserts an `AuthState { claims }` into request extensions for handlers.
+`req.middleware` (`auth_middleware`) validates the JWT, requires at least one role from `CITADEL_REQUIRED_ROLES`, and inserts a `Claims` into request extensions for handlers. (The common `Claims::is_internal` utility method still exists but is **not used** by either service — Barbican coordination is not role-gated, see [Barbican trust model](../../../barbican/src/docs/authentication.md).)
 
 ### Configuration
 
@@ -268,9 +285,15 @@ The job callback endpoint (`POST /api/v1/job/callback`) authenticates job worker
 
 1. **Callback secret validation** (when a secret is configured): the `X-Callback-Secret` header is compared in constant time; missing/mismatch → `401 invalid_callback_secret` (see [Callback Secret Validation](#callback-secret-validation-implemented))
 2. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew)
-3. **Nonce validation & storage**:
-   - Look up `{ nonce }` in the `callback_nonces` collection
-   - If it already exists → reject `CallbackNonceReused`
+3. **Nonce validation & storage**: look up `{ nonce }` in the `callback_nonces`
+   collection:
+   - A nonce that is still **live** (expires at a future time) → reject
+     `CallbackNonceReused`
+   - A nonce that is **present but expired** → reused with a fresh 5-minute
+     window (the value is replaced); the **TTL index** on
+     `callback_nonces.expires_at` (created idempotently at startup) garbage-
+     collects old rows — the replay-protection window stays semantically 5
+     minutes (P2.2)
    - Otherwise store `CallbackNonceDB::new(nonce)` (5-minute expiry) and continue
 
 This prevents **replay attacks**: a captured callback can only be replayed for a short window and only once per nonce.
@@ -322,9 +345,12 @@ the `notify` crate and atomically swaps the in-memory value
 `X-Callback-Secret` on every callback.
 
 > **Remaining planned hardening**:
-> - TTL index on `callback_nonces.expires_at`
-> - `internal` role as an alternative callback authentication
 > - K8s NetworkPolicy restricting the callback endpoint to internal pods
+>
+> The job callback/progress **trust edge** (D9): `citadel-job` talks only to
+> Citadel (`/job/callback`, `/job/progress`), never to Barbican. Coordination
+> with Barbican is Citadel's outward-only responsibility; no `internal` role or
+> cross-service direct trust is used.
 
 ---
 
@@ -347,7 +373,8 @@ the `notify` crate and atomically swaps the in-memory value
 - Shared file-based secret (`CITADEL_JOB_CALLBACK_SECRET_FILE`) with
   constant-time comparison and hot-reload (implemented)
 - Replay protection via per-nonce MongoDB deduplication + 5-minute
-  timestamp window (implemented)
+  timestamp window, with a **TTL index** on `callback_nonces.expires_at`
+  creating idempotently at startup (implemented)
 - K8s NetworkPolicy restricting the callback endpoint to internal pods
   (deployment-level, not yet wired)
 
