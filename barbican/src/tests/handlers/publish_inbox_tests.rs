@@ -11,8 +11,8 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::test_utils::create_test_state;
     use crate::handlers::publish_inbox;
+    use crate::test_utils::create_test_state;
     use common::test_utils::create_test_inbox_with_id;
     use common::{InboxStatus, MockInboxStore};
 

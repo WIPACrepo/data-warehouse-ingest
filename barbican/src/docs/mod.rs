@@ -1,7 +1,7 @@
 //! Barbican Documentation
 //!
 //! This module contains comprehensive documentation for the Barbican crate.
-//! 
+//!
 //! # Documentation Structure
 //!
 //! - [`README.md`](docs/README.md) - Main index with quick start and overview

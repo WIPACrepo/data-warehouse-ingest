@@ -6,9 +6,9 @@
 
 use crate::config::CitadelConfig;
 use crate::error::{AppError, Result};
-use common::models::InboxDB;
 use crate::models::TransferResult;
-use tracing::{info, warn, error};
+use common::models::InboxDB;
+use tracing::{error, info, warn};
 
 /// LTA notifier trait
 #[async_trait::async_trait]
@@ -45,10 +45,13 @@ impl HttpLtaNotifier {
         Self {
             config: config.clone(),
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(config.lta_notify_timeout_secs))
+                .timeout(std::time::Duration::from_secs(
+                    config.lta_notify_timeout_secs,
+                ))
                 .build()
                 .unwrap_or_default(),
-            lta_url: lta_url.unwrap_or_else(|| "http://lta:8080/api/v1/archive-request".to_string()),
+            lta_url: lta_url
+                .unwrap_or_else(|| "http://lta:8080/api/v1/archive-request".to_string()),
         }
     }
 
@@ -82,9 +85,7 @@ impl HttpLtaNotifier {
         }
 
         error!("LTA notification failed after {} retries", max_retries);
-        Err(AppError::BadGateway(
-            "Failed after all retries".to_string(),
-        ))
+        Err(AppError::BadGateway("Failed after all retries".to_string()))
     }
 
     /// Perform a single notification request

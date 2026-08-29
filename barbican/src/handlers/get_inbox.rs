@@ -10,7 +10,8 @@ pub async fn get_inbox(
     State(state): State<Arc<AppState>>,
     Path(id): Path<ObjectId>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let result = state.store
+    let result = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;

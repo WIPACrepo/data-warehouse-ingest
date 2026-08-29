@@ -91,9 +91,14 @@ pub mod test_utils;
 #[cfg(test)]
 pub mod tests;
 
-pub use common::{AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, Jwk, Jwks, JwksCache, JwtValidator, auth_middleware, CreateInbox, InboxDB, InboxStatus, InboxStore, MongoInboxStore};
+pub use common::{
+    AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, CreateInbox,
+    InboxDB, InboxStatus, InboxStore, Jwk, Jwks, JwksCache, JwtValidator, MongoInboxStore,
+    auth_middleware,
+};
 pub use config::Config;
 
+use crate::clients::CitadelClient;
 use axum::{
     Router,
     routing::{delete, get, post},
@@ -101,7 +106,6 @@ use axum::{
 use common::{db_collection, log_app_errors};
 use mongodb::Collection;
 use std::sync::Arc;
-use crate::clients::CitadelClient;
 
 /// Application state shared across all handlers
 #[derive(Clone)]
@@ -116,10 +120,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(store: Arc<dyn InboxStore>, config: Config) -> Self {
         let citadel_client = CitadelClient::new(&config).ok();
-        
+
         // Initialize common auth components
-        let auth_config = AuthConfig::from_env()
-            .expect("Failed to load auth config from environment");
+        let auth_config =
+            AuthConfig::from_env().expect("Failed to load auth config from environment");
         let jwks_cache = Arc::new(JwksCache::new(
             auth_config.jwks_url(),
             auth_config.jwks_refresh_secs,
@@ -132,11 +136,10 @@ impl AppState {
         });
 
         let metrics = Arc::new(
-            metrics::BarbicanMetrics::new()
-                .expect("Failed to initialize Barbican metrics"),
+            metrics::BarbicanMetrics::new().expect("Failed to initialize Barbican metrics"),
         );
         metrics.spawn_inbox_refresh_loop(store.clone(), 30);
-        
+
         Self {
             store,
             citadel_client,
@@ -158,20 +161,56 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/inbox/{id}", delete(handlers::delete_inbox))
         .route("/api/v1/inbox/{id}/publish", post(handlers::publish_inbox))
         // Internal API endpoints (Citadel callbacks) - Create operation
-        .route("/api/v1/inbox/{id}/create/start", post(handlers::create_start))
-        .route("/api/v1/inbox/{id}/create/progress", post(handlers::create_progress))
-        .route("/api/v1/inbox/{id}/create/complete", post(handlers::create_complete))
-        .route("/api/v1/inbox/{id}/create/failure", post(handlers::create_failure))
+        .route(
+            "/api/v1/inbox/{id}/create/start",
+            post(handlers::create_start),
+        )
+        .route(
+            "/api/v1/inbox/{id}/create/progress",
+            post(handlers::create_progress),
+        )
+        .route(
+            "/api/v1/inbox/{id}/create/complete",
+            post(handlers::create_complete),
+        )
+        .route(
+            "/api/v1/inbox/{id}/create/failure",
+            post(handlers::create_failure),
+        )
         // Internal API endpoints - Publish operation
-        .route("/api/v1/inbox/{id}/publish/start", post(handlers::publish_start))
-        .route("/api/v1/inbox/{id}/publish/progress", post(handlers::publish_progress))
-        .route("/api/v1/inbox/{id}/publish/complete", post(handlers::publish_complete))
-        .route("/api/v1/inbox/{id}/publish/failure", post(handlers::publish_failure))
+        .route(
+            "/api/v1/inbox/{id}/publish/start",
+            post(handlers::publish_start),
+        )
+        .route(
+            "/api/v1/inbox/{id}/publish/progress",
+            post(handlers::publish_progress),
+        )
+        .route(
+            "/api/v1/inbox/{id}/publish/complete",
+            post(handlers::publish_complete),
+        )
+        .route(
+            "/api/v1/inbox/{id}/publish/failure",
+            post(handlers::publish_failure),
+        )
         // Internal API endpoints - Delete operation
-        .route("/api/v1/inbox/{id}/delete/start", post(handlers::delete_start))
-        .route("/api/v1/inbox/{id}/delete/progress", post(handlers::delete_progress))
-        .route("/api/v1/inbox/{id}/delete/complete", post(handlers::delete_complete))
-        .route("/api/v1/inbox/{id}/delete/failure", post(handlers::delete_failure))
+        .route(
+            "/api/v1/inbox/{id}/delete/start",
+            post(handlers::delete_start),
+        )
+        .route(
+            "/api/v1/inbox/{id}/delete/progress",
+            post(handlers::delete_progress),
+        )
+        .route(
+            "/api/v1/inbox/{id}/delete/complete",
+            post(handlers::delete_complete),
+        )
+        .route(
+            "/api/v1/inbox/{id}/delete/failure",
+            post(handlers::delete_failure),
+        )
         .with_state(state.clone());
 
     // Apply auth middleware to API routes
@@ -195,12 +234,14 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         state.metrics.clone(),
         metrics::record_request_metrics,
     ));
-    
+
     // Add logging layer
     let router = common::router_logging_layer(router);
-    
+
     // Add error logging layer - need to use the store from state
-    router.layer(axum::middleware::from_fn(log_app_errors)).with_state(state.store.clone())
+    router
+        .layer(axum::middleware::from_fn(log_app_errors))
+        .with_state(state.store.clone())
 }
 
 /// Serve the application on the given address
@@ -210,8 +251,11 @@ pub async fn serve(client: mongodb::Client, config: Config) {
         .unwrap();
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
 
-    let collection: Collection<InboxDB> =
-        db_collection(&client, &config.mongodb_database, &config.mongodb_inbox_collection);
+    let collection: Collection<InboxDB> = db_collection(
+        &client,
+        &config.mongodb_database,
+        &config.mongodb_inbox_collection,
+    );
 
     // Ensure the unique warehouse_path index (P1.5, decision D3) so that
     // concurrent duplicate-path creates are rejected with a 409, not just the
@@ -228,11 +272,8 @@ pub async fn serve(client: mongodb::Client, config: Config) {
     // previously used the plain start_metrics_server (default registry), which
     // did not include barbican_inboxes_total / barbican_api_requests_total.
     let metrics_router = metrics::metrics_router(state.metrics.clone());
-    if let Err(e) = common::start_metrics_server_with_router(
-        state.config.prometheus_port,
-        metrics_router,
-    )
-    .await
+    if let Err(e) =
+        common::start_metrics_server_with_router(state.config.prometheus_port, metrics_router).await
     {
         tracing::error!("Failed to start metrics server: {e}");
     }

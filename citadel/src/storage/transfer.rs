@@ -23,8 +23,8 @@ use std::future::Future;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
@@ -32,7 +32,7 @@ use rand::Rng;
 use sha2::{Digest, Sha512};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -336,19 +336,22 @@ impl InboxLock {
         {
             use std::os::unix::fs::PermissionsExt;
 
-            let metadata = fs::metadata(path)
-                .await
-                .map_err(|e| TransferError::InboxLockFailed(format!("Failed to get metadata: {}", e)))?;
+            let metadata = fs::metadata(path).await.map_err(|e| {
+                TransferError::InboxLockFailed(format!("Failed to get metadata: {}", e))
+            })?;
 
             let original_mode = metadata.permissions().mode();
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o555);
 
-            fs::set_permissions(path, permissions)
-                .await
-                .map_err(|e| TransferError::InboxLockFailed(format!("Failed to set permissions: {}", e)))?;
+            fs::set_permissions(path, permissions).await.map_err(|e| {
+                TransferError::InboxLockFailed(format!("Failed to set permissions: {}", e))
+            })?;
 
-            info!("Locked inbox directory: {:?} (mode {:o} -> 555)", path, original_mode);
+            info!(
+                "Locked inbox directory: {:?} (mode {:o} -> 555)",
+                path, original_mode
+            );
 
             Ok(Self {
                 path: path.to_path_buf(),
@@ -383,9 +386,9 @@ impl Drop for InboxLock {
 
 /// Compute SHA-512 checksum of a file in chunks
 pub async fn compute_checksum(path: &Path, chunk_size: usize) -> Result<String> {
-    let mut file = File::open(path)
-        .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to open file {:?}: {}", path, e)))?;
+    let mut file = File::open(path).await.map_err(|e| {
+        TransferError::StorageError(format!("Failed to open file {:?}: {}", path, e))
+    })?;
 
     let mut hasher = Sha512::new();
     let mut buffer = vec![0u8; chunk_size];
@@ -415,9 +418,9 @@ pub(crate) fn dev_ino(meta: &std::fs::Metadata) -> (u64, u64) {
 
 /// Ensure a directory exists, creating it idempotently.
 async fn ensure_dir_exists(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to create directory {:?}: {}", path, e)))
+    fs::create_dir_all(path).await.map_err(|e| {
+        TransferError::StorageError(format!("Failed to create directory {:?}: {}", path, e))
+    })
 }
 
 /// Validate a symlink target for dangerous characters or traversal attempts.
@@ -532,7 +535,9 @@ pub(crate) fn count_symlink_reference(
 ) -> Result<u32> {
     let count = global_inodes.entry((dev, ino)).or_insert(0);
     *count += 1;
-    if let Some(max) = max_references && *count > max {
+    if let Some(max) = max_references
+        && *count > max
+    {
         return Err(TransferError::MaxSymlinkReferencesExceeded(ino));
     }
     Ok(*count)
@@ -577,13 +582,15 @@ async fn copy_file_worker(
     progress: Option<Arc<ProgressTracker>>,
 ) -> Result<FileInfo> {
     if context.is_cancelled() {
-        return Err(TransferError::Cancelled("worker cancelled before copy".to_string()));
+        return Err(TransferError::Cancelled(
+            "worker cancelled before copy".to_string(),
+        ));
     }
 
     // Open source file.
-    let mut source_file = File::open(&source)
-        .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to open source file {:?}: {}", source, e)))?;
+    let mut source_file = File::open(&source).await.map_err(|e| {
+        TransferError::StorageError(format!("Failed to open source file {:?}: {}", source, e))
+    })?;
 
     // Open the final target directly (truncate any prior partial content).
     let mut target_file = OpenOptions::new()
@@ -592,7 +599,9 @@ async fn copy_file_worker(
         .truncate(true)
         .open(&target)
         .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to create target file {:?}: {}", target, e)))?;
+        .map_err(|e| {
+            TransferError::StorageError(format!("Failed to create target file {:?}: {}", target, e))
+        })?;
 
     let mut hasher = Sha512::new();
     let mut buffer = vec![0u8; chunk_size];
@@ -618,7 +627,10 @@ async fn copy_file_worker(
     if expected_checksum != actual_checksum {
         // Remove the partial target so a corrupt file is never left behind.
         if let Err(e) = fs::remove_file(&target).await {
-            warn!("Failed to remove partial target {:?} after checksum mismatch: {}", target, e);
+            warn!(
+                "Failed to remove partial target {:?} after checksum mismatch: {}",
+                target, e
+            );
         }
         return Err(TransferError::FileTransferFailed(format!(
             "Checksum mismatch for {:?}: expected {}, got {}",
@@ -635,7 +647,10 @@ async fn copy_file_worker(
         p.increment_files(1, total_bytes).await;
     }
 
-    info!("Successfully transferred {:?} -> {:?} ({} bytes)", source, target, total_bytes);
+    info!(
+        "Successfully transferred {:?} -> {:?} ({} bytes)",
+        source, target, total_bytes
+    );
 
     Ok(FileInfo {
         source_path: source,
@@ -690,7 +705,10 @@ impl<'a> Collector<'a> {
 
             // Resolve the canonical identity of the directory we are about to enter.
             let canonical_dir = fs::canonicalize(source_dir).await.map_err(|e| {
-                TransferError::StorageError(format!("Failed to canonicalize {:?}: {}", source_dir, e))
+                TransferError::StorageError(format!(
+                    "Failed to canonicalize {:?}: {}",
+                    source_dir, e
+                ))
             })?;
             let dir_meta = tokio::fs::symlink_metadata(&canonical_dir).await?;
             let dir_id = dev_ino(&dir_meta);
@@ -707,8 +725,12 @@ impl<'a> Collector<'a> {
                     }),
                 ));
                 if let Some(m) = self.metrics {
-                    m.transfer_errors_total.with_label_values(&["symlink_loop"]).inc();
-                    m.security_events_total.with_label_values(&["symlink_loop_detected"]).inc();
+                    m.transfer_errors_total
+                        .with_label_values(&["symlink_loop"])
+                        .inc();
+                    m.security_events_total
+                        .with_label_values(&["symlink_loop_detected"])
+                        .inc();
                 }
                 return Err(TransferError::SymlinkLoop(canonical_dir));
             }
@@ -728,7 +750,15 @@ impl<'a> Collector<'a> {
                 return Err(e);
             }
 
-            let result = self.collect_entries(&canonical_dir, rel_prefix, active_chain, global_inodes, current_depth).await;
+            let result = self
+                .collect_entries(
+                    &canonical_dir,
+                    rel_prefix,
+                    active_chain,
+                    global_inodes,
+                    current_depth,
+                )
+                .await;
 
             active_chain.remove(&dir_id);
             result
@@ -749,7 +779,9 @@ impl<'a> Collector<'a> {
 
         while let Some(entry) = entries.next_entry().await? {
             if self.context.is_cancelled() {
-                return Err(TransferError::Cancelled("collector cancelled during enumeration".to_string()));
+                return Err(TransferError::Cancelled(
+                    "collector cancelled during enumeration".to_string(),
+                ));
             }
 
             let entry_path = entry.path();
@@ -768,7 +800,9 @@ impl<'a> Collector<'a> {
                 )
                 .await;
                 if let Some(m) = self.metrics {
-                    m.transfer_errors_total.with_label_values(&["path_too_long"]).inc();
+                    m.transfer_errors_total
+                        .with_label_values(&["path_too_long"])
+                        .inc();
                 }
                 if let Some(err) = hard {
                     return Err(err);
@@ -789,7 +823,9 @@ impl<'a> Collector<'a> {
 
             if meta.file_type().is_symlink() {
                 let symlink_count = self.counters.increment_symlink();
-                if let Some(max) = self.config.max_total_symlinks && symlink_count > max {
+                if let Some(max) = self.config.max_total_symlinks
+                    && symlink_count > max
+                {
                     let err = TransferError::MaxTotalSymlinksExceeded(max);
                     self.audit_events.push(SecurityAuditEvent::new(
                         SecurityEventType::MaxTotalSymlinksExceeded,
@@ -798,7 +834,9 @@ impl<'a> Collector<'a> {
                         serde_json::json!({ "count": symlink_count }),
                     ));
                     if let Some(m) = self.metrics {
-                        m.transfer_errors_total.with_label_values(&["max_total_symlinks_exceeded"]).inc();
+                        m.transfer_errors_total
+                            .with_label_values(&["max_total_symlinks_exceeded"])
+                            .inc();
                     }
                     return Err(err);
                 }
@@ -810,7 +848,9 @@ impl<'a> Collector<'a> {
                             let label = match &e {
                                 TransferError::BrokenSymlink(_) => "broken_symlink",
                                 TransferError::InvalidSymlinkTarget(_) => "invalid_symlink_target",
-                                TransferError::MaxSymlinkDepthExceeded(_) => "max_symlink_depth_exceeded",
+                                TransferError::MaxSymlinkDepthExceeded(_) => {
+                                    "max_symlink_depth_exceeded"
+                                }
                                 TransferError::SymlinkLoop(_) => "symlink_loop",
                                 _ => "symlink_resolution_failed",
                             };
@@ -851,8 +891,12 @@ impl<'a> Collector<'a> {
                         serde_json::json!({ "ino": resolved_id.1 }),
                     ));
                     if let Some(m) = self.metrics {
-                        m.transfer_errors_total.with_label_values(&["max_symlink_references_exceeded"]).inc();
-                        m.security_events_total.with_label_values(&["max_symlink_references_exceeded"]).inc();
+                        m.transfer_errors_total
+                            .with_label_values(&["max_symlink_references_exceeded"])
+                            .inc();
+                        m.security_events_total
+                            .with_label_values(&["max_symlink_references_exceeded"])
+                            .inc();
                     }
                     if let Some(hard) = emit_error(self.tx, e, self.context).await {
                         return Err(hard);
@@ -872,7 +916,10 @@ impl<'a> Collector<'a> {
                 let external_by_device = resolved_id.0 != self.inbox_root_id.0;
                 if external_by_path || external_by_device {
                     if !self.config.allow_external_symlinks {
-                        warn!("Rejecting external symlink {:?} -> {:?}", entry_path, resolved);
+                        warn!(
+                            "Rejecting external symlink {:?} -> {:?}",
+                            entry_path, resolved
+                        );
                         self.audit_events.push(SecurityAuditEvent::new(
                             SecurityEventType::ExternalSymlinkRejected,
                             AuditSeverity::Warning,
@@ -883,12 +930,18 @@ impl<'a> Collector<'a> {
                             }),
                         ));
                         if let Some(m) = self.metrics {
-                            m.transfer_errors_total.with_label_values(&["external_symlink_not_allowed"]).inc();
-                            m.security_events_total.with_label_values(&["external_symlink_rejected"]).inc();
+                            m.transfer_errors_total
+                                .with_label_values(&["external_symlink_not_allowed"])
+                                .inc();
+                            m.security_events_total
+                                .with_label_values(&["external_symlink_rejected"])
+                                .inc();
                         }
                         if let Some(hard) = emit_error(
                             self.tx,
-                            TransferError::ExternalSymlinkNotAllowed { path: entry_path.clone() },
+                            TransferError::ExternalSymlinkNotAllowed {
+                                path: entry_path.clone(),
+                            },
                             self.context,
                         )
                         .await
@@ -897,16 +950,27 @@ impl<'a> Collector<'a> {
                         }
                         continue;
                     }
-                    debug!("Following external symlink {:?} -> {:?}", entry_path, resolved);
+                    debug!(
+                        "Following external symlink {:?} -> {:?}",
+                        entry_path, resolved
+                    );
                 }
 
                 if resolved_meta.is_dir() {
                     // Recurse into the resolved directory, preserving the symlink's path.
-                    self.collect(&resolved, &rel_path, active_chain, global_inodes, _current_depth + 1)
-                        .await?;
+                    self.collect(
+                        &resolved,
+                        &rel_path,
+                        active_chain,
+                        global_inodes,
+                        _current_depth + 1,
+                    )
+                    .await?;
                 } else if resolved_meta.is_file() {
                     let file_count = self.counters.increment_file();
-                    if let Some(max) = self.config.max_total_files && file_count > max {
+                    if let Some(max) = self.config.max_total_files
+                        && file_count > max
+                    {
                         let err = TransferError::MaxTotalFilesExceeded(max);
                         self.audit_events.push(SecurityAuditEvent::new(
                             SecurityEventType::MaxTotalFilesExceeded,
@@ -915,7 +979,9 @@ impl<'a> Collector<'a> {
                             serde_json::json!({ "count": file_count }),
                         ));
                         if let Some(m) = self.metrics {
-                            m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
+                            m.transfer_errors_total
+                                .with_label_values(&["max_total_files_exceeded"])
+                                .inc();
                         }
                         return Err(err);
                     }
@@ -930,15 +996,26 @@ impl<'a> Collector<'a> {
                         .await
                         .map_err(|_| TransferError::Cancelled("channel closed".to_string()))?;
                 } else {
-                    warn!("Skipping unsupported symlink target type for {:?}", entry_path);
+                    warn!(
+                        "Skipping unsupported symlink target type for {:?}",
+                        entry_path
+                    );
                 }
             } else if meta.is_dir() {
                 // Recurse into regular directory.
-                self.collect(&entry_path, &rel_path, active_chain, global_inodes, _current_depth + 1)
-                    .await?;
+                self.collect(
+                    &entry_path,
+                    &rel_path,
+                    active_chain,
+                    global_inodes,
+                    _current_depth + 1,
+                )
+                .await?;
             } else if meta.is_file() {
                 let file_count = self.counters.increment_file();
-                if let Some(max) = self.config.max_total_files && file_count > max {
+                if let Some(max) = self.config.max_total_files
+                    && file_count > max
+                {
                     let err = TransferError::MaxTotalFilesExceeded(max);
                     self.audit_events.push(SecurityAuditEvent::new(
                         SecurityEventType::MaxTotalFilesExceeded,
@@ -947,7 +1024,9 @@ impl<'a> Collector<'a> {
                         serde_json::json!({ "count": file_count }),
                     ));
                     if let Some(m) = self.metrics {
-                        m.transfer_errors_total.with_label_values(&["max_total_files_exceeded"]).inc();
+                        m.transfer_errors_total
+                            .with_label_values(&["max_total_files_exceeded"])
+                            .inc();
                     }
                     return Err(err);
                 }
@@ -966,7 +1045,10 @@ impl<'a> Collector<'a> {
 }
 
 /// Validate that the warehouse path is contained within the protected base.
-pub(crate) async fn validate_warehouse_path(warehouse_path: &Path, protected_base: &Path) -> Result<PathBuf> {
+pub(crate) async fn validate_warehouse_path(
+    warehouse_path: &Path,
+    protected_base: &Path,
+) -> Result<PathBuf> {
     let protected_canonical = fs::canonicalize(protected_base)
         .await
         .map_err(|_e| TransferError::InvalidWarehousePath(protected_base.to_path_buf()))?;
@@ -994,7 +1076,10 @@ pub(crate) fn check_disk_space(target_dir: &Path, _required_bytes: u64) -> Resul
     use nix::sys::statvfs::statvfs;
 
     let stat = statvfs(target_dir).map_err(|e| {
-        TransferError::StorageError(format!("Failed to query filesystem space for {:?}: {}", target_dir, e))
+        TransferError::StorageError(format!(
+            "Failed to query filesystem space for {:?}: {}",
+            target_dir, e
+        ))
     })?;
 
     let available = stat.blocks_available() as u64 * stat.fragment_size() as u64;
@@ -1032,7 +1117,10 @@ async fn pre_transfer_integrity_scan(
         }
 
         let mut entries = fs::read_dir(&canonical).await.map_err(|e| {
-            TransferError::InboxIntegrityFailed(format!("Failed to read directory {:?}: {}", canonical, e))
+            TransferError::InboxIntegrityFailed(format!(
+                "Failed to read directory {:?}: {}",
+                canonical, e
+            ))
         })?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -1041,7 +1129,9 @@ async fn pre_transfer_integrity_scan(
 
             if entry_meta.file_type().is_symlink() {
                 symlink_count += 1;
-                if let Some(max) = config.max_total_symlinks && symlink_count > max {
+                if let Some(max) = config.max_total_symlinks
+                    && symlink_count > max
+                {
                     return Err(TransferError::MaxTotalSymlinksExceeded(max));
                 }
                 match resolve_symlink_chain(&entry_path, config.max_symlink_depth).await {
@@ -1062,7 +1152,9 @@ async fn pre_transfer_integrity_scan(
                         } else if resolved_meta.is_file() {
                             total_size += resolved_meta.len();
                             file_count += 1;
-                            if let Some(max) = config.max_total_files && file_count > max {
+                            if let Some(max) = config.max_total_files
+                                && file_count > max
+                            {
                                 return Err(TransferError::MaxTotalFilesExceeded(max));
                             }
                         }
@@ -1075,14 +1167,21 @@ async fn pre_transfer_integrity_scan(
                             )));
                         }
                     }
-                    Err(e) => return Err(TransferError::InboxIntegrityFailed(format!("{:?}: {}", entry_path, e))),
+                    Err(e) => {
+                        return Err(TransferError::InboxIntegrityFailed(format!(
+                            "{:?}: {}",
+                            entry_path, e
+                        )));
+                    }
                 }
             } else if entry_meta.is_dir() {
                 stack.push(entry_path);
             } else if entry_meta.is_file() {
                 total_size += entry_meta.len();
                 file_count += 1;
-                if let Some(max) = config.max_total_files && file_count > max {
+                if let Some(max) = config.max_total_files
+                    && file_count > max
+                {
                     return Err(TransferError::MaxTotalFilesExceeded(max));
                 }
             }
@@ -1098,11 +1197,17 @@ pub(crate) fn temp_transfer_dir_name(warehouse_path: &Path) -> PathBuf {
     let random: u32 = rand::rng().random();
     let name = format!(
         "{}.transfer-{}-{}",
-        warehouse_path.file_name().unwrap_or_default().to_string_lossy(),
+        warehouse_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
         timestamp,
         random
     );
-    warehouse_path.parent().unwrap_or_else(|| Path::new(".")).join(name)
+    warehouse_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(name)
 }
 
 /// Roll back a list of transferred files in non-atomic mode.
@@ -1122,9 +1227,12 @@ async fn rollback_files(files: &[PathBuf]) {
 /// the inbox itself is removed wholesale at the end, which also deletes the
 /// symlink entries.
 async fn cleanup_source(inbox_path: &Path, transferred_files: &[FileInfo]) -> Result<()> {
-    let inbox_canonical = fs::canonicalize(inbox_path)
-        .await
-        .map_err(|e| TransferError::StorageError(format!("Failed to canonicalize inbox {:?}: {}", inbox_path, e)))?;
+    let inbox_canonical = fs::canonicalize(inbox_path).await.map_err(|e| {
+        TransferError::StorageError(format!(
+            "Failed to canonicalize inbox {:?}: {}",
+            inbox_path, e
+        ))
+    })?;
 
     // Delete individual source files first (inbox-contained only).
     for file in transferred_files {
@@ -1133,7 +1241,10 @@ async fn cleanup_source(inbox_path: &Path, transferred_files: &[FileInfo]) -> Re
                 warn!("Failed to delete source file {:?}: {}", file.source_path, e);
             }
         } else {
-            debug!("Skipping external source {:?} during cleanup", file.source_path);
+            debug!(
+                "Skipping external source {:?} during cleanup",
+                file.source_path
+            );
         }
     }
 
@@ -1172,7 +1283,10 @@ fn early_transfer_failure(
         audit_context,
         serde_json::json!({ "reason": "pre-transfer failure" }),
     )];
-    TransferError::TransferFailed { errors, audit_events }
+    TransferError::TransferFailed {
+        errors,
+        audit_events,
+    }
 }
 
 /// Transfer all files from inbox to protected area.
@@ -1222,20 +1336,24 @@ pub async fn transfer_files_with_metrics(
     progress: Option<Arc<ProgressTracker>>,
     external_cancel: Option<CancellationToken>,
 ) -> Result<TransferResult> {
-    info!("Starting file transfer from {:?} to {:?}", inbox_path, warehouse_path);
+    info!(
+        "Starting file transfer from {:?} to {:?}",
+        inbox_path, warehouse_path
+    );
 
     // Step 1: Validate warehouse path.
-    let warehouse_canonical = match validate_warehouse_path(warehouse_path, &config.protected_base_path).await {
-        Ok(c) => c,
-        Err(e) => {
-            if let Some(m) = metrics.as_ref() {
-                m.transfer_errors_total
-                    .with_label_values(&["warehouse_path_validation_failed"])
-                    .inc();
+    let warehouse_canonical =
+        match validate_warehouse_path(warehouse_path, &config.protected_base_path).await {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(m) = metrics.as_ref() {
+                    m.transfer_errors_total
+                        .with_label_values(&["warehouse_path_validation_failed"])
+                        .inc();
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
 
     // Step 2: Lock inbox directory.
     let lock = match InboxLock::lock(inbox_path).await {
@@ -1260,7 +1378,10 @@ pub async fn transfer_files_with_metrics(
     //      *inside* the inbox whose paths canonicalize under the inbox
     //      root but whose contents live on a different filesystem.
     let inbox_canonical = fs::canonicalize(inbox_path).await.map_err(|e| {
-        TransferError::StorageError(format!("Failed to canonicalize inbox {:?}: {}", inbox_path, e))
+        TransferError::StorageError(format!(
+            "Failed to canonicalize inbox {:?}: {}",
+            inbox_path, e
+        ))
     })?;
     let inbox_meta = tokio::fs::symlink_metadata(&inbox_canonical).await?;
     let inbox_root_id = dev_ino(&inbox_meta);
@@ -1272,8 +1393,12 @@ pub async fn transfer_files_with_metrics(
             Err(e) => {
                 tracing::error!("Pre-transfer integrity scan failed: {}", e);
                 if let Some(m) = metrics.as_ref() {
-                    m.transfer_errors_total.with_label_values(&["inbox_integrity_failed"]).inc();
-                    m.security_events_total.with_label_values(&["inbox_integrity_check_failed"]).inc();
+                    m.transfer_errors_total
+                        .with_label_values(&["inbox_integrity_failed"])
+                        .inc();
+                    m.security_events_total
+                        .with_label_values(&["inbox_integrity_check_failed"])
+                        .inc();
                 }
                 drop(lock);
                 return Err(early_transfer_failure(
@@ -1290,7 +1415,9 @@ pub async fn transfer_files_with_metrics(
     // Step 5: Disk space check with 10% buffer.
     if required_bytes > 0 {
         let required_with_buffer = (required_bytes as f64 * 1.10).ceil() as u64;
-        let target_dir = warehouse_canonical.parent().unwrap_or_else(|| Path::new("/"));
+        let target_dir = warehouse_canonical
+            .parent()
+            .unwrap_or_else(|| Path::new("/"));
         let available = check_disk_space(target_dir, required_with_buffer)?;
         if available < required_with_buffer {
             tracing::error!(
@@ -1299,12 +1426,19 @@ pub async fn transfer_files_with_metrics(
                 available
             );
             if let Some(m) = metrics.as_ref() {
-                m.transfer_errors_total.with_label_values(&["insufficient_disk_space"]).inc();
-                m.security_events_total.with_label_values(&["insufficient_disk_space"]).inc();
+                m.transfer_errors_total
+                    .with_label_values(&["insufficient_disk_space"])
+                    .inc();
+                m.security_events_total
+                    .with_label_values(&["insufficient_disk_space"])
+                    .inc();
             }
             drop(lock);
             return Err(early_transfer_failure(
-                vec![TransferError::InsufficientDiskSpace(required_with_buffer, available)],
+                vec![TransferError::InsufficientDiskSpace(
+                    required_with_buffer,
+                    available,
+                )],
                 SecurityEventType::InsufficientDiskSpace,
                 &audit_context,
             ));
@@ -1315,7 +1449,10 @@ pub async fn transfer_files_with_metrics(
     let (target_base, mut temp_dir) = if config.inbox.atomic_transfer {
         let temp = temp_transfer_dir_name(&warehouse_canonical);
         fs::create_dir_all(&temp).await.map_err(|e| {
-            TransferError::StorageError(format!("Failed to create temp transfer directory {:?}: {}", temp, e))
+            TransferError::StorageError(format!(
+                "Failed to create temp transfer directory {:?}: {}",
+                temp, e
+            ))
         })?;
         (temp.clone(), Some(temp))
     } else {
@@ -1385,7 +1522,9 @@ pub async fn transfer_files_with_metrics(
                         .acquire_owned()
                         .await
                         .expect("transfer semaphore was closed");
-                    match copy_file_worker($source, target_path, chunk_size, ctx.clone(), cnt, m, p).await {
+                    match copy_file_worker($source, target_path, chunk_size, ctx.clone(), cnt, m, p)
+                        .await
+                    {
                         Ok(info) => Ok(info),
                         Err(e) => {
                             // Record here so the producer observes the
@@ -1487,7 +1626,9 @@ pub async fn transfer_files_with_metrics(
                 error!("File transfer failed: {}", e);
                 collected_errors.push(e);
                 if let Some(m) = metrics.as_ref() {
-                    m.transfer_errors_total.with_label_values(&["file_transfer_failed"]).inc();
+                    m.transfer_errors_total
+                        .with_label_values(&["file_transfer_failed"])
+                        .inc();
                 }
             }
             Err(e) => {
@@ -1561,7 +1702,10 @@ pub async fn transfer_files_with_metrics(
     if let Some(temp) = temp_dir {
         if warehouse_canonical.exists() {
             let mut existing = fs::read_dir(&warehouse_canonical).await.map_err(|e| {
-                TransferError::StorageError(format!("Failed to inspect existing warehouse path: {}", e))
+                TransferError::StorageError(format!(
+                    "Failed to inspect existing warehouse path: {}",
+                    e
+                ))
             })?;
             let has_entries = existing.next_entry().await?.is_some();
             if has_entries {

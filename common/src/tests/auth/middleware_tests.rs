@@ -2,10 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::Request,
-    };
+    use axum::{body::Body, http::Request};
 
     use crate::auth::claims::{Claims, ResourceAccess};
     use crate::auth::config::AuthConfig;
@@ -80,10 +77,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_auth_header_detection() {
-        let req = Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
         let auth_header = req
             .headers()
@@ -127,7 +121,7 @@ mod tests {
         assert!(auth_header.is_some());
         let header_value = auth_header.unwrap();
         assert!(header_value.starts_with("Bearer "));
-        
+
         let token = &header_value[7..];
         assert_eq!(token, "token123");
     }

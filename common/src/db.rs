@@ -32,7 +32,7 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let client_fut = Client::with_uri_str(uri);
-    
+
     tokio::select! {
         result = client_fut => {
             let client = result
@@ -41,7 +41,7 @@ where
             // Store the database reference before the select
             let db = client.database(name);
             let ping_fut = db.run_command(mongodb::bson::doc! { "ping": 1 });
-            
+
             tokio::select! {
                 result = ping_fut => {
                     result
@@ -69,6 +69,10 @@ pub fn db_database(client: &Client, name: &str) -> Database {
 }
 
 /// Get a collection from the database
-pub fn db_collection<T: Send + Sync>(client: &Client, db_name: &str, collection_name: &str) -> Collection<T> {
+pub fn db_collection<T: Send + Sync>(
+    client: &Client,
+    db_name: &str,
+    collection_name: &str,
+) -> Collection<T> {
     db_database(client, db_name).collection(collection_name)
 }

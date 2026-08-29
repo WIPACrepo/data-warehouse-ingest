@@ -1,10 +1,6 @@
 //! Job callback handler - receives completion notifications from job executors
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use mongodb::bson::doc;
 use serde::{Deserialize, Serialize};
@@ -13,8 +9,8 @@ use tracing::{error, info, warn};
 use crate::AppState;
 use crate::db::{callback_nonces_collection, inboxes_collection, jobs_collection};
 use crate::error::{AppError, Result};
-use crate::models::{CallbackNonceDB, JobStatus, TransferResult};
 use crate::jobs::types::JobType;
+use crate::models::{CallbackNonceDB, JobStatus, TransferResult};
 
 /// Nonce TTL window (seconds). Expired-but-present nonces are reusable; a
 /// TTL index on `callback_nonces.expires_at` garbage-collects them.
@@ -61,10 +57,7 @@ fn nonce_is_live(existing: &CallbackNonceDB, now: DateTime<Utc>) -> bool {
 /// replaced (upsert) rather than rejected, so the replay-protection window
 /// stays semantically "5 minutes" while the TTL index garbage-collects old
 /// rows.
-async fn validate_and_store_nonce(
-    app_state: &AppState,
-    nonce: &str,
-) -> Result<()> {
+async fn validate_and_store_nonce(app_state: &AppState, nonce: &str) -> Result<()> {
     let nonces_coll = callback_nonces_collection(&app_state.db_client, &app_state.config);
 
     // Check if nonce already exists
@@ -142,10 +135,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter()
-        .zip(b)
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Validate the callback secret from the X-Callback-Secret header.
@@ -154,12 +144,11 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 ///   is rejected with [`AppError::InvalidCallbackSecret`].
 /// - Secret configured + header missing: rejected.
 /// - No secret configured: dev-mode passthrough (warning is logged).
-async fn validate_callback_secret(app_state: &AppState, headers: &axum::http::HeaderMap) -> Result<()> {
-    let configured_secret = app_state
-        .callback_secret
-        .read()
-        .await
-        .clone();
+async fn validate_callback_secret(
+    app_state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<()> {
+    let configured_secret = app_state.callback_secret.read().await.clone();
 
     match configured_secret {
         Some(configured) => {
@@ -179,7 +168,10 @@ async fn validate_callback_secret(app_state: &AppState, headers: &axum::http::He
         }
         None => {
             // No secret configured — log warning in production
-            if !matches!(app_state.config.job_executor, crate::config::JobExecutorType::Mock) {
+            if !matches!(
+                app_state.config.job_executor,
+                crate::config::JobExecutorType::Mock
+            ) {
                 warn!("Callback secret not configured; relying on nonce+timestamp only");
             }
             Ok(())
@@ -188,12 +180,7 @@ async fn validate_callback_secret(app_state: &AppState, headers: &axum::http::He
 }
 
 /// Push an error onto a job's `errors` array (used for notification failures).
-async fn push_job_error(
-    app_state: &AppState,
-    job_id: &str,
-    code: &str,
-    message: &str,
-) {
+async fn push_job_error(app_state: &AppState, job_id: &str, code: &str, message: &str) {
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
     let now = Utc::now();
     if let Err(e) = jobs_coll
@@ -212,7 +199,10 @@ async fn push_job_error(
         .await
     {
         // Only log; notification errors must never fail the callback itself.
-        warn!("Failed to record notification error on job {}: {}", job_id, e);
+        warn!(
+            "Failed to record notification error on job {}: {}",
+            job_id, e
+        );
     }
 }
 
@@ -232,28 +222,50 @@ async fn notify_catalog_and_lta(
     let mut catalog_ok = true;
 
     if notify_catalog {
-        match app_state.catalog_notifier.notify(inbox_doc, transfer_result).await {
+        match app_state
+            .catalog_notifier
+            .notify(inbox_doc, transfer_result)
+            .await
+        {
             Ok(()) => {
                 info!("Catalog notification succeeded for job {}", job_id);
             }
             Err(e) => {
                 catalog_ok = false;
                 error!("Catalog notification failed for job {}: {}", job_id, e);
-                app_state.metrics.notify_errors_total.with_label_values(&["catalog"]).inc();
-                push_job_error(app_state, job_id, "catalog_notify_failed", &format!("{}", e)).await;
+                app_state
+                    .metrics
+                    .notify_errors_total
+                    .with_label_values(&["catalog"])
+                    .inc();
+                push_job_error(
+                    app_state,
+                    job_id,
+                    "catalog_notify_failed",
+                    &format!("{}", e),
+                )
+                .await;
             }
         }
     }
 
     // LTA only after catalog succeeds.
     if notify_lta && catalog_ok {
-        match app_state.lta_notifier.notify(inbox_doc, transfer_result).await {
+        match app_state
+            .lta_notifier
+            .notify(inbox_doc, transfer_result)
+            .await
+        {
             Ok(()) => {
                 info!("LTA notification succeeded for job {}", job_id);
             }
             Err(e) => {
                 error!("LTA notification failed for job {}: {}", job_id, e);
-                app_state.metrics.notify_errors_total.with_label_values(&["lta"]).inc();
+                app_state
+                    .metrics
+                    .notify_errors_total
+                    .with_label_values(&["lta"])
+                    .inc();
                 push_job_error(app_state, job_id, "lta_notify_failed", &format!("{}", e)).await;
             }
         }
@@ -280,7 +292,11 @@ async fn persist_terminal_job_update(
         "updated_at": now.to_rfc3339(),
     };
     if let Some(result) = result {
-        set.insert("result", mongodb::bson::to_document(&result).map_err(|e| AppError::DatabaseError(e.to_string()))?);
+        set.insert(
+            "result",
+            mongodb::bson::to_document(&result)
+                .map_err(|e| AppError::DatabaseError(e.to_string()))?,
+        );
     }
 
     let mut update = doc! { "$set": set, "$inc": { "version": 1 } };
@@ -290,18 +306,12 @@ async fn persist_terminal_job_update(
             .filter_map(|e| mongodb::bson::to_document(&e).ok())
             .collect();
         if !errors_bson.is_empty() {
-            update.insert(
-                "$push",
-                doc! { "errors": { "$each": errors_bson } },
-            );
+            update.insert("$push", doc! { "errors": { "$each": errors_bson } });
         }
     }
 
     let outcome = jobs_coll
-        .update_one(
-            doc! { "job_id": job_id, "version": version },
-            update,
-        )
+        .update_one(doc! { "job_id": job_id, "version": version }, update)
         .await
         .map_err(|e| AppError::DatabaseError(format!("Failed to update job: {}", e)))?;
 
@@ -346,20 +356,39 @@ async fn forward_terminal_transition(
                     .map(|i| i.warehouse_path)
                     .unwrap_or_default();
 
-                app_state.barbican_client
-                    .publish_complete(&inbox_id, job_id, files_transferred as u64, total_bytes, &protected_path)
+                app_state
+                    .barbican_client
+                    .publish_complete(
+                        &inbox_id,
+                        job_id,
+                        files_transferred as u64,
+                        total_bytes,
+                        &protected_path,
+                    )
                     .await
             } else {
-                app_state.barbican_client
-                    .publish_failure(&inbox_id, job_id, "publish_failed", "Publish job reported failure")
+                app_state
+                    .barbican_client
+                    .publish_failure(
+                        &inbox_id,
+                        job_id,
+                        "publish_failed",
+                        "Publish job reported failure",
+                    )
                     .await
             };
             match result {
                 Ok(_) => {
-                    info!("Forwarded terminal publish state for job {} to Barbican", job_id);
+                    info!(
+                        "Forwarded terminal publish state for job {} to Barbican",
+                        job_id
+                    );
                 }
                 Err(e) => {
-                    error!("Failed to forward terminal publish state for job {} to Barbican: {}", job_id, e);
+                    error!(
+                        "Failed to forward terminal publish state for job {} to Barbican: {}",
+                        job_id, e
+                    );
                     app_state.metrics.barbican_api_errors_total.inc();
                 }
             }
@@ -367,18 +396,33 @@ async fn forward_terminal_transition(
         JobType::DeleteInbox { inbox_id } => {
             let inbox_id = *inbox_id;
             let result = if success {
-                app_state.barbican_client.delete_complete(&inbox_id, job_id).await
+                app_state
+                    .barbican_client
+                    .delete_complete(&inbox_id, job_id)
+                    .await
             } else {
-                app_state.barbican_client
-                    .delete_failure(&inbox_id, job_id, "delete_failed", "Delete job reported failure")
+                app_state
+                    .barbican_client
+                    .delete_failure(
+                        &inbox_id,
+                        job_id,
+                        "delete_failed",
+                        "Delete job reported failure",
+                    )
                     .await
             };
             match result {
                 Ok(_) => {
-                    info!("Forwarded terminal delete state for job {} to Barbican", job_id);
+                    info!(
+                        "Forwarded terminal delete state for job {} to Barbican",
+                        job_id
+                    );
                 }
                 Err(e) => {
-                    error!("Failed to forward terminal delete state for job {} to Barbican: {}", job_id, e);
+                    error!(
+                        "Failed to forward terminal delete state for job {} to Barbican: {}",
+                        job_id, e
+                    );
                     app_state.metrics.barbican_api_errors_total.inc();
                 }
             }
@@ -404,8 +448,14 @@ pub async fn job_callback(
         .ok_or_else(|| AppError::JobNotFound(request.job_id.clone()))?;
 
     // Check if job is already completed
-    if matches!(job.status, JobStatus::Completed | JobStatus::Cancelled | JobStatus::Failed | JobStatus::TimedOut) {
-        warn!("Callback received for already completed job {}", request.job_id);
+    if matches!(
+        job.status,
+        JobStatus::Completed | JobStatus::Cancelled | JobStatus::Failed | JobStatus::TimedOut
+    ) {
+        warn!(
+            "Callback received for already completed job {}",
+            request.job_id
+        );
         return Ok((
             StatusCode::OK,
             Json(JobCallbackResponse { acknowledged: true }),
@@ -442,7 +492,10 @@ pub async fn job_callback(
                         None,
                         vec![crate::models::JobError {
                             code: "job_execution_failed".to_string(),
-                            message: format!("Job failed with {} bytes transferred", result.total_bytes),
+                            message: format!(
+                                "Job failed with {} bytes transferred",
+                                result.total_bytes
+                            ),
                             timestamp: request.timestamp,
                         }],
                     )
@@ -485,7 +538,7 @@ pub async fn job_callback(
         .as_ref()
         .map(|r| r.files_transferred)
         .unwrap_or(0);
-    let terminal_success = matches!(terminal_status, JobStatus::Completed);    // ------------------------------------------------------------------
+    let terminal_success = matches!(terminal_status, JobStatus::Completed); // ------------------------------------------------------------------
     // (a) Persist the terminal JobDB write FIRST (optimistic-locked so a
     //     delayed/stale callback cannot overwrite a newer version — P2.3).
     // ------------------------------------------------------------------
@@ -526,7 +579,12 @@ pub async fn job_callback(
 
     // (c) Notify catalog/LTA for successful publishes.
     if terminal_success {
-        if let JobType::PublishInbox { notify_catalog, notify_lta, inbox_id } = &job_type {
+        if let JobType::PublishInbox {
+            notify_catalog,
+            notify_lta,
+            inbox_id,
+        } = &job_type
+        {
             let inbox = inboxes_collection(&app_state.db_client, &app_state.config)
                 .find_one(doc! { "_id": inbox_id })
                 .await

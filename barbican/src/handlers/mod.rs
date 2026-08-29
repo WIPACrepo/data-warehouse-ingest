@@ -15,7 +15,7 @@ pub use list_inboxes::list_inboxes;
 pub use publish_inbox::publish_inbox;
 pub use ready::ready;
 pub use transition::{
-    create_start, create_progress, create_complete, create_failure,
-    publish_start, publish_progress, publish_complete, publish_failure,
-    delete_start, delete_progress, delete_complete, delete_failure,
+    create_complete, create_failure, create_progress, create_start, delete_complete,
+    delete_failure, delete_progress, delete_start, publish_complete, publish_failure,
+    publish_progress, publish_start,
 };

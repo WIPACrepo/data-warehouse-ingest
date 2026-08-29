@@ -12,12 +12,12 @@ use tower::ServiceExt;
 
 use crate::handlers::{create_inbox, delete_inbox, get_inbox, publish_inbox};
 use crate::{AppState, Config, CreateInbox, InboxDB, InboxStatus};
-use common::{AuthConfig, JwksCache, JwtValidator, AuthMiddlewareState, MockInboxStore};
+use common::{AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator, MockInboxStore};
 
 /// Helper to create test AppState
 fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
     let config = Config::default();
-    
+
     // Initialize common auth components for testing
     let auth_config = AuthConfig {
         keycloak_url: "http://localhost:8080".to_string(),

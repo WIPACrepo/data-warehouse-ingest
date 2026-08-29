@@ -1,9 +1,9 @@
 //! List jobs handler
 
 use axum::{
+    Json,
     extract::{Extension, Query, State},
     http::StatusCode,
-    Json,
 };
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
@@ -57,31 +57,36 @@ pub async fn list_jobs(
     }
 
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
-    
+
     // Build query filter
     let mut filter = doc! {};
-    
+
     if let Some(status) = params.status {
         filter.insert("status", status.to_lowercase());
     }
-    
+
     if let Some(inbox_id) = params.inbox_id {
         if let Ok(object_id) = mongodb::bson::oid::ObjectId::parse_str(&inbox_id) {
             filter.insert("inbox_id", object_id);
         }
     }
-    
+
     let options = mongodb::options::FindOptions::builder()
         .limit(params.limit as i64)
         .sort(doc! { "created_at": -1 })
         .build();
 
-    let mut cursor = jobs_coll.find(filter).with_options(options).await
+    let mut cursor = jobs_coll
+        .find(filter)
+        .with_options(options)
+        .await
         .map_err(|e| AppError::DatabaseError(format!("Failed to query jobs: {}", e)))?;
-    
+
     let mut jobs = Vec::new();
-    while let Some(job) = cursor.try_next().await
-        .map_err(|e| AppError::DatabaseError(format!("Failed to iterate cursor: {}", e)))? 
+    while let Some(job) = cursor
+        .try_next()
+        .await
+        .map_err(|e| AppError::DatabaseError(format!("Failed to iterate cursor: {}", e)))?
     {
         let job_type_str = match &job.job_type {
             JobType::PublishInbox { .. } => "publish",
@@ -96,8 +101,5 @@ pub async fn list_jobs(
         });
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(ListJobsResponse { jobs }),
-    ))
+    Ok((StatusCode::OK, Json(ListJobsResponse { jobs })))
 }

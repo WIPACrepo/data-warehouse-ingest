@@ -57,11 +57,9 @@ pub async fn auth_middleware(
             return Err(match e {
                 AuthError::JwksNotAvailable
                 | AuthError::JwksFetchFailed(_)
-                | AuthError::JwksParseFailed(_) => {
-                    AppError::ServiceUnavailable(
-                        "JWT verification temporarily unavailable".to_string(),
-                    )
-                }
+                | AuthError::JwksParseFailed(_) => AppError::ServiceUnavailable(
+                    "JWT verification temporarily unavailable".to_string(),
+                ),
                 other => AppError::AuthError(redact_auth_error(&other)),
             });
         }
@@ -74,13 +72,17 @@ pub async fn auth_middleware(
     if !has_required_role {
         // Track which specific role was missing for denied requests
         for role in &state.required_roles {
-            if !claims.has_role(&state.service_name, role) && !claims.is_admin(&state.service_name) {
+            if !claims.has_role(&state.service_name, role) && !claims.is_admin(&state.service_name)
+            {
                 metrics::AUTHZ_DENIED_BY_ROLE
                     .with_label_values(&[role, &state.service_name])
                     .inc();
             }
         }
-        tracing::warn!("User [REDACTED] lacks required roles for service '{}'", state.service_name);
+        tracing::warn!(
+            "User [REDACTED] lacks required roles for service '{}'",
+            state.service_name
+        );
         metrics::AUTHZ_CHECK_TOTAL
             .with_label_values(&["denied", &state.service_name])
             .inc();

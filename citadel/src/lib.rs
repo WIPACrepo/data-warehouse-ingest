@@ -1,5 +1,5 @@
 //! Citadel - Backend service for protected data area management
-//! 
+//!
 //! Citadel manages inbox lifecycle, file transfers, and notifications to downstream systems.
 //! It consists of two binaries:
 //! - `citadel`: Long-running HTTP service
@@ -39,19 +39,22 @@ pub mod storage;
 #[cfg(test)]
 pub mod tests;
 
-pub use common::{AuthConfig, AuthMiddlewareState, Claims, ClaimsExtractor, JwksCache, JwtValidator, auth_middleware};
+pub use common::{
+    AuthConfig, AuthMiddlewareState, Claims, ClaimsExtractor, JwksCache, JwtValidator,
+    auth_middleware,
+};
 pub use config::CitadelConfig;
 pub use error::{AppError, Result};
 
-use std::sync::Arc;
-use mongodb::Client;
-use tokio::sync::RwLock;
-use crate::storage::manager::StorageManager;
 use crate::integrations::barbican::InboxTransitioner;
-use crate::jobs::executor::JobExecutor;
 use crate::integrations::catalog::CatalogNotifier;
 use crate::integrations::lta::LtaNotifier;
+use crate::jobs::executor::JobExecutor;
 use crate::metrics::CitadelMetrics;
+use crate::storage::manager::StorageManager;
+use mongodb::Client;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Application state shared across handlers
 #[derive(Clone)]

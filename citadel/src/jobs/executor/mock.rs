@@ -5,8 +5,8 @@
 
 use crate::config::CitadelConfig;
 use crate::error::Result;
-use crate::jobs::types::{JobStatus, JobStatusDetail, JobExecutorInfo};
 use crate::jobs::executor::JobExecutor;
+use crate::jobs::types::{JobExecutorInfo, JobStatus, JobStatusDetail};
 use crate::models::JobDB;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,10 +38,7 @@ impl MockExecutor {
             // Check target/debug or target/release
             std::env::current_exe()
                 .ok()
-                .and_then(|exe| {
-                    exe.parent()
-                        .map(|p| p.join("citadel-job"))
-                }),
+                .and_then(|exe| exe.parent().map(|p| p.join("citadel-job"))),
             // Check the binary name from config
             Some(std::path::PathBuf::from(&self.config.job_binary)),
         ];
@@ -70,11 +67,19 @@ impl MockExecutor {
             ("INBOX_ID".to_string(), job.inbox_id.to_string()),
             (
                 "INBOX_PATH".to_string(),
-                self.config.inbox_base_path.join(job.inbox_id.to_string()).to_string_lossy().to_string(),
+                self.config
+                    .inbox_base_path
+                    .join(job.inbox_id.to_string())
+                    .to_string_lossy()
+                    .to_string(),
             ),
             (
                 "WAREHOUSE_PATH".to_string(),
-                self.config.protected_base_path.join(job.inbox_id.to_string()).to_string_lossy().to_string(),
+                self.config
+                    .protected_base_path
+                    .join(job.inbox_id.to_string())
+                    .to_string_lossy()
+                    .to_string(),
             ),
             (
                 "CITADEL_CALLBACK_URL".to_string(),
@@ -113,7 +118,10 @@ impl MockExecutor {
         if self.config.job_callback_secret_file.exists() {
             env.push((
                 "CITADEL_CALLBACK_SECRET_FILE".to_string(),
-                self.config.job_callback_secret_file.to_string_lossy().to_string(),
+                self.config
+                    .job_callback_secret_file
+                    .to_string_lossy()
+                    .to_string(),
             ));
         }
 
@@ -177,10 +185,7 @@ impl JobExecutor for MockExecutor {
                                 running.remove(&job_id);
                             }
                             Err(e) => {
-                                warn!(
-                                    "Mock process for job {} failed to wait: {}",
-                                    job_id, e
-                                );
+                                warn!("Mock process for job {} failed to wait: {}", job_id, e);
                                 let mut completed = completed_jobs.write().await;
                                 completed.insert(job_id.clone(), JobStatus::Failed);
 
@@ -207,10 +212,7 @@ impl JobExecutor for MockExecutor {
 
         // Track the job as running
         let mut running = self.running_jobs.write().await;
-        running.insert(
-            job.job_id.clone(),
-            chrono::Utc::now(),
-        );
+        running.insert(job.job_id.clone(), chrono::Utc::now());
         drop(running);
 
         Ok(job.job_id.clone())

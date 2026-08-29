@@ -14,13 +14,11 @@ use common::{
 use mongodb::Collection;
 
 fn env_uri() -> String {
-    std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "mongodb://localhost:27017".to_string())
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "mongodb://localhost:27017".to_string())
 }
 
 fn env_db() -> String {
-    std::env::var("DATABASE_NAME")
-        .unwrap_or_else(|_| "data_warehouse".to_string())
+    std::env::var("DATABASE_NAME").unwrap_or_else(|_| "data_warehouse".to_string())
 }
 
 #[tokio::test]

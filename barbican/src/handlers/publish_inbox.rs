@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use mongodb::bson::{doc, oid::ObjectId};
 use serde::Serialize;
@@ -28,7 +28,8 @@ pub async fn publish_inbox(
     Path(id): Path<ObjectId>,
 ) -> Result<(StatusCode, Json<PublishInboxResponse>), AppError> {
     // Find the inbox first
-    let inbox = state.store
+    let inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -73,13 +74,8 @@ pub async fn publish_inbox(
         }
     };
 
-    crate::handlers::transition::apply_versioned_update(
-        &state.store,
-        &id,
-        inbox.version,
-        &update,
-    )
-    .await?;
+    crate::handlers::transition::apply_versioned_update(&state.store, &id, inbox.version, &update)
+        .await?;
 
     // Trigger Citadel publish operation (fire-and-forget). On failure, apply
     // the in-Barbican fallback (D2) so the inbox doesn't stay `Publishing`.
@@ -112,8 +108,8 @@ pub async fn publish_inbox(
     Ok((
         StatusCode::ACCEPTED,
         Json(PublishInboxResponse {
-        inbox_id: id.to_hex(),
-        status: "publishing".to_string(),
+            inbox_id: id.to_hex(),
+            status: "publishing".to_string(),
             message: "Inbox publish operation initiated".to_string(),
         }),
     ))

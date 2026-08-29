@@ -1,9 +1,9 @@
 //! Cancel job handler
 
 use axum::{
+    Json,
     extract::{Extension, Path, State},
     http::StatusCode,
-    Json,
 };
 use serde::Serialize;
 
@@ -33,27 +33,27 @@ pub async fn cancel_job(
     }
 
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
-    
+
     // Find the job
     let mut job = jobs_coll
         .find_one(mongodb::bson::doc! { "job_id": &job_id })
         .await
-        .map_err(|e| {
-            AppError::DatabaseError(format!("Failed to query job: {}", e))
-        })?
+        .map_err(|e| AppError::DatabaseError(format!("Failed to query job: {}", e)))?
         .ok_or_else(|| AppError::JobNotFound(job_id.clone()))?;
 
     // Check if job can be cancelled
     match job.status {
         JobStatus::Completed | JobStatus::Cancelled | JobStatus::Failed | JobStatus::TimedOut => {
-            return Err(AppError::Conflict(
-                format!("Job {} cannot be cancelled in status {:?}", job_id, job.status)
-            ));
+            return Err(AppError::Conflict(format!(
+                "Job {} cannot be cancelled in status {:?}",
+                job_id, job.status
+            )));
         }
         JobStatus::Cancelling => {
-            return Err(AppError::Conflict(
-                format!("Job {} is already being cancelled", job_id)
-            ));
+            return Err(AppError::Conflict(format!(
+                "Job {} is already being cancelled",
+                job_id
+            )));
         }
         _ => {}
     }
@@ -61,14 +61,9 @@ pub async fn cancel_job(
     // Update job status to cancelling
     job.status = JobStatus::Cancelling;
     jobs_coll
-        .replace_one(
-            mongodb::bson::doc! { "job_id": &job_id },
-            &job,
-        )
+        .replace_one(mongodb::bson::doc! { "job_id": &job_id }, &job)
         .await
-        .map_err(|e| {
-            AppError::DatabaseError(format!("Failed to update job status: {}", e))
-        })?;
+        .map_err(|e| AppError::DatabaseError(format!("Failed to update job status: {}", e)))?;
 
     // Cancel the job in the executor
     app_state.executor.cancel(&job_id).await?;
@@ -76,14 +71,9 @@ pub async fn cancel_job(
     // Update final status
     job.status = JobStatus::Cancelled;
     jobs_coll
-        .replace_one(
-            mongodb::bson::doc! { "job_id": &job_id },
-            &job,
-        )
+        .replace_one(mongodb::bson::doc! { "job_id": &job_id }, &job)
         .await
-        .map_err(|e| {
-            AppError::DatabaseError(format!("Failed to update job status: {}", e))
-        })?;
+        .map_err(|e| AppError::DatabaseError(format!("Failed to update job status: {}", e)))?;
 
     Ok((
         StatusCode::OK,

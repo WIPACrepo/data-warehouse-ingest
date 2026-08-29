@@ -19,12 +19,12 @@ pub struct AuthConfig {
 
 impl AuthConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let keycloak_url = std::env::var("KEYCLOAK_URL")
-            .unwrap_or_else(|_| "http://localhost:8080".to_string());
-        let keycloak_realm = std::env::var("KEYCLOAK_REALM")
-            .unwrap_or_else(|_| "data-warehouse".to_string());
-        let keycloak_client_id = std::env::var("KEYCLOAK_CLIENT_ID")
-            .unwrap_or_else(|_| "default-client".to_string());
+        let keycloak_url =
+            std::env::var("KEYCLOAK_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let keycloak_realm =
+            std::env::var("KEYCLOAK_REALM").unwrap_or_else(|_| "data-warehouse".to_string());
+        let keycloak_client_id =
+            std::env::var("KEYCLOAK_CLIENT_ID").unwrap_or_else(|_| "default-client".to_string());
         let required_roles = std::env::var("REQUIRED_ROLES")
             .unwrap_or_else(|_| "read,write".to_string())
             .split(',')
@@ -60,41 +60,42 @@ impl AuthConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Check for insecure localhost in production
-        if self.keycloak_url == "http://localhost:8080" 
-            && std::env::var("PRODUCTION").unwrap_or_else(|_| "false".to_string()) == "true" 
+        if self.keycloak_url == "http://localhost:8080"
+            && std::env::var("PRODUCTION").unwrap_or_else(|_| "false".to_string()) == "true"
         {
             return Err(ConfigError::InvalidValue(
-                "KEYCLOAK_URL must not use localhost in production".to_string()
+                "KEYCLOAK_URL must not use localhost in production".to_string(),
             ));
         }
 
         // Validate algorithm whitelist
         if self.allowed_algorithms.is_empty() {
             return Err(ConfigError::InvalidValue(
-                "At least one algorithm must be specified".to_string()
+                "At least one algorithm must be specified".to_string(),
             ));
         }
 
         // Reject insecure algorithms
         for alg in &self.allowed_algorithms {
             if alg.starts_with("HS") || alg == "none" {
-                return Err(ConfigError::InvalidValue(
-                    format!("Symmetric algorithm '{}' not allowed", alg)
-                ));
+                return Err(ConfigError::InvalidValue(format!(
+                    "Symmetric algorithm '{}' not allowed",
+                    alg
+                )));
             }
         }
 
         // Validate refresh interval
         if self.jwks_refresh_secs < 60 {
             return Err(ConfigError::InvalidValue(
-                "JWKS_REFRESH_SECS must be at least 60".to_string()
+                "JWKS_REFRESH_SECS must be at least 60".to_string(),
             ));
         }
 
         // Validate leeway
         if self.leeway_ms > 60000 {
             return Err(ConfigError::InvalidValue(
-                "TOKEN_LEEWAY_MS must not exceed 60000 (60 seconds)".to_string()
+                "TOKEN_LEEWAY_MS must not exceed 60000 (60 seconds)".to_string(),
             ));
         }
 

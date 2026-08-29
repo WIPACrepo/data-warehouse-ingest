@@ -11,11 +11,7 @@
 //! Barbican, metered by the client) but never fail the callback or the
 //! transfer.
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
@@ -80,9 +76,7 @@ pub async fn job_progress(
         JobType::PublishInbox { inbox_id, .. } => {
             forward_publish(&app_state, inbox_id, &request).await
         }
-        JobType::DeleteInbox { inbox_id } => {
-            forward_delete(&app_state, inbox_id, &request).await
-        }
+        JobType::DeleteInbox { inbox_id } => forward_delete(&app_state, inbox_id, &request).await,
     };
 
     match forward_result {
@@ -154,11 +148,7 @@ async fn forward_delete(
 }
 
 fn phase_or<'a>(phase: &'a str, default: &'a str) -> &'a str {
-    if phase.is_empty() {
-        default
-    } else {
-        phase
-    }
+    if phase.is_empty() { default } else { phase }
 }
 
 #[cfg(test)]
@@ -248,15 +238,23 @@ mod forwarding_tests {
         let inbox_id = ObjectId::new();
         let mut mock = MockInboxTransitioner::new();
         mock.expect_publish_progress()
-            .withf(move |id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes| {
-                id == &inbox_id
-                    && job_id == "job-1"
-                    && phase == "transferring"
-                    && *total_files == 10
-                    && *processed_files == 4
-                    && *total_bytes == 1000
-                    && *transferred_bytes == 400
-            })
+            .withf(
+                move |id,
+                      job_id,
+                      phase,
+                      total_files,
+                      processed_files,
+                      total_bytes,
+                      transferred_bytes| {
+                    id == &inbox_id
+                        && job_id == "job-1"
+                        && phase == "transferring"
+                        && *total_files == 10
+                        && *processed_files == 4
+                        && *total_bytes == 1000
+                        && *transferred_bytes == 400
+                },
+            )
             .times(1)
             .returning(|_, _, _, _, _, _, _| {
                 Box::pin(async { Err(AppError::ServiceUnavailable("down".into())) })

@@ -1,9 +1,9 @@
 //! JWKS caching with rate limiting
 
-use jsonwebtoken::{DecodingKey, Algorithm};
+use chrono::{DateTime, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
 
 use crate::auth::error::AuthError;
@@ -58,7 +58,7 @@ impl JwksCache {
         if *init_guard {
             return Ok(()); // Already initialized
         }
-        
+
         info!("Initializing JWKS cache from {}", self.jwks_url);
         match self.fetch_jwks().await {
             Ok(jwks) => {
@@ -80,7 +80,7 @@ impl JwksCache {
 
     pub async fn get_jwks(&self) -> Result<Jwks, AuthError> {
         let now = Utc::now();
-        
+
         // Check cache first
         {
             let cache_guard = self.cache.read().await;
@@ -88,19 +88,17 @@ impl JwksCache {
                 if now < *cached_at + chrono::Duration::seconds(self.refresh_interval_secs as i64) {
                     debug!("Using cached JWKS");
                     crate::metrics::JWKS_CACHE_HITS.inc();
-                    crate::metrics::JWKS_CACHE_STALENESS.set(
-                        now.signed_duration_since(*cached_at).num_seconds() as f64
-                    );
+                    crate::metrics::JWKS_CACHE_STALENESS
+                        .set(now.signed_duration_since(*cached_at).num_seconds() as f64);
                     return Ok(jwks.clone());
                 } else {
                     // Cache exists but is stale - report staleness
-                    crate::metrics::JWKS_CACHE_STALENESS.set(
-                        now.signed_duration_since(*cached_at).num_seconds() as f64
-                    );
+                    crate::metrics::JWKS_CACHE_STALENESS
+                        .set(now.signed_duration_since(*cached_at).num_seconds() as f64);
                 }
             }
         }
-        
+
         // Rate limit: only refresh if 60 seconds have passed since last refresh attempt
         {
             let last_refresh_guard = self.last_refresh.read().await;
@@ -113,7 +111,7 @@ impl JwksCache {
                 }
             }
         }
-        
+
         // Fetch new JWKS
         info!("Fetching JWKS from {}", self.jwks_url);
         crate::metrics::JWKS_FETCH_TOTAL.inc();
@@ -124,7 +122,7 @@ impl JwksCache {
                 return Err(e);
             }
         };
-        
+
         // Update cache and last refresh time
         {
             let mut cache_guard = self.cache.write().await;
@@ -134,39 +132,42 @@ impl JwksCache {
             let mut last_refresh_guard = self.last_refresh.write().await;
             *last_refresh_guard = now;
         }
-        
+
         Ok(jwks)
     }
 
     async fn fetch_jwks(&self) -> Result<Jwks, AuthError> {
-        let response = self.client
+        let response = self
+            .client
             .get(&self.jwks_url)
             .send()
             .await
             .map_err(|e| AuthError::JwksFetchFailed(e.to_string()))?;
-        
+
         if !response.status().is_success() {
             return Err(AuthError::JwksFetchFailed(format!(
                 "JWKS endpoint returned status: {}",
                 response.status()
             )));
         }
-        
+
         let jwks = response
             .json()
             .await
             .map_err(|e| AuthError::JwksParseFailed(e.to_string()))?;
-        
+
         Ok(jwks)
     }
 
     pub async fn get_decoding_key(&self, kid: &str) -> Result<(DecodingKey, Algorithm), AuthError> {
         let jwks = self.get_jwks().await?;
-        
-        let jwk = jwks.keys.iter()
+
+        let jwk = jwks
+            .keys
+            .iter()
             .find(|k| k.kid.as_deref() == Some(kid))
             .ok_or_else(|| AuthError::UnknownKeyId(kid.to_string()))?;
-        
+
         let alg = match jwk.alg.as_deref().unwrap_or("RS256") {
             "RS256" => Algorithm::RS256,
             "RS384" => Algorithm::RS384,
@@ -176,39 +177,46 @@ impl JwksCache {
             "EdDSA" => Algorithm::EdDSA,
             other => return Err(AuthError::UnsupportedAlgorithm(other.to_string())),
         };
-        
-        let decoding_key = match jwk.kty.as_str() {
-            "RSA" => {
-                let n = jwk.n.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'n' in RSA JWK".to_string()))?;
-                let e = jwk.e.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'e' in RSA JWK".to_string()))?;
-                DecodingKey::from_rsa_components(n, e)
-                    .map_err(|e| AuthError::InvalidKey(format!("Invalid RSA key: {}", e)))?
-            }
-            "EC" => {
-                let x = jwk.x.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'x' in EC JWK".to_string()))?;
-                let y = jwk.y.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'y' in EC JWK".to_string()))?;
-                let crv = jwk.crv.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'crv' in EC JWK".to_string()))?;
-                if crv == "P-256" {
-                    DecodingKey::from_ec_components(x, y)
-                        .map_err(|e| AuthError::InvalidKey(format!("Invalid EC key: {}", e)))?
-                } else {
-                    return Err(AuthError::UnsupportedCurve(crv.to_string()));
+
+        let decoding_key =
+            match jwk.kty.as_str() {
+                "RSA" => {
+                    let n = jwk.n.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'n' in RSA JWK".to_string())
+                    })?;
+                    let e = jwk.e.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'e' in RSA JWK".to_string())
+                    })?;
+                    DecodingKey::from_rsa_components(n, e)
+                        .map_err(|e| AuthError::InvalidKey(format!("Invalid RSA key: {}", e)))?
                 }
-            }
-            "OKP" => {
-                let x = jwk.x.as_ref()
-                    .ok_or_else(|| AuthError::InvalidKey("Missing 'x' in OKP JWK".to_string()))?;
-                DecodingKey::from_ed_components(x)
-                    .map_err(|e| AuthError::InvalidKey(format!("Invalid OKP key: {}", e)))?
-            }
-            other => return Err(AuthError::UnsupportedKeyType(other.to_string())),
-        };
-        
+                "EC" => {
+                    let x = jwk.x.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'x' in EC JWK".to_string())
+                    })?;
+                    let y = jwk.y.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'y' in EC JWK".to_string())
+                    })?;
+                    let crv = jwk.crv.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'crv' in EC JWK".to_string())
+                    })?;
+                    if crv == "P-256" {
+                        DecodingKey::from_ec_components(x, y)
+                            .map_err(|e| AuthError::InvalidKey(format!("Invalid EC key: {}", e)))?
+                    } else {
+                        return Err(AuthError::UnsupportedCurve(crv.to_string()));
+                    }
+                }
+                "OKP" => {
+                    let x = jwk.x.as_ref().ok_or_else(|| {
+                        AuthError::InvalidKey("Missing 'x' in OKP JWK".to_string())
+                    })?;
+                    DecodingKey::from_ed_components(x)
+                        .map_err(|e| AuthError::InvalidKey(format!("Invalid OKP key: {}", e)))?
+                }
+                other => return Err(AuthError::UnsupportedKeyType(other.to_string())),
+            };
+
         Ok((decoding_key, alg))
     }
 
@@ -223,7 +231,7 @@ impl JwksCache {
                 }
             }
         }
-        
+
         // Kid not found, force refresh (rate-limited by get_jwks)
         let _ = self.get_jwks().await?;
         Ok(())

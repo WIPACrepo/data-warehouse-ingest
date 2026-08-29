@@ -53,7 +53,8 @@ pub async fn delete_start(
     Path(id): Path<ObjectId>,
     Json(input): Json<DeleteStartRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -91,7 +92,8 @@ pub async fn delete_progress(
     Path(id): Path<ObjectId>,
     Json(input): Json<DeleteProgressRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -107,7 +109,9 @@ pub async fn delete_progress(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();
@@ -143,7 +147,8 @@ pub async fn delete_complete(
     Path(id): Path<ObjectId>,
     Json(input): Json<DeleteCompleteRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -159,7 +164,9 @@ pub async fn delete_complete(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     inbox.status = InboxStatus::Deleted;
@@ -188,7 +195,8 @@ pub async fn delete_failure(
     Path(id): Path<ObjectId>,
     Json(input): Json<DeleteFailureRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -204,7 +212,9 @@ pub async fn delete_failure(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();

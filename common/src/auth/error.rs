@@ -67,7 +67,7 @@ impl From<AuthError> for axum::http::StatusCode {
             | AuthError::InvalidAudience
             | AuthError::AlgorithmNotAllowed(_)
             | AuthError::UnknownKeyId(_) => Self::UNAUTHORIZED,
-            
+
             AuthError::JwksNotAvailable
             | AuthError::JwksFetchFailed(_)
             | AuthError::JwksParseFailed(_)

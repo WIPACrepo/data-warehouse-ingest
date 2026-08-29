@@ -3,15 +3,15 @@ pub use common::test_utils::*;
 #[cfg(test)]
 pub use common::MockInboxStore;
 
+use crate::{AppState, Config};
+use common::{AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
 #[cfg(test)]
 use std::sync::Arc;
-use crate::{AppState, Config};
-use common::{AuthConfig, JwksCache, JwtValidator, AuthMiddlewareState};
 
 #[cfg(test)]
 pub fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
     let config = Config::default();
-    
+
     // Initialize common auth components for testing
     let auth_config = AuthConfig {
         keycloak_url: "http://localhost:8080".to_string(),

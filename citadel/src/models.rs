@@ -5,7 +5,7 @@ use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
 // Re-export job types from jobs::types to avoid duplication
-pub use crate::jobs::types::{JobType, JobStatus, JobProgress, JobExecutorInfo};
+pub use crate::jobs::types::{JobExecutorInfo, JobProgress, JobStatus, JobType};
 
 /// Job error information
 #[derive(Debug, Clone, Serialize, Deserialize)]

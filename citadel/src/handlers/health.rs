@@ -1,7 +1,7 @@
 //! Health check endpoint
 
-use axum::http::StatusCode;
 use axum::Json;
+use axum::http::StatusCode;
 use serde::Serialize;
 
 #[derive(Serialize)]

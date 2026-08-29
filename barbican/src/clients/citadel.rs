@@ -64,7 +64,10 @@ impl CitadelClient {
         inbox_id: &str,
         warehouse_path: &str,
     ) -> Result<StartOperationResponse, CitadelError> {
-        let url = format!("{}/api/v1/inbox/{}/create", self.config.citadel_api_url, inbox_id);
+        let url = format!(
+            "{}/api/v1/inbox/{}/create",
+            self.config.citadel_api_url, inbox_id
+        );
         self.call_with_retry(
             &url,
             &CreateRequestBody {
@@ -82,7 +85,10 @@ impl CitadelClient {
         &self,
         inbox_id: &str,
     ) -> Result<StartOperationResponse, CitadelError> {
-        let url = format!("{}/api/v1/inbox/{}/delete", self.config.citadel_api_url, inbox_id);
+        let url = format!(
+            "{}/api/v1/inbox/{}/delete",
+            self.config.citadel_api_url, inbox_id
+        );
         self.call_with_retry(&url, &EmptyBody {}, "delete").await
     }
 
@@ -93,7 +99,10 @@ impl CitadelClient {
         &self,
         inbox_id: &str,
     ) -> Result<StartOperationResponse, CitadelError> {
-        let url = format!("{}/api/v1/inbox/{}/publish", self.config.citadel_api_url, inbox_id);
+        let url = format!(
+            "{}/api/v1/inbox/{}/publish",
+            self.config.citadel_api_url, inbox_id
+        );
         self.call_with_retry(&url, &EmptyBody {}, "publish").await
     }
 
@@ -127,7 +136,10 @@ impl CitadelClient {
                         .await
                         .map_err(|e| CitadelError::ParseResponse(e.to_string()))?;
 
-                    info!("Successfully triggered {} operation: job_id={}", operation, result.job_id);
+                    info!(
+                        "Successfully triggered {} operation: job_id={}",
+                        operation, result.job_id
+                    );
                     return Ok(result);
                 }
                 Ok(resp) => {

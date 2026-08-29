@@ -35,7 +35,8 @@ pub async fn create_inbox(
     }
 
     // Check for existing inbox with same warehouse_path (fast, friendly 400)
-    let existing = state.store
+    let existing = state
+        .store
         .find_one(doc! { "warehouse_path": &input.warehouse_path })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
@@ -65,22 +66,17 @@ pub async fn create_inbox(
         updated_at: now,
     };
 
-    let result = state.store
-        .insert_one(inbox.clone())
-        .await
-        .map_err(|e| {
-            use mongodb::error::ErrorKind;
-            use mongodb::error::WriteFailure;
-            let is_duplicate = matches!(&*e.kind, ErrorKind::Write(WriteFailure::WriteError(w))
+    let result = state.store.insert_one(inbox.clone()).await.map_err(|e| {
+        use mongodb::error::ErrorKind;
+        use mongodb::error::WriteFailure;
+        let is_duplicate = matches!(&*e.kind, ErrorKind::Write(WriteFailure::WriteError(w))
                 if w.code == 11000);
-            if is_duplicate {
-                AppError::Conflict(
-                    "An inbox already exists for this warehouse path".to_string(),
-                )
-            } else {
-                AppError::DatabaseError(e.to_string())
-            }
-        })?;
+        if is_duplicate {
+            AppError::Conflict("An inbox already exists for this warehouse path".to_string())
+        } else {
+            AppError::DatabaseError(e.to_string())
+        }
+    })?;
 
     let inserted_id = result.inserted_id.as_object_id();
 
@@ -120,8 +116,8 @@ pub async fn create_inbox(
     Ok((
         StatusCode::ACCEPTED,
         AppJson::new(CreateInboxResponse {
-        inbox_id: inserted_id.map(|id| id.to_hex()).unwrap_or_default(),
-        status: "active".to_string(),
+            inbox_id: inserted_id.map(|id| id.to_hex()).unwrap_or_default(),
+            status: "active".to_string(),
             message: "Inbox creation initiated".to_string(),
         }),
     ))

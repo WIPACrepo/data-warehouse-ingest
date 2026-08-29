@@ -7,9 +7,9 @@
 //! just-inserted `JobDB` row and rejects with `429 TooManyRequests`.
 
 use axum::{
+    Json,
     extract::{Extension, Path, State},
     http::StatusCode,
-    Json,
 };
 use mongodb::bson::{doc, oid::ObjectId};
 use serde::Serialize;
@@ -17,8 +17,8 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
-use common::Claims;
 use crate::db::inboxes_collection;
+use common::Claims;
 
 use crate::error::{AppError, Result};
 use crate::jobs::types::{JobStatus, JobType};
@@ -46,8 +46,8 @@ pub async fn delete_inbox(
         ));
     }
 
-    let object_id = ObjectId::parse_str(&inbox_id)
-        .map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
+    let object_id =
+        ObjectId::parse_str(&inbox_id).map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
 
     // Get inbox metadata directly from MongoDB (shared collection, read-only for Citadel)
     let inboxes_coll = inboxes_collection(&app_state.db_client, &app_state.config);
@@ -75,22 +75,14 @@ pub async fn delete_inbox(
 
     let executor_type = app_state.config.job_executor.to_string();
 
-    let mut job = JobDB::new(
-        job_id.clone(),
-        object_id,
-        job_type.clone(),
-        &executor_type,
-    );
+    let mut job = JobDB::new(job_id.clone(), object_id, job_type.clone(), &executor_type);
 
     // Insert job into MongoDB
     let jobs_coll = crate::db::jobs_collection(&app_state.db_client, &app_state.config);
-    jobs_coll
-        .insert_one(&job)
-        .await
-        .map_err(|e| {
-            error!("Failed to insert job into MongoDB: {}", e);
-            AppError::DatabaseError(format!("Failed to create job: {}", e))
-        })?;
+    jobs_coll.insert_one(&job).await.map_err(|e| {
+        error!("Failed to insert job into MongoDB: {}", e);
+        AppError::DatabaseError(format!("Failed to create job: {}", e))
+    })?;
 
     // Enforce the delete queue rate limit BEFORE transitioning the inbox
     // state or submitting to the executor (D8).
@@ -99,9 +91,7 @@ pub async fn delete_inbox(
         rollback_job(&app_state, &job_id).await;
         warn!(
             "Delete queue saturated ({} in-flight >= limit {}); rejecting job {}",
-            in_flight,
-            app_state.config.queue_delete_rate_limit,
-            job_id
+            in_flight, app_state.config.queue_delete_rate_limit, job_id
         );
         return Err(AppError::TooManyRequests(format!(
             "Delete queue is saturated ({} in-flight jobs)",
@@ -110,7 +100,8 @@ pub async fn delete_inbox(
     }
 
     // Transition inbox state via Barbican delete_start action
-    app_state.barbican_client
+    app_state
+        .barbican_client
         .delete_start(&object_id, &job_id)
         .await
         .map_err(|e| {
@@ -126,10 +117,7 @@ pub async fn delete_inbox(
     job.status = JobStatus::Running;
 
     jobs_coll
-        .replace_one(
-            mongodb::bson::doc! { "job_id": &job_id },
-            &job,
-        )
+        .replace_one(mongodb::bson::doc! { "job_id": &job_id }, &job)
         .await
         .map_err(|e| {
             error!("Failed to update job in MongoDB: {}", e);

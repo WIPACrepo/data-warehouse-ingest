@@ -1,5 +1,5 @@
 //! citadel-job: Job executor for file transfers
-//! 
+//!
 //! This binary runs as a Kubernetes Job or local process to execute
 //! file transfer operations managed by the Citadel service.
 //!
@@ -122,8 +122,8 @@ impl JobConfig {
 
         let mongodb_uri = env::var("CITADEL_MONGODB_URI")
             .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
-        let mongodb_database = env::var("CITADEL_MONGODB_DATABASE")
-            .unwrap_or_else(|_| "data_warehouse".to_string());
+        let mongodb_database =
+            env::var("CITADEL_MONGODB_DATABASE").unwrap_or_else(|_| "data_warehouse".to_string());
 
         Ok(Self {
             job_id: env::var("JOB_ID")
@@ -204,7 +204,10 @@ mod tests {
     #[test]
     fn test_citadel_base_url_unknown_suffix_unchanged() {
         let config = config_with_callback_url("http://citadel:8081/something/else");
-        assert_eq!(config.citadel_base_url(), "http://citadel:8081/something/else");
+        assert_eq!(
+            config.citadel_base_url(),
+            "http://citadel:8081/something/else"
+        );
     }
 }
 
@@ -283,7 +286,11 @@ struct ProgressRequest {
 /// POST a progress snapshot to Citadel with bounded retry + backoff.
 /// Never fails the transfer: after the final attempt the error is logged and
 /// the function returns.
-async fn send_progress(config: &JobConfig, progress: &citadel::jobs::types::JobProgress, nonce: &str) {
+async fn send_progress(
+    config: &JobConfig,
+    progress: &citadel::jobs::types::JobProgress,
+    nonce: &str,
+) {
     let url = format!("{}/api/v1/job/progress", config.citadel_base_url());
 
     let body = ProgressRequest {
@@ -324,8 +331,11 @@ async fn send_progress(config: &JobConfig, progress: &citadel::jobs::types::JobP
             Ok(resp) if resp.status().is_success() => {
                 info!(
                     "Reported progress for job {} (files {}/{}, bytes {}/{})",
-                    config.job_id, body.processed_files, body.total_files,
-                    body.transferred_bytes, body.total_bytes
+                    config.job_id,
+                    body.processed_files,
+                    body.total_files,
+                    body.transferred_bytes,
+                    body.total_bytes
                 );
                 return;
             }
@@ -378,20 +388,20 @@ fn spawn_progress_monitor(config: &JobConfig) -> ProgressMonitor {
     tokio::spawn(async move {
         // Connect to the shared MongoDB. If it is unavailable, log and skip
         // the bail-out poll (progress reporting still works via the tracker).
-        let client: Option<Arc<mongodb::Client>> = match common::db_setup(&cfg.mongodb_uri, &cfg.mongodb_database).await {
-            Ok(c) => Some(Arc::new(c)),
-            Err(e) => {
-                warn!(
-                    "Failed to connect to MongoDB for metadata poll: {}; bail-out disabled",
-                    e
-                );
-                None
-            }
-        };
+        let client: Option<Arc<mongodb::Client>> =
+            match common::db_setup(&cfg.mongodb_uri, &cfg.mongodb_database).await {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to MongoDB for metadata poll: {}; bail-out disabled",
+                        e
+                    );
+                    None
+                }
+            };
 
-        let mut poll_interval = tokio::time::interval(Duration::from_secs(
-            cfg.metadata_poll_interval_secs.max(1),
-        ));
+        let mut poll_interval =
+            tokio::time::interval(Duration::from_secs(cfg.metadata_poll_interval_secs.max(1)));
         let mut report_interval = tokio::time::interval(Duration::from_secs(
             cfg.progress_update_interval_secs.max(1),
         ));
@@ -456,10 +466,7 @@ async fn main() {
 
     info!(
         "Starting job {} of type {} (parallelism={}, chunk_size={}MB)",
-        config.job_id,
-        config.job_type,
-        config.transfer_parallelism,
-        config.transfer_chunk_size_mb
+        config.job_id, config.job_type, config.transfer_parallelism, config.transfer_chunk_size_mb
     );
     info!("Inbox path: {:?}", config.inbox_path);
     info!("Warehouse path: {:?}", config.warehouse_path);
@@ -516,7 +523,10 @@ async fn execute_publish(config: &JobConfig) -> TransferResult {
     let citadel_config = match citadel::config::CitadelConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to load Citadel config for transfer: {}; using defaults", e);
+            error!(
+                "Failed to load Citadel config for transfer: {}; using defaults",
+                e
+            );
             citadel::config::CitadelConfig::default()
         }
     };

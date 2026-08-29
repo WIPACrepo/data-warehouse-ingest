@@ -2,12 +2,12 @@ pub mod create;
 pub mod delete;
 pub mod publish;
 
-pub use create::{create_start, create_progress, create_complete, create_failure};
-pub use delete::{delete_start, delete_progress, delete_complete, delete_failure};
-pub use publish::{publish_start, publish_progress, publish_complete, publish_failure};
+pub use create::{create_complete, create_failure, create_progress, create_start};
+pub use delete::{delete_complete, delete_failure, delete_progress, delete_start};
+pub use publish::{publish_complete, publish_failure, publish_progress, publish_start};
 
 use common::{AppError, InboxError, InboxStatus, InboxStore};
-use mongodb::bson::{doc, oid::ObjectId, Document};
+use mongodb::bson::{Document, doc, oid::ObjectId};
 use std::sync::Arc;
 
 /// Apply a version-conditional update; map zero matched docs to Conflict.
@@ -24,10 +24,7 @@ pub(crate) async fn apply_versioned_update(
     update: &Document,
 ) -> Result<(), AppError> {
     let result = store
-        .update_one(
-            doc! { "_id": id, "version": version },
-            update.clone(),
-        )
+        .update_one(doc! { "_id": id, "version": version }, update.clone())
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 

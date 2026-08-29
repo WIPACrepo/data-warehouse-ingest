@@ -3,13 +3,9 @@
 //! Provides typed collection access plus idempotent index management for the
 //! shared `inboxes` collection.
 
-use mongodb::{
-    Collection,
-    IndexModel,
-    options::IndexOptions,
-};
+use mongodb::{Collection, IndexModel, options::IndexOptions};
 
-use common::{InboxDB};
+use common::InboxDB;
 
 /// Name of the unique `warehouse_path` index.
 pub const UNIQ_WAREHOUSE_PATH_INDEX: &str = "uniq_warehouse_path";
@@ -21,10 +17,12 @@ pub const UNIQ_WAREHOUSE_PATH_INDEX: &str = "uniq_warehouse_path";
 pub fn ensure_inbox_indexes_spec() -> IndexModel {
     IndexModel::builder()
         .keys(mongodb::bson::doc! { "warehouse_path": 1 })
-        .options(IndexOptions::builder()
-            .unique(true)
-            .name(UNIQ_WAREHOUSE_PATH_INDEX.to_string())
-            .build())
+        .options(
+            IndexOptions::builder()
+                .unique(true)
+                .name(UNIQ_WAREHOUSE_PATH_INDEX.to_string())
+                .build(),
+        )
         .build()
 }
 
@@ -38,7 +36,10 @@ pub async fn ensure_inbox_indexes(collection: &Collection<InboxDB>) {
     let spec = ensure_inbox_indexes_spec();
     match collection.create_index(spec).await {
         Ok(_) => {
-            tracing::info!("Ensured unique index {} on warehouse_path", UNIQ_WAREHOUSE_PATH_INDEX);
+            tracing::info!(
+                "Ensured unique index {} on warehouse_path",
+                UNIQ_WAREHOUSE_PATH_INDEX
+            );
         }
         Err(e) => {
             tracing::warn!(
@@ -59,7 +60,10 @@ mod tests {
     fn test_ensure_inbox_indexes_spec_is_unique_on_warehouse_path() {
         let spec = ensure_inbox_indexes_spec();
         let keys = &spec.keys;
-        assert_eq!(keys.get("warehouse_path"), Some(&mongodb::bson::Bson::Int32(1)));
+        assert_eq!(
+            keys.get("warehouse_path"),
+            Some(&mongodb::bson::Bson::Int32(1))
+        );
         let options = spec.options.unwrap();
         assert_eq!(options.unique, Some(true));
         assert_eq!(options.name.as_deref(), Some(UNIQ_WAREHOUSE_PATH_INDEX));

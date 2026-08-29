@@ -1,18 +1,18 @@
 //! Create inbox handler
 
 use axum::{
+    Json,
     extract::{Extension, Path, State},
     http::StatusCode,
-    Json,
 };
 use mongodb::bson::{doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use common::Claims;
+use crate::AppState;
 use crate::db::inboxes_collection;
 use crate::error::{AppError, Result};
-use crate::AppState;
+use common::Claims;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateInboxParams {
@@ -39,8 +39,8 @@ pub async fn create_inbox(
         ));
     }
 
-    let object_id = ObjectId::parse_str(&inbox_id)
-        .map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
+    let object_id =
+        ObjectId::parse_str(&inbox_id).map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
 
     // Get inbox metadata directly from MongoDB (shared collection, read-only for Citadel)
     let inboxes_coll = inboxes_collection(&state.db_client, &state.config);
@@ -64,7 +64,8 @@ pub async fn create_inbox(
     let job_id = uuid::Uuid::new_v4().to_string();
 
     // Signal start of creation to Barbican
-    state.barbican_client
+    state
+        .barbican_client
         .create_start(&object_id, &job_id)
         .await
         .map_err(|e| {
@@ -76,7 +77,8 @@ pub async fn create_inbox(
     let inbox_path = state.storage_manager.create_inbox(&object_id).await?;
 
     // Signal completion to Barbican
-    state.barbican_client
+    state
+        .barbican_client
         .create_complete(&object_id, &job_id, &inbox_path.to_string_lossy())
         .await
         .map_err(|e| {
@@ -84,10 +86,7 @@ pub async fn create_inbox(
             e
         })?;
 
-    info!(
-        "Created inbox {} at path {:?}",
-        inbox_id, inbox_path
-    );
+    info!("Created inbox {} at path {:?}", inbox_id, inbox_path);
 
     Ok((
         StatusCode::CREATED,

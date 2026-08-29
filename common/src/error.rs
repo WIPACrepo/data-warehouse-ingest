@@ -147,81 +147,97 @@ impl IntoResponse for AppError {
         let (status, error_code, message) = match &self {
             AppError::JsonRejection(rejection) => {
                 // Bad user input — don't log it
-                (rejection.status(), "invalid_json", rejection.body_text().to_string())
+                (
+                    rejection.status(),
+                    "invalid_json",
+                    rejection.body_text().to_string(),
+                )
             }
-            AppError::InboxNotFound(d) => {
-                (StatusCode::NOT_FOUND, "inbox_not_found", d.clone())
-            }
+            AppError::InboxNotFound(d) => (StatusCode::NOT_FOUND, "inbox_not_found", d.clone()),
             AppError::InboxNotDeletable(d) => {
                 (StatusCode::CONFLICT, "inbox_not_deletable", d.clone())
             }
             AppError::InboxAlreadyPublishing(d) => {
                 (StatusCode::CONFLICT, "inbox_already_publishing", d.clone())
             }
-            AppError::InvalidPublishParameters(d) => {
-                (StatusCode::BAD_REQUEST, "invalid_publish_parameters", d.clone())
-            }
-            AppError::InvalidStateTransition(d) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, "invalid_state_transition", d.clone())
-            }
+            AppError::InvalidPublishParameters(d) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_publish_parameters",
+                d.clone(),
+            ),
+            AppError::InvalidStateTransition(d) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_state_transition",
+                d.clone(),
+            ),
             AppError::ValidationError(d) => {
                 (StatusCode::BAD_REQUEST, "validation_error", d.clone())
             }
             AppError::Conflict(d) => (StatusCode::CONFLICT, "conflict", d.clone()),
-            AppError::JobNotFound(d) => {
-                (StatusCode::NOT_FOUND, "job_not_found", d.clone())
-            }
-            AppError::JobTimeout(d) => {
-                (StatusCode::GATEWAY_TIMEOUT, "job_timeout", d.clone())
-            }
-            AppError::StorageError(d) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "storage_error", d.clone())
-            }
-            AppError::FileNotFound(d) => {
-                (StatusCode::NOT_FOUND, "file_not_found", d.clone())
-            }
-            AppError::FileTransferFailed(d) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "file_transfer_failed", d.clone())
-            }
-            AppError::ChecksumMismatch(d) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "checksum_mismatch", d.clone())
-            }
-            AppError::KubernetesError(d) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "kubernetes_error", d.clone())
-            }
+            AppError::JobNotFound(d) => (StatusCode::NOT_FOUND, "job_not_found", d.clone()),
+            AppError::JobTimeout(d) => (StatusCode::GATEWAY_TIMEOUT, "job_timeout", d.clone()),
+            AppError::StorageError(d) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                d.clone(),
+            ),
+            AppError::FileNotFound(d) => (StatusCode::NOT_FOUND, "file_not_found", d.clone()),
+            AppError::FileTransferFailed(d) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "file_transfer_failed",
+                d.clone(),
+            ),
+            AppError::ChecksumMismatch(d) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "checksum_mismatch",
+                d.clone(),
+            ),
+            AppError::KubernetesError(d) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "kubernetes_error",
+                d.clone(),
+            ),
             AppError::K8sApiError(d) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "k8s_api_error", d.clone())
             }
-            AppError::InvalidCallbackSecret => {
-                (StatusCode::UNAUTHORIZED, "invalid_callback_secret", "Invalid callback secret".to_string())
-            }
-            AppError::CallbackTimestampExpired => {
-                (StatusCode::UNAUTHORIZED, "callback_timestamp_expired", "Callback timestamp expired".to_string())
-            }
-            AppError::CallbackNonceReused => {
-                (StatusCode::UNAUTHORIZED, "callback_nonce_reused", "Callback nonce already used".to_string())
-            }
+            AppError::InvalidCallbackSecret => (
+                StatusCode::UNAUTHORIZED,
+                "invalid_callback_secret",
+                "Invalid callback secret".to_string(),
+            ),
+            AppError::CallbackTimestampExpired => (
+                StatusCode::UNAUTHORIZED,
+                "callback_timestamp_expired",
+                "Callback timestamp expired".to_string(),
+            ),
+            AppError::CallbackNonceReused => (
+                StatusCode::UNAUTHORIZED,
+                "callback_nonce_reused",
+                "Callback nonce already used".to_string(),
+            ),
             AppError::DatabaseError(d) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "database_error",
                 d.clone(),
             ),
-            AppError::AuthError(d) => {
-                (StatusCode::UNAUTHORIZED, "auth_error", d.clone())
-            }
+            AppError::AuthError(d) => (StatusCode::UNAUTHORIZED, "auth_error", d.clone()),
             AppError::Forbidden(d) => (StatusCode::FORBIDDEN, "forbidden", d.clone()),
-            AppError::BadGateway(d) => {
-                (StatusCode::BAD_GATEWAY, "bad_gateway", d.clone())
-            }
-            AppError::ServiceUnavailable(d) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", d.clone())
-            }
-            AppError::InternalError(d) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", d.clone())
-            }
-            AppError::TooManyRequests(d) => {
-                (StatusCode::TOO_MANY_REQUESTS, "too_many_requests", d.clone())
-            }
+            AppError::BadGateway(d) => (StatusCode::BAD_GATEWAY, "bad_gateway", d.clone()),
+            AppError::ServiceUnavailable(d) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                d.clone(),
+            ),
+            AppError::InternalError(d) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                d.clone(),
+            ),
+            AppError::TooManyRequests(d) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                d.clone(),
+            ),
         };
 
         // Log at appropriate level based on status class

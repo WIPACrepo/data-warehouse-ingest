@@ -6,5 +6,5 @@
 //! `handlers/{publish_inbox,delete_inbox}.rs`. There is no in-process queue or
 //! processor module.
 
-pub mod types;
 pub mod executor;
+pub mod types;

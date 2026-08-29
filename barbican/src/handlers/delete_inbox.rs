@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use mongodb::bson::{doc, oid::ObjectId};
 use serde::Serialize;
@@ -27,7 +27,8 @@ pub async fn delete_inbox(
     Path(id): Path<ObjectId>,
 ) -> Result<(StatusCode, Json<DeleteInboxResponse>), AppError> {
     // Find the inbox first
-    let inbox = state.store
+    let inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -50,13 +51,8 @@ pub async fn delete_inbox(
         }
     };
 
-    crate::handlers::transition::apply_versioned_update(
-        &state.store,
-        &id,
-        inbox.version,
-        &update,
-    )
-    .await?;
+    crate::handlers::transition::apply_versioned_update(&state.store, &id, inbox.version, &update)
+        .await?;
 
     // Trigger Citadel delete operation (fire-and-forget). On failure, apply
     // the in-Barbican fallback (D2) so the inbox doesn't stay `Deleting`.
@@ -76,10 +72,7 @@ pub async fn delete_inbox(
                     )
                     .await
                     {
-                        tracing::warn!(
-                            "Failed to apply delete-trigger failure fallback: {}",
-                            ferr
-                        );
+                        tracing::warn!("Failed to apply delete-trigger failure fallback: {}", ferr);
                     }
                 }
             }
@@ -89,8 +82,8 @@ pub async fn delete_inbox(
     Ok((
         StatusCode::ACCEPTED,
         Json(DeleteInboxResponse {
-        inbox_id: id.to_hex(),
-        status: "deleting".to_string(),
+            inbox_id: id.to_hex(),
+            status: "deleting".to_string(),
             message: "Inbox deletion initiated".to_string(),
         }),
     ))

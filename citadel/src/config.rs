@@ -65,14 +65,14 @@ pub struct CitadelConfig {
     // HTTP Server
     pub bind_address: String,
     pub prometheus_port: u16,
-    
+
     // Storage paths
     pub inbox_base_path: PathBuf,
-    
+
     // MongoDB
     pub mongodb_uri: String,
     pub mongodb_database: String,
-    
+
     // Keycloak / JWT
     pub keycloak_url: String,
     pub keycloak_realm: String,
@@ -81,7 +81,7 @@ pub struct CitadelConfig {
     pub required_roles: Vec<String>,
     pub allowed_algorithms: Vec<String>,
     pub jwks_refresh_secs: u64,
-    
+
     // Job execution
     pub job_executor: JobExecutorType,
     pub kube_config_path: Option<PathBuf>,
@@ -89,30 +89,30 @@ pub struct CitadelConfig {
     pub job_image: String,
     pub job_binary: String,
     pub job_max_duration_secs: u64,
-    
+
     // Transfer settings
     pub transfer_parallelism: usize,
     pub transfer_chunk_size_mb: usize,
-    
+
     // Inbox security settings (nested)
     pub inbox: InboxConfig,
-    
+
     // Callback authentication
     pub job_callback_secret_file: PathBuf,
-    
+
     // Warehouse protection
     pub protected_base_path: PathBuf,
-    
+
     // Barbican API coordination
     pub barbican_api_url: String,
     pub barbican_api_retry_max: u32,
     pub barbican_api_retry_backoff_ms: u64,
     pub barbican_api_timeout_secs: u64,
-    
+
     // Polling intervals
     pub job_metadata_poll_interval_secs: u64,
     pub progress_update_interval_secs: u64,
-    
+
     // Queue rate limits
     pub queue_publish_rate_limit: usize,
     pub queue_delete_rate_limit: usize,
@@ -120,7 +120,7 @@ pub struct CitadelConfig {
     pub queue_publish_memory_limit: String,
     pub queue_delete_cpu_limit: String,
     pub queue_delete_memory_limit: String,
-    
+
     // Integration retries
     pub catalog_notify_retry_max: u32,
     pub catalog_notify_retry_backoff_ms: u64,
@@ -182,14 +182,15 @@ impl CitadelConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut config = Self::default();
-        
+
         // Override with environment variables
         if let Ok(val) = std::env::var("CITADEL_BIND_ADDRESS") {
             config.bind_address = val;
         }
         if let Ok(val) = std::env::var("CITADEL_PROMETHEUS_PORT") {
-            config.prometheus_port = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_PROMETHEUS_PORT".to_string(), val))?;
+            config.prometheus_port = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_PROMETHEUS_PORT".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_BASE_PATH") {
             config.inbox_base_path = PathBuf::from(val);
@@ -222,8 +223,9 @@ impl CitadelConfig {
             config.allowed_algorithms = val.split(',').map(|s| s.trim().to_string()).collect();
         }
         if let Ok(val) = std::env::var("CITADEL_JWKS_REFRESH_SECS") {
-            config.jwks_refresh_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_JWKS_REFRESH_SECS".to_string(), val))?;
+            config.jwks_refresh_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_JWKS_REFRESH_SECS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_JOB_EXECUTOR") {
             config.job_executor = match val.to_lowercase().as_str() {
@@ -244,16 +246,19 @@ impl CitadelConfig {
             config.job_binary = val;
         }
         if let Ok(val) = std::env::var("CITADEL_JOB_MAX_DURATION_SECS") {
-            config.job_max_duration_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_JOB_MAX_DURATION_SECS".to_string(), val))?;
+            config.job_max_duration_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_JOB_MAX_DURATION_SECS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_TRANSFER_PARALLELISM") {
-            config.transfer_parallelism = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_TRANSFER_PARALLELISM".to_string(), val))?;
+            config.transfer_parallelism = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_TRANSFER_PARALLELISM".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_TRANSFER_CHUNK_SIZE_MB") {
-            config.transfer_chunk_size_mb = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_TRANSFER_CHUNK_SIZE_MB".to_string(), val))?;
+            config.transfer_chunk_size_mb = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_TRANSFER_CHUNK_SIZE_MB".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_JOB_CALLBACK_SECRET_FILE") {
             config.job_callback_secret_file = PathBuf::from(val);
@@ -262,32 +267,42 @@ impl CitadelConfig {
             config.barbican_api_url = val;
         }
         if let Ok(val) = std::env::var("CITADEL_BARBICAN_API_RETRY_MAX") {
-            config.barbican_api_retry_max = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_BARBICAN_API_RETRY_MAX".to_string(), val))?;
+            config.barbican_api_retry_max = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_BARBICAN_API_RETRY_MAX".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_BARBICAN_API_RETRY_BACKOFF_MS") {
-            config.barbican_api_retry_backoff_ms = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_BARBICAN_API_RETRY_BACKOFF_MS".to_string(), val))?;
+            config.barbican_api_retry_backoff_ms = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_BARBICAN_API_RETRY_BACKOFF_MS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_BARBICAN_API_TIMEOUT_SECS") {
-            config.barbican_api_timeout_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_BARBICAN_API_TIMEOUT_SECS".to_string(), val))?;
+            config.barbican_api_timeout_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_BARBICAN_API_TIMEOUT_SECS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_JOB_METADATA_POLL_INTERVAL_SECS") {
-            config.job_metadata_poll_interval_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_JOB_METADATA_POLL_INTERVAL_SECS".to_string(), val))?;
+            config.job_metadata_poll_interval_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue(
+                    "CITADEL_JOB_METADATA_POLL_INTERVAL_SECS".to_string(),
+                    val,
+                )
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS") {
-            config.progress_update_interval_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS".to_string(), val))?;
+            config.progress_update_interval_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_QUEUE_PUBLISH_RATE_LIMIT") {
-            config.queue_publish_rate_limit = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_QUEUE_PUBLISH_RATE_LIMIT".to_string(), val))?;
+            config.queue_publish_rate_limit = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_QUEUE_PUBLISH_RATE_LIMIT".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_QUEUE_DELETE_RATE_LIMIT") {
-            config.queue_delete_rate_limit = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_QUEUE_DELETE_RATE_LIMIT".to_string(), val))?;
+            config.queue_delete_rate_limit = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_QUEUE_DELETE_RATE_LIMIT".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_QUEUE_PUBLISH_CPU_LIMIT") {
             config.queue_publish_cpu_limit = val;
@@ -302,65 +317,81 @@ impl CitadelConfig {
             config.queue_delete_memory_limit = val;
         }
         if let Ok(val) = std::env::var("CITADEL_CATALOG_NOTIFY_RETRY_MAX") {
-            config.catalog_notify_retry_max = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_CATALOG_NOTIFY_RETRY_MAX".to_string(), val))?;
+            config.catalog_notify_retry_max = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_CATALOG_NOTIFY_RETRY_MAX".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_CATALOG_NOTIFY_RETRY_BACKOFF_MS") {
-            config.catalog_notify_retry_backoff_ms = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_CATALOG_NOTIFY_RETRY_BACKOFF_MS".to_string(), val))?;
+            config.catalog_notify_retry_backoff_ms = val.parse().map_err(|_| {
+                ConfigError::InvalidValue(
+                    "CITADEL_CATALOG_NOTIFY_RETRY_BACKOFF_MS".to_string(),
+                    val,
+                )
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_CATALOG_NOTIFY_TIMEOUT_SECS") {
-            config.catalog_notify_timeout_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_CATALOG_NOTIFY_TIMEOUT_SECS".to_string(), val))?;
+            config.catalog_notify_timeout_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_CATALOG_NOTIFY_TIMEOUT_SECS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_LTA_NOTIFY_RETRY_MAX") {
-            config.lta_notify_retry_max = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_RETRY_MAX".to_string(), val))?;
+            config.lta_notify_retry_max = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_RETRY_MAX".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_LTA_NOTIFY_RETRY_BACKOFF_MS") {
-            config.lta_notify_retry_backoff_ms = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_RETRY_BACKOFF_MS".to_string(), val))?;
+            config.lta_notify_retry_backoff_ms = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_RETRY_BACKOFF_MS".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_LTA_NOTIFY_TIMEOUT_SECS") {
-            config.lta_notify_timeout_secs = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_TIMEOUT_SECS".to_string(), val))?;
+            config.lta_notify_timeout_secs = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_LTA_NOTIFY_TIMEOUT_SECS".to_string(), val)
+            })?;
         }
-        
+
         // Inbox security settings
         if let Ok(val) = std::env::var("CITADEL_INBOX_ALLOW_EXTERNAL_SYMLINKS") {
             config.inbox.allow_external_symlinks = parse_bool(&val)?;
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_RECURSION_DEPTH") {
-            config.inbox.max_recursion_depth = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_RECURSION_DEPTH".to_string(), val))?;
+            config.inbox.max_recursion_depth = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_RECURSION_DEPTH".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL") {
-            config.inbox.max_errors_before_fail = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL".to_string(), val))?;
+            config.inbox.max_errors_before_fail = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_ERRORS_BEFORE_FAIL".to_string(), val)
+            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_PATH_LENGTH") {
-            let len: usize = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_PATH_LENGTH".to_string(), val))?;
+            let len: usize = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_PATH_LENGTH".to_string(), val)
+            })?;
             config.inbox.max_path_length = if len == 0 { None } else { Some(len) };
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_TOTAL_FILES") {
-            let count: u64 = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_FILES".to_string(), val))?;
+            let count: u64 = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_FILES".to_string(), val)
+            })?;
             config.inbox.max_total_files = if count == 0 { None } else { Some(count) };
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_TOTAL_SYMLINKS") {
-            let count: u32 = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_SYMLINKS".to_string(), val))?;
+            let count: u32 = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_TOTAL_SYMLINKS".to_string(), val)
+            })?;
             config.inbox.max_total_symlinks = if count == 0 { None } else { Some(count) };
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_SYMLINK_DEPTH") {
-            let depth: u32 = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_DEPTH".to_string(), val))?;
+            let depth: u32 = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_DEPTH".to_string(), val)
+            })?;
             config.inbox.max_symlink_depth = if depth == 0 { None } else { Some(depth) };
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_MAX_SYMLINK_REFERENCES") {
-            let refs: u32 = val.parse()
-                .map_err(|_| ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_REFERENCES".to_string(), val))?;
+            let refs: u32 = val.parse().map_err(|_| {
+                ConfigError::InvalidValue("CITADEL_INBOX_MAX_SYMLINK_REFERENCES".to_string(), val)
+            })?;
             config.inbox.max_symlink_references = if refs == 0 { None } else { Some(refs) };
         }
         if let Ok(val) = std::env::var("CITADEL_INBOX_ATOMIC_TRANSFER") {
@@ -369,10 +400,10 @@ impl CitadelConfig {
         if let Ok(val) = std::env::var("CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN") {
             config.inbox.pre_transfer_integrity_scan = parse_bool(&val)?;
         }
-        
+
         Ok(config)
     }
-    
+
     /// Get the JWKS endpoint URL
     pub fn jwks_url(&self) -> String {
         format!(
@@ -380,7 +411,7 @@ impl CitadelConfig {
             self.keycloak_url, self.keycloak_realm
         )
     }
-    
+
     /// Get the issuer for JWT validation
     pub fn jwt_issuer(&self) -> String {
         format!("{}/auth/realms/{}", self.keycloak_url, self.keycloak_realm)
@@ -462,6 +493,9 @@ fn parse_bool(val: &str) -> Result<bool, ConfigError> {
     match val.to_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" => Ok(false),
-        _ => Err(ConfigError::InvalidValue("boolean".to_string(), val.to_string())),
+        _ => Err(ConfigError::InvalidValue(
+            "boolean".to_string(),
+            val.to_string(),
+        )),
     }
 }

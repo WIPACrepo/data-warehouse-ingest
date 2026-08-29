@@ -5,8 +5,8 @@
 #![cfg(feature = "integration-tests")]
 
 use citadel::config::CitadelConfig;
+use citadel::jobs::types::{JobStatus, JobType};
 use citadel::models::JobDB;
-use citadel::jobs::types::{JobType, JobStatus};
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
@@ -34,7 +34,11 @@ async fn test_db_lifecycle() {
         "integration",
     );
     let insert_result = jobs_coll.insert_one(job).await;
-    assert!(insert_result.is_ok(), "Failed to insert job: {:?}", insert_result.err());
+    assert!(
+        insert_result.is_ok(),
+        "Failed to insert job: {:?}",
+        insert_result.err()
+    );
 
     // Query
     let found = jobs_coll

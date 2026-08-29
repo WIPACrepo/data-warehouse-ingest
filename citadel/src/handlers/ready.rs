@@ -1,14 +1,10 @@
 //! Readiness probe endpoint
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::Serialize;
 
-use crate::error::Result;
 use crate::AppState;
+use crate::error::Result;
 
 #[derive(Serialize)]
 pub struct ReadyResponse {
@@ -16,8 +12,15 @@ pub struct ReadyResponse {
     pub mongodb: String,
 }
 
-pub async fn ready_with_client(State(state): State<AppState>) -> Result<(StatusCode, Json<ReadyResponse>)> {
-    match state.db_client.database("admin").run_command(mongodb::bson::doc! { "ping": 1 }).await {
+pub async fn ready_with_client(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ReadyResponse>)> {
+    match state
+        .db_client
+        .database("admin")
+        .run_command(mongodb::bson::doc! { "ping": 1 })
+        .await
+    {
         Ok(_) => Ok((
             StatusCode::OK,
             Json(ReadyResponse {

@@ -19,7 +19,7 @@ mod tests {
             "http://localhost:8080/auth/realms/test/protocol/openid-connect/certs".to_string(),
             60,
         ));
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "test".to_string(),
@@ -29,9 +29,9 @@ mod tests {
             jwks_refresh_secs: 60,
             leeway_ms: 5000,
         };
-        
+
         let validator = JwtValidator::new(jwks_cache, config);
-        
+
         // Verify validator was created successfully
         assert!(true);
     }
@@ -42,7 +42,7 @@ mod tests {
             "http://localhost:8080/auth/realms/test/protocol/openid-connect/certs".to_string(),
             60,
         ));
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "test".to_string(),
@@ -52,9 +52,9 @@ mod tests {
             jwks_refresh_secs: 60,
             leeway_ms: 5000,
         };
-        
+
         let validator = JwtValidator::new(jwks_cache.clone(), config);
-        
+
         // Verify validator has the expected fields
         // (We can't easily test actual validation without generating real JWTs)
         assert!(true);
@@ -66,7 +66,7 @@ mod tests {
             "http://localhost:8080/auth/realms/test/protocol/openid-connect/certs".to_string(),
             60,
         );
-        
+
         // Test that initialization doesn't panic even if endpoint is unavailable
         let result = jwks_cache.initialize().await;
         // Should not fail even if Keycloak is not running
@@ -79,11 +79,11 @@ mod tests {
             "http://invalid-hostname-that-does-not-exist/auth/realms/test".to_string(),
             60,
         );
-        
+
         // Should return an error for invalid hostname
         let result = jwks_cache.get_jwks().await;
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             AuthError::JwksFetchFailed(_) => (),
             _ => panic!("Expected JwksFetchFailed error"),

@@ -54,7 +54,8 @@ pub async fn create_start(
     Path(id): Path<ObjectId>,
     Json(input): Json<CreateStartRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -93,7 +94,8 @@ pub async fn create_progress(
     Path(id): Path<ObjectId>,
     Json(input): Json<CreateProgressRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -109,7 +111,9 @@ pub async fn create_progress(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();
@@ -145,7 +149,8 @@ pub async fn create_complete(
     Path(id): Path<ObjectId>,
     Json(input): Json<CreateCompleteRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -161,7 +166,9 @@ pub async fn create_complete(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     inbox.status = InboxStatus::Ready;
@@ -192,7 +199,8 @@ pub async fn create_failure(
     Path(id): Path<ObjectId>,
     Json(input): Json<CreateFailureRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -208,7 +216,9 @@ pub async fn create_failure(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();

@@ -5,9 +5,9 @@
 
 use crate::config::CitadelConfig;
 use crate::error::{AppError, Result};
-use common::models::InboxDB;
 use crate::models::TransferResult;
-use tracing::{info, warn, error};
+use common::models::InboxDB;
+use tracing::{error, info, warn};
 
 /// Catalog notifier trait
 #[async_trait::async_trait]
@@ -44,10 +44,13 @@ impl HttpCatalogNotifier {
         Self {
             config: config.clone(),
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(config.catalog_notify_timeout_secs))
+                .timeout(std::time::Duration::from_secs(
+                    config.catalog_notify_timeout_secs,
+                ))
                 .build()
                 .unwrap_or_default(),
-            catalog_url: catalog_url.unwrap_or_else(|| "http://catalog:8080/api/v1/notify".to_string()),
+            catalog_url: catalog_url
+                .unwrap_or_else(|| "http://catalog:8080/api/v1/notify".to_string()),
         }
     }
 
@@ -80,13 +83,8 @@ impl HttpCatalogNotifier {
             }
         }
 
-        error!(
-            "Catalog notification failed after {} retries",
-            max_retries
-        );
-        Err(AppError::BadGateway(
-            "Failed after all retries".to_string(),
-        ))
+        error!("Catalog notification failed after {} retries", max_retries);
+        Err(AppError::BadGateway("Failed after all retries".to_string()))
     }
 
     /// Perform a single notification request
@@ -154,7 +152,10 @@ impl CatalogNotifier for HttpCatalogNotifier {
     }
 
     async fn retry(&self, notification_id: &str) -> Result<()> {
-        warn!("Catalog retry requested for notification: {}", notification_id);
+        warn!(
+            "Catalog retry requested for notification: {}",
+            notification_id
+        );
         // In a full implementation, this would look up the pending notification
         // and re-send it. For now, we log the request.
         Ok(())

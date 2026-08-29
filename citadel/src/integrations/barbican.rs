@@ -170,7 +170,9 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         phase: &str,
         transferred_bytes: u64,
     ) -> Result<InboxDB> {
-        (**self).create_progress(inbox_id, job_id, phase, transferred_bytes).await
+        (**self)
+            .create_progress(inbox_id, job_id, phase, transferred_bytes)
+            .await
     }
     async fn create_complete(
         &self,
@@ -187,7 +189,9 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        (**self).create_failure(inbox_id, job_id, error_code, error_message).await
+        (**self)
+            .create_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
     async fn publish_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         (**self).publish_start(inbox_id, job_id).await
@@ -202,7 +206,17 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         total_bytes: u64,
         transferred_bytes: u64,
     ) -> Result<InboxDB> {
-        (**self).publish_progress(inbox_id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes).await
+        (**self)
+            .publish_progress(
+                inbox_id,
+                job_id,
+                phase,
+                total_files,
+                processed_files,
+                total_bytes,
+                transferred_bytes,
+            )
+            .await
     }
     async fn publish_complete(
         &self,
@@ -212,7 +226,15 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         total_bytes: u64,
         protected_path: &str,
     ) -> Result<InboxDB> {
-        (**self).publish_complete(inbox_id, job_id, files_transferred, total_bytes, protected_path).await
+        (**self)
+            .publish_complete(
+                inbox_id,
+                job_id,
+                files_transferred,
+                total_bytes,
+                protected_path,
+            )
+            .await
     }
     async fn publish_failure(
         &self,
@@ -221,7 +243,9 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        (**self).publish_failure(inbox_id, job_id, error_code, error_message).await
+        (**self)
+            .publish_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
     async fn delete_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         (**self).delete_start(inbox_id, job_id).await
@@ -234,7 +258,9 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         total_bytes: u64,
         deleted_bytes: u64,
     ) -> Result<InboxDB> {
-        (**self).delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes).await
+        (**self)
+            .delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes)
+            .await
     }
     async fn delete_complete(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         (**self).delete_complete(inbox_id, job_id).await
@@ -246,7 +272,9 @@ impl<T: InboxTransitioner + Send + Sync> InboxTransitioner for Arc<T> {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        (**self).delete_failure(inbox_id, job_id, error_code, error_message).await
+        (**self)
+            .delete_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
 }
 
@@ -266,7 +294,8 @@ impl InboxTransitioner for BarbicanClient {
         phase: &str,
         transferred_bytes: u64,
     ) -> Result<InboxDB> {
-        self.create_progress(inbox_id, job_id, phase, transferred_bytes).await
+        self.create_progress(inbox_id, job_id, phase, transferred_bytes)
+            .await
     }
     async fn create_complete(
         &self,
@@ -283,7 +312,8 @@ impl InboxTransitioner for BarbicanClient {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        self.create_failure(inbox_id, job_id, error_code, error_message).await
+        self.create_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
     async fn publish_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         self.publish_start(inbox_id, job_id).await
@@ -298,7 +328,16 @@ impl InboxTransitioner for BarbicanClient {
         total_bytes: u64,
         transferred_bytes: u64,
     ) -> Result<InboxDB> {
-        self.publish_progress(inbox_id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes).await
+        self.publish_progress(
+            inbox_id,
+            job_id,
+            phase,
+            total_files,
+            processed_files,
+            total_bytes,
+            transferred_bytes,
+        )
+        .await
     }
     async fn publish_complete(
         &self,
@@ -308,7 +347,14 @@ impl InboxTransitioner for BarbicanClient {
         total_bytes: u64,
         protected_path: &str,
     ) -> Result<InboxDB> {
-        self.publish_complete(inbox_id, job_id, files_transferred, total_bytes, protected_path).await
+        self.publish_complete(
+            inbox_id,
+            job_id,
+            files_transferred,
+            total_bytes,
+            protected_path,
+        )
+        .await
     }
     async fn publish_failure(
         &self,
@@ -317,7 +363,8 @@ impl InboxTransitioner for BarbicanClient {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        self.publish_failure(inbox_id, job_id, error_code, error_message).await
+        self.publish_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
     async fn delete_start(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         self.delete_start(inbox_id, job_id).await
@@ -330,7 +377,8 @@ impl InboxTransitioner for BarbicanClient {
         total_bytes: u64,
         deleted_bytes: u64,
     ) -> Result<InboxDB> {
-        self.delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes).await
+        self.delete_progress(inbox_id, job_id, phase, total_bytes, deleted_bytes)
+            .await
     }
     async fn delete_complete(&self, inbox_id: &ObjectId, job_id: &str) -> Result<InboxDB> {
         self.delete_complete(inbox_id, job_id).await
@@ -342,7 +390,8 @@ impl InboxTransitioner for BarbicanClient {
         error_code: &str,
         error_message: &str,
     ) -> Result<InboxDB> {
-        self.delete_failure(inbox_id, job_id, error_code, error_message).await
+        self.delete_failure(inbox_id, job_id, error_code, error_message)
+            .await
     }
 }
 
@@ -354,7 +403,9 @@ impl BarbicanClient {
     pub fn new(config: CitadelConfig) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(config.barbican_api_timeout_secs))
+                .timeout(std::time::Duration::from_secs(
+                    config.barbican_api_timeout_secs,
+                ))
                 .build()
                 .unwrap_or_default(),
             config,
@@ -390,7 +441,8 @@ impl BarbicanClient {
     }
 
     fn trip_breaker(&self) {
-        self.breaker_open.store(1, std::sync::atomic::Ordering::SeqCst);
+        self.breaker_open
+            .store(1, std::sync::atomic::Ordering::SeqCst);
         *self.breaker_opened_at.blocking_lock() = Some(std::time::Instant::now());
         if let Some(m) = self.metrics.as_ref() {
             m.circuit_breaker_state.set(1);
@@ -399,8 +451,10 @@ impl BarbicanClient {
     }
 
     fn close_breaker(&self) {
-        self.breaker_failures.store(0, std::sync::atomic::Ordering::SeqCst);
-        self.breaker_open.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.breaker_failures
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.breaker_open
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         *self.breaker_opened_at.blocking_lock() = None;
         if let Some(m) = self.metrics.as_ref() {
             m.circuit_breaker_state.set(0);
@@ -411,7 +465,10 @@ impl BarbicanClient {
         if let Some(m) = self.metrics.as_ref() {
             m.barbican_api_errors_total.inc();
         }
-        let failures = self.breaker_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let failures = self
+            .breaker_failures
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         // A 409 is an expected/benign state race — don't trip the breaker on it.
         if !matches!(err, AppError::Conflict(_))
             && failures >= self.config.barbican_api_retry_max.max(1) as u32
@@ -470,7 +527,10 @@ impl BarbicanClient {
                         return Err(e);
                     }
 
-                    warn!("Barbican {} retry {} after {}ms: {}", label, retries, backoff_ms, e);
+                    warn!(
+                        "Barbican {} retry {} after {}ms: {}",
+                        label, retries, backoff_ms, e
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                     backoff_ms = (backoff_ms * 2).min(30000);
                 }
@@ -478,11 +538,7 @@ impl BarbicanClient {
         }
     }
 
-    async fn do_post(
-        &self,
-        url: &str,
-        body: &impl serde::Serialize,
-    ) -> Result<InboxDB> {
+    async fn do_post(&self, url: &str, body: &impl serde::Serialize) -> Result<InboxDB> {
         let response = self
             .client
             .post(url)
@@ -518,7 +574,14 @@ impl BarbicanClient {
             "{}/api/v1/inbox/{}/create/start",
             self.config.barbican_api_url, inbox_id
         );
-        self.post_action(&url, &StartRequest { job_id: job_id.into() }, "create_start").await
+        self.post_action(
+            &url,
+            &StartRequest {
+                job_id: job_id.into(),
+            },
+            "create_start",
+        )
+        .await
     }
 
     /// `POST /api/v1/inbox/{id}/create/progress`
@@ -605,7 +668,14 @@ impl BarbicanClient {
             "{}/api/v1/inbox/{}/publish/start",
             self.config.barbican_api_url, inbox_id
         );
-        self.post_action(&url, &StartRequest { job_id: job_id.into() }, "publish_start").await
+        self.post_action(
+            &url,
+            &StartRequest {
+                job_id: job_id.into(),
+            },
+            "publish_start",
+        )
+        .await
     }
 
     /// `POST /api/v1/inbox/{id}/publish/progress`
@@ -699,7 +769,14 @@ impl BarbicanClient {
             "{}/api/v1/inbox/{}/delete/start",
             self.config.barbican_api_url, inbox_id
         );
-        self.post_action(&url, &StartRequest { job_id: job_id.into() }, "delete_start").await
+        self.post_action(
+            &url,
+            &StartRequest {
+                job_id: job_id.into(),
+            },
+            "delete_start",
+        )
+        .await
     }
 
     /// `POST /api/v1/inbox/{id}/delete/progress`
@@ -739,7 +816,9 @@ impl BarbicanClient {
         );
         self.post_action(
             &url,
-            &StartRequest { job_id: job_id.into() },
+            &StartRequest {
+                job_id: job_id.into(),
+            },
             "delete_complete",
         )
         .await

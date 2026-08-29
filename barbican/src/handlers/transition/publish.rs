@@ -58,7 +58,8 @@ pub async fn publish_start(
     Path(id): Path<ObjectId>,
     Json(input): Json<PublishStartRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -96,7 +97,8 @@ pub async fn publish_progress(
     Path(id): Path<ObjectId>,
     Json(input): Json<PublishProgressRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -112,7 +114,9 @@ pub async fn publish_progress(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();
@@ -148,7 +152,8 @@ pub async fn publish_complete(
     Path(id): Path<ObjectId>,
     Json(input): Json<PublishCompleteRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -164,7 +169,9 @@ pub async fn publish_complete(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     inbox.status = InboxStatus::Published;
@@ -193,7 +200,8 @@ pub async fn publish_failure(
     Path(id): Path<ObjectId>,
     Json(input): Json<PublishFailureRequest>,
 ) -> Result<AppJson<InboxDB>, AppError> {
-    let mut inbox = state.store
+    let mut inbox = state
+        .store
         .find_one(doc! { "_id": id })
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?
@@ -209,7 +217,9 @@ pub async fn publish_failure(
 
     // Validate job_id matches
     if inbox.current_job_id.as_ref() != Some(&input.job_id) {
-        return Err(AppError::ValidationError("Job ID does not match current operation".to_string()));
+        return Err(AppError::ValidationError(
+            "Job ID does not match current operation".to_string(),
+        ));
     }
 
     let now = chrono::Utc::now();

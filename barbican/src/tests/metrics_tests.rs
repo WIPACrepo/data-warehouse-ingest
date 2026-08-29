@@ -9,10 +9,7 @@
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::Request,
-    };
+    use axum::{body::Body, http::Request};
     use mockall::predicate;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -28,9 +25,18 @@ mod tests {
         let mut mock_store = MockInboxStore::new();
 
         // Two Published, one Failed inbox.
-        let published1 = InboxBuilder::new().with_name("pub1").with_status(InboxStatus::Published).build();
-        let published2 = InboxBuilder::new().with_name("pub2").with_status(InboxStatus::Published).build();
-        let failed = InboxBuilder::new().with_name("fail1").with_status(InboxStatus::Failed).build();
+        let published1 = InboxBuilder::new()
+            .with_name("pub1")
+            .with_status(InboxStatus::Published)
+            .build();
+        let published2 = InboxBuilder::new()
+            .with_name("pub2")
+            .with_status(InboxStatus::Published)
+            .build();
+        let failed = InboxBuilder::new()
+            .with_name("fail1")
+            .with_status(InboxStatus::Failed)
+            .build();
         let all = vec![published1, published2, failed];
 
         mock_store

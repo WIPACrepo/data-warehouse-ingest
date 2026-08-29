@@ -1,9 +1,9 @@
 //! Test builders for Citadel domain objects
 
+use crate::jobs::types::{JobExecutorInfo, JobStatus, JobType};
+use crate::models::JobDB;
 use chrono::Utc;
 use mongodb::bson::oid::ObjectId;
-use crate::models::JobDB;
-use crate::jobs::types::{JobType, JobStatus, JobExecutorInfo};
 
 /// Builder for JobDB test fixtures
 pub struct JobBuilder {
@@ -149,7 +149,5 @@ pub fn queued_delete_job() -> JobDB {
 
 /// Create a failed job
 pub fn failed_job() -> JobDB {
-    JobBuilder::default()
-        .status(JobStatus::Failed)
-        .build()
+    JobBuilder::default().status(JobStatus::Failed).build()
 }

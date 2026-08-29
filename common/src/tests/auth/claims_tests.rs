@@ -27,7 +27,10 @@ mod tests {
     #[test]
     fn test_get_roles_returns_correct_roles() {
         let claims = create_test_claims("barbican", vec!["read", "write"]);
-        assert_eq!(claims.get_roles("barbican"), vec!["read".to_string(), "write".to_string()]);
+        assert_eq!(
+            claims.get_roles("barbican"),
+            vec!["read".to_string(), "write".to_string()]
+        );
     }
 
     #[test]

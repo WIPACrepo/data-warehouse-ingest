@@ -49,12 +49,14 @@ pub async fn list_inboxes(
     find_options.limit = Some(limit as i64);
     find_options.skip = Some(params.offset);
 
-    let results = state.store
+    let results = state
+        .store
         .find_many(filter.clone(), find_options)
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
-    let total = state.store
+    let total = state
+        .store
         .count(filter)
         .await
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;

@@ -1,6 +1,6 @@
 //! Prometheus metrics for Citadel
 
-use prometheus::{Counter, CounterVec, Histogram, HistogramOpts, Opts, Registry, IntGauge};
+use prometheus::{Counter, CounterVec, Histogram, HistogramOpts, IntGauge, Opts, Registry};
 
 /// Citadel metrics
 pub struct CitadelMetrics {

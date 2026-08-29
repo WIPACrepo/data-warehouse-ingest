@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use crate::{AppState, Config, create_app};
-use common::{AuthConfig, JwksCache, JwtValidator, AuthMiddlewareState};
 use common::test_utils::create_test_store;
+use common::{AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
 
 #[tokio::test]
 async fn test_health_endpoint() {
     let mock_store = Arc::new(create_test_store());
     let config = Config::default();
-    
+
     // Initialize common auth components for testing
     let auth_config = AuthConfig {
         keycloak_url: "http://localhost:8080".to_string(),
@@ -39,7 +39,7 @@ async fn test_health_endpoint() {
         auth_state,
         metrics,
     });
-    
+
     let router = create_app(state);
 
     let server = axum_test::TestServer::new(router).unwrap();

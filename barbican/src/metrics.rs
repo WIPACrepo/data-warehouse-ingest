@@ -20,9 +20,7 @@ use axum::{
     response::Response,
 };
 use mongodb::bson::doc;
-use prometheus::{
-    GaugeVec, IntCounterVec, Opts, Registry,
-};
+use prometheus::{GaugeVec, IntCounterVec, Opts, Registry};
 use std::sync::Arc;
 use tracing::error;
 
@@ -99,7 +97,9 @@ impl BarbicanMetrics {
             InboxStatus::Deleted,
         ];
         for s in statuses {
-            self.inboxes_total.with_label_values(&[status_label(&s)]).set(0.0);
+            self.inboxes_total
+                .with_label_values(&[status_label(&s)])
+                .set(0.0);
         }
         let sample: Vec<InboxDB> = match store.find_many(doc! {}, Default::default()).await {
             Ok(inboxes) => inboxes,
@@ -126,8 +126,7 @@ impl BarbicanMetrics {
     ) {
         let metrics = self.clone();
         tokio::spawn(async move {
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             ticker.tick().await; // immediate first fire
             loop {
                 ticker.tick().await;

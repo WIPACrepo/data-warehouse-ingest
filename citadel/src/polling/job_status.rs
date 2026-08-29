@@ -18,8 +18,8 @@ use crate::models::JobDB;
 use futures::StreamExt;
 use mongodb::bson::doc;
 use std::sync::Arc;
-use tokio::time::{interval, Duration};
-use tracing::{info, warn, error};
+use tokio::time::{Duration, interval};
+use tracing::{error, info, warn};
 
 /// Background poller for K8s job status
 pub struct JobStatusPoller {
@@ -53,7 +53,10 @@ impl JobStatusPoller {
         let poll_interval = Duration::from_secs(30);
         let mut ticker = interval(poll_interval);
 
-        info!("Job status poller started (interval: {}s)", poll_interval.as_secs());
+        info!(
+            "Job status poller started (interval: {}s)",
+            poll_interval.as_secs()
+        );
 
         loop {
             ticker.tick().await;
@@ -109,17 +112,13 @@ impl JobStatusPoller {
             "status": Self::status_to_string(JobStatus::Running),
         };
 
-        let mut cursor = jobs_coll
-            .find(filter)
-            .await
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to query running jobs: {}", e)))?;
+        let mut cursor = jobs_coll.find(filter).await.map_err(|e| {
+            crate::error::AppError::DatabaseError(format!("Failed to query running jobs: {}", e))
+        })?;
 
-        while let Some(job) = cursor
-            .next()
-            .await
-            .transpose()
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to iterate jobs: {}", e)))?
-        {
+        while let Some(job) = cursor.next().await.transpose().map_err(|e| {
+            crate::error::AppError::DatabaseError(format!("Failed to iterate jobs: {}", e))
+        })? {
             self.check_job_status(&job).await;
         }
 
@@ -132,7 +131,10 @@ impl JobStatusPoller {
             Ok(detail) => {
                 if matches!(
                     detail.status,
-                    JobStatus::Completed | JobStatus::Failed | JobStatus::TimedOut | JobStatus::Cancelled
+                    JobStatus::Completed
+                        | JobStatus::Failed
+                        | JobStatus::TimedOut
+                        | JobStatus::Cancelled
                 ) {
                     warn!(
                         "Job {} executor reports status {:?} but no callback received yet",
@@ -166,19 +168,24 @@ impl JobStatusPoller {
             }
         };
 
-        let mut cursor = jobs_coll
-            .find(filter)
-            .await
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to query for timed out jobs: {}", e)))?;
+        let mut cursor = jobs_coll.find(filter).await.map_err(|e| {
+            crate::error::AppError::DatabaseError(format!(
+                "Failed to query for timed out jobs: {}",
+                e
+            ))
+        })?;
 
         let mut timed_out_count = 0;
-        while let Some(job) = cursor
-            .next()
-            .await
-            .transpose()
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to iterate timed out jobs: {}", e)))?
-        {
-            warn!("Job {} has exceeded max duration ({}s), marking as timed out", job.job_id, self.config.job_max_duration_secs);
+        while let Some(job) = cursor.next().await.transpose().map_err(|e| {
+            crate::error::AppError::DatabaseError(format!(
+                "Failed to iterate timed out jobs: {}",
+                e
+            ))
+        })? {
+            warn!(
+                "Job {} has exceeded max duration ({}s), marking as timed out",
+                job.job_id, self.config.job_max_duration_secs
+            );
 
             // Cancel the job in the executor
             if let Err(e) = self.executor.cancel(&job.job_id).await {
@@ -201,10 +208,12 @@ impl JobStatusPoller {
             };
 
             let query = doc! { "job_id": &job.job_id };
-            jobs_coll
-                .update_one(query, update)
-                .await
-                .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to update timed out job: {}", e)))?;
+            jobs_coll.update_one(query, update).await.map_err(|e| {
+                crate::error::AppError::DatabaseError(format!(
+                    "Failed to update timed out job: {}",
+                    e
+                ))
+            })?;
 
             timed_out_count += 1;
         }
@@ -222,17 +231,19 @@ impl JobStatusPoller {
             "status": Self::status_to_string(JobStatus::Running),
         };
 
-        let mut cursor = jobs_coll
-            .find(filter)
-            .await
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to query running jobs for reconciliation: {}", e)))?;
+        let mut cursor = jobs_coll.find(filter).await.map_err(|e| {
+            crate::error::AppError::DatabaseError(format!(
+                "Failed to query running jobs for reconciliation: {}",
+                e
+            ))
+        })?;
 
-        while let Some(job) = cursor
-            .next()
-            .await
-            .transpose()
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to iterate jobs for reconciliation: {}", e)))?
-        {
+        while let Some(job) = cursor.next().await.transpose().map_err(|e| {
+            crate::error::AppError::DatabaseError(format!(
+                "Failed to iterate jobs for reconciliation: {}",
+                e
+            ))
+        })? {
             // Check if job has an executor ID (was submitted)
             let executor_id = job.executor.executor_id.clone();
 
@@ -301,7 +312,10 @@ impl JobStatusPoller {
     /// and the inbox `current_job_id` matches this job. Bounded to one attempt
     /// per tick (the next tick retries if Barbican was down); reconciled
     /// transitions are logged and metered but never fail the tick.
-    async fn reconcile_inbox_transition(&self, jobs_coll: &mongodb::Collection<JobDB>) -> Result<()> {
+    async fn reconcile_inbox_transition(
+        &self,
+        jobs_coll: &mongodb::Collection<JobDB>,
+    ) -> Result<()> {
         let terminal_statuses = vec![
             Self::status_to_string(JobStatus::Completed),
             Self::status_to_string(JobStatus::Failed),
@@ -312,19 +326,15 @@ impl JobStatusPoller {
             "status": { "$in": terminal_statuses },
         };
 
-        let mut cursor = jobs_coll
-            .find(filter)
-            .await
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to query terminal jobs: {}", e)))?;
+        let mut cursor = jobs_coll.find(filter).await.map_err(|e| {
+            crate::error::AppError::DatabaseError(format!("Failed to query terminal jobs: {}", e))
+        })?;
 
         let inboxes_coll = crate::db::inboxes_collection(&self.db_client, &self.config);
 
-        while let Some(job) = cursor
-            .next()
-            .await
-            .transpose()
-            .map_err(|e| crate::error::AppError::DatabaseError(format!("Failed to iterate terminal jobs: {}", e)))?
-        {
+        while let Some(job) = cursor.next().await.transpose().map_err(|e| {
+            crate::error::AppError::DatabaseError(format!("Failed to iterate terminal jobs: {}", e))
+        })? {
             // Skip jobs that haven't finished (recently submitted etc.).
             let terminal_ok = matches!(
                 job.status,
@@ -353,22 +363,41 @@ impl JobStatusPoller {
                         continue;
                     }
                     if job.status == JobStatus::Completed {
-                        warn!("Self-heal: inbox {} stuck in Publishing; re-issuing publish_complete for job {}", inbox_id, job.job_id);
+                        warn!(
+                            "Self-heal: inbox {} stuck in Publishing; re-issuing publish_complete for job {}",
+                            inbox_id, job.job_id
+                        );
                         let protected_path = inbox.warehouse_path.clone();
-                        if let Err(e) = self.barbican_client
+                        if let Err(e) = self
+                            .barbican_client
                             .publish_complete(&inbox_id, &job.job_id, 0, 0, &protected_path)
                             .await
                         {
-                            error!("Self-heal publish_complete failed for job {}: {}", job.job_id, e);
+                            error!(
+                                "Self-heal publish_complete failed for job {}: {}",
+                                job.job_id, e
+                            );
                             self.metrics.barbican_api_errors_total.inc();
                         }
                     } else {
-                        warn!("Self-heal: inbox {} stuck in Publishing; re-issuing publish_failure for job {}", inbox_id, job.job_id);
-                        if let Err(e) = self.barbican_client
-                            .publish_failure(&inbox_id, &job.job_id, "publish_failed", "Job terminated without callback; reconciled by poller")
+                        warn!(
+                            "Self-heal: inbox {} stuck in Publishing; re-issuing publish_failure for job {}",
+                            inbox_id, job.job_id
+                        );
+                        if let Err(e) = self
+                            .barbican_client
+                            .publish_failure(
+                                &inbox_id,
+                                &job.job_id,
+                                "publish_failed",
+                                "Job terminated without callback; reconciled by poller",
+                            )
                             .await
                         {
-                            error!("Self-heal publish_failure failed for job {}: {}", job.job_id, e);
+                            error!(
+                                "Self-heal publish_failure failed for job {}: {}",
+                                job.job_id, e
+                            );
                             self.metrics.barbican_api_errors_total.inc();
                         }
                     }
@@ -381,21 +410,40 @@ impl JobStatusPoller {
                         continue;
                     }
                     if job.status == JobStatus::Completed {
-                        warn!("Self-heal: inbox {} stuck in Deleting; re-issuing delete_complete for job {}", inbox_id, job.job_id);
-                        if let Err(e) = self.barbican_client
+                        warn!(
+                            "Self-heal: inbox {} stuck in Deleting; re-issuing delete_complete for job {}",
+                            inbox_id, job.job_id
+                        );
+                        if let Err(e) = self
+                            .barbican_client
                             .delete_complete(&inbox_id, &job.job_id)
                             .await
                         {
-                            error!("Self-heal delete_complete failed for job {}: {}", job.job_id, e);
+                            error!(
+                                "Self-heal delete_complete failed for job {}: {}",
+                                job.job_id, e
+                            );
                             self.metrics.barbican_api_errors_total.inc();
                         }
                     } else {
-                        warn!("Self-heal: inbox {} stuck in Deleting; re-issuing delete_failure for job {}", inbox_id, job.job_id);
-                        if let Err(e) = self.barbican_client
-                            .delete_failure(&inbox_id, &job.job_id, "delete_failed", "Job terminated without callback; reconciled by poller")
+                        warn!(
+                            "Self-heal: inbox {} stuck in Deleting; re-issuing delete_failure for job {}",
+                            inbox_id, job.job_id
+                        );
+                        if let Err(e) = self
+                            .barbican_client
+                            .delete_failure(
+                                &inbox_id,
+                                &job.job_id,
+                                "delete_failed",
+                                "Job terminated without callback; reconciled by poller",
+                            )
                             .await
                         {
-                            error!("Self-heal delete_failure failed for job {}: {}", job.job_id, e);
+                            error!(
+                                "Self-heal delete_failure failed for job {}: {}",
+                                job.job_id, e
+                            );
                             self.metrics.barbican_api_errors_total.inc();
                         }
                     }
@@ -413,12 +461,33 @@ mod tests {
 
     #[test]
     fn test_status_to_string() {
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Queued), "queued");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Running), "running");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Completed), "completed");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Failed), "failed");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Cancelling), "cancelling");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::Cancelled), "cancelled");
-        assert_eq!(JobStatusPoller::status_to_string(JobStatus::TimedOut), "timed_out");
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Queued),
+            "queued"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Running),
+            "running"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Completed),
+            "completed"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Failed),
+            "failed"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Cancelling),
+            "cancelling"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::Cancelled),
+            "cancelled"
+        );
+        assert_eq!(
+            JobStatusPoller::status_to_string(JobStatus::TimedOut),
+            "timed_out"
+        );
     }
 }

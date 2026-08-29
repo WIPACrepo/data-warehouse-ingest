@@ -14,45 +14,63 @@ use crate::error::AppError;
 pub static AUTH_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::new());
 
 // JWKS operations
-pub static JWKS_FETCH_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("auth_jwks_fetch_total", "Total JWKS fetch attempts").unwrap()
-});
+pub static JWKS_FETCH_TOTAL: Lazy<Counter> =
+    Lazy::new(|| Counter::new("auth_jwks_fetch_total", "Total JWKS fetch attempts").unwrap());
 pub static JWKS_FETCH_FAILURES: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("auth_jwks_fetch_failures_total", "Total JWKS fetch failures").unwrap()
+    Counter::new(
+        "auth_jwks_fetch_failures_total",
+        "Total JWKS fetch failures",
+    )
+    .unwrap()
 });
-pub static JWKS_CACHE_HITS: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("auth_jwks_cache_hits_total", "Total JWKS cache hits").unwrap()
-});
+pub static JWKS_CACHE_HITS: Lazy<Counter> =
+    Lazy::new(|| Counter::new("auth_jwks_cache_hits_total", "Total JWKS cache hits").unwrap());
 pub static JWKS_CACHE_STALENESS: Lazy<Gauge> = Lazy::new(|| {
-    Gauge::new("auth_jwks_cache_staleness_seconds", "Age of cached JWKS in seconds").unwrap()
+    Gauge::new(
+        "auth_jwks_cache_staleness_seconds",
+        "Age of cached JWKS in seconds",
+    )
+    .unwrap()
 });
 pub static JWKS_REFRESH_RATE_LIMITED: Lazy<Counter> = Lazy::new(|| {
-    Counter::new("auth_jwks_refresh_rate_limited_total", "Times JWKS refresh was rate-limited").unwrap()
+    Counter::new(
+        "auth_jwks_refresh_rate_limited_total",
+        "Times JWKS refresh was rate-limited",
+    )
+    .unwrap()
 });
 
 // Token validation
 pub static TOKEN_VALIDATION_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
     CounterVec::new(
         Opts::new("auth_token_validation_total", "Total token validations"),
-        &["status"]
-    ).unwrap()
-    // status: "success", "expired", "invalid_signature", "invalid_issuer", 
+        &["status"],
+    )
+    .unwrap()
+    // status: "success", "expired", "invalid_signature", "invalid_issuer",
     //         "invalid_audience", "unknown_kid", "invalid_header", "algorithm_rejected"
 });
 pub static TOKEN_VALIDATION_DURATION: Lazy<Histogram> = Lazy::new(|| {
     // Buckets: 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s
-    Histogram::with_opts(HistogramOpts::new(
-        "auth_token_validation_duration_seconds",
-        "Token validation latency",
-    ).buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0])).unwrap()
+    Histogram::with_opts(
+        HistogramOpts::new(
+            "auth_token_validation_duration_seconds",
+            "Token validation latency",
+        )
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ]),
+    )
+    .unwrap()
 });
 
 // Algorithm security
 pub static ALGORITHM_REJECTED_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
     CounterVec::new(
         Opts::new("auth_algorithm_rejected_total", "Rejected JWT algorithms"),
-        &["algorithm", "reason"]
-    ).unwrap()
+        &["algorithm", "reason"],
+    )
+    .unwrap()
     // reason: "symmetric_not_allowed", "none_not_allowed", "not_in_whitelist"
 });
 
@@ -60,23 +78,32 @@ pub static ALGORITHM_REJECTED_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
 pub static AUTHZ_CHECK_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
     CounterVec::new(
         Opts::new("auth_authz_check_total", "Total authorization checks"),
-        &["result", "service"]
-    ).unwrap()
+        &["result", "service"],
+    )
+    .unwrap()
     // result: "allowed", "denied"
 });
 pub static AUTHZ_DENIED_BY_ROLE: Lazy<CounterVec> = Lazy::new(|| {
     CounterVec::new(
-        Opts::new("auth_authz_denied_by_role_total", "Authorization denials by role"),
-        &["missing_role", "service"]
-    ).unwrap()
+        Opts::new(
+            "auth_authz_denied_by_role_total",
+            "Authorization denials by role",
+        ),
+        &["missing_role", "service"],
+    )
+    .unwrap()
 });
 
 // Configuration and infrastructure
 pub static CONFIG_VALIDATION_FAILURES: Lazy<CounterVec> = Lazy::new(|| {
     CounterVec::new(
-        Opts::new("auth_config_validation_failures_total", "Configuration validation failures"),
-        &["config_key", "reason"]
-    ).unwrap()
+        Opts::new(
+            "auth_config_validation_failures_total",
+            "Configuration validation failures",
+        ),
+        &["config_key", "reason"],
+    )
+    .unwrap()
 });
 
 /// Initialize all auth metrics by registering them with the global registry
@@ -119,14 +146,13 @@ pub async fn start_metrics_server(port: u16) -> Result<(), AppError> {
 ///
 /// Use this when the service has its own prometheus registry (e.g. Citadel's
 /// `CitadelMetrics`) and needs a `/metrics` endpoint that renders it.
-pub async fn start_metrics_server_with_router(
-    port: u16,
-    app: Router,
-) -> Result<(), AppError> {
+pub async fn start_metrics_server_with_router(port: u16, app: Router) -> Result<(), AppError> {
     let bind_addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
-        .map_err(|e| AppError::InternalError(format!("Failed to bind metrics server on {bind_addr}: {e}")))?;
+        .map_err(|e| {
+            AppError::InternalError(format!("Failed to bind metrics server on {bind_addr}: {e}"))
+        })?;
 
     tracing::info!("Metrics server listening on {}", bind_addr);
 

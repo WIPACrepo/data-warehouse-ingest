@@ -6,7 +6,7 @@ use std::env;
 pub struct Config {
     // HTTP Server
     pub bind_address: String,
-    
+
     // MongoDB
     pub mongodb_uri: String,
     pub mongodb_database: String,
@@ -15,7 +15,7 @@ pub struct Config {
     pub mongodb_timeout_secs: u64,
     /// Reserved for future use — MongoDB retry limit (not yet wired into store layer).
     pub mongodb_retry_max: u32,
-    
+
     // Keycloak Authentication
     pub keycloak_url: String,
     pub keycloak_realm: String,
@@ -24,16 +24,16 @@ pub struct Config {
     pub required_roles: Vec<String>,
     pub allowed_algorithms: Vec<String>,
     pub jwks_refresh_secs: u64,
-    
+
     // Citadel Integration
     pub citadel_api_url: String,
     pub citadel_api_timeout_secs: u64,
     pub citadel_api_retry_max: u32,
     pub citadel_service_token_file: Option<String>,
-    
+
     // File System
     pub inbox_base_path: String,
-    
+
     // Observability
     pub prometheus_port: u16,
 }

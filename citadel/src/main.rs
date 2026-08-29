@@ -5,27 +5,27 @@
 //! - `citadel`: Long-running HTTP service
 //! - `citadel-job`: Job executor for file transfers (runs as K8s Job or local process)
 
-use std::sync::Arc;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
-use futures::future::Shared;
 use futures::FutureExt;
+use futures::future::Shared;
+use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use citadel::config::CitadelConfig;
-use citadel::middleware::auth::auth_middleware;
 use citadel::handlers;
 use citadel::integrations::barbican::{BarbicanClient, InboxTransitioner};
 use citadel::integrations::catalog::{CatalogNotifier, NoOpCatalogNotifier};
 use citadel::integrations::lta::{LtaNotifier, NoOpLtaNotifier};
 use citadel::jobs::executor::{JobExecutor, KubernetesExecutor, MockExecutor};
+use citadel::metrics::CitadelMetrics;
+use citadel::middleware::auth::auth_middleware;
 use citadel::polling::job_status::JobStatusPoller;
 use citadel::secret_reloader::{load_callback_secret, start_secret_watcher};
 use citadel::storage::manager::StorageManager;
-use citadel::metrics::CitadelMetrics;
 use citadel::{AppState, AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
 
 #[tokio::main]
@@ -39,11 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_clone = shutdown_shared.clone();
 
     // Load configuration
-    let config = CitadelConfig::from_env()
-        .map_err(|e| {
-            error!("Failed to load configuration: {}", e);
-            e
-        })?;
+    let config = CitadelConfig::from_env().map_err(|e| {
+        error!("Failed to load configuration: {}", e);
+        e
+    })?;
 
     info!("Starting Citadel service");
     info!("Bind address: {}", config.bind_address);
@@ -51,27 +50,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Job executor: {:?}", config.job_executor);
 
     // P1.1: Set up database connection via common with shutdown support
-    let db_client = common::db_setup_with_shutdown(
-        &config.mongodb_uri,
-        &config.mongodb_database,
-        move || shutdown_clone.clone(),
-    )
-    .await
-    .map_err(|e| {
-        error!("Failed to connect to database: {}", e);
-        e
-    })?;
+    let db_client =
+        common::db_setup_with_shutdown(&config.mongodb_uri, &config.mongodb_database, move || {
+            shutdown_clone.clone()
+        })
+        .await
+        .map_err(|e| {
+            error!("Failed to connect to database: {}", e);
+            e
+        })?;
 
     // Ensure the callback-nonces TTL index (P2.2). Idempotent; a failure is
     // logged, not fatal.
     citadel::db::ensure_citadel_indexes(&db_client, &config).await;
 
     // Set up JWKS cache and auth components
-    let auth_config = AuthConfig::from_env()
-        .map_err(|e| {
-            error!("Failed to load auth config: {}", e);
-            e
-        })?;
+    let auth_config = AuthConfig::from_env().map_err(|e| {
+        error!("Failed to load auth config: {}", e);
+        e
+    })?;
     let jwks_cache = Arc::new(JwksCache::new(
         auth_config.jwks_url(),
         auth_config.jwks_refresh_secs,
@@ -99,9 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         citadel::config::JobExecutorType::Kubernetes => {
             Arc::new(KubernetesExecutor::new(config.clone()).await?)
         }
-        citadel::config::JobExecutorType::Mock => {
-            Arc::new(MockExecutor::new(config.clone()))
-        }
+        citadel::config::JobExecutorType::Mock => Arc::new(MockExecutor::new(config.clone())),
     };
 
     // Set up notifiers (using no-op implementations for now)
@@ -110,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load callback secret
     let callback_secret: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(
-        tokio::sync::RwLock::new(load_callback_secret(&config.job_callback_secret_file))
+        tokio::sync::RwLock::new(load_callback_secret(&config.job_callback_secret_file)),
     );
 
     // Create shared application state
@@ -129,15 +124,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build router
     let api_routes = Router::new()
-        .route("/inbox/{id}/create", post(handlers::create_inbox::create_inbox))
-        .route("/inbox/{id}/publish", post(handlers::publish_inbox::publish_inbox))
-        .route("/inbox/{id}/delete", post(handlers::delete_inbox::delete_inbox))
+        .route(
+            "/inbox/{id}/create",
+            post(handlers::create_inbox::create_inbox),
+        )
+        .route(
+            "/inbox/{id}/publish",
+            post(handlers::publish_inbox::publish_inbox),
+        )
+        .route(
+            "/inbox/{id}/delete",
+            post(handlers::delete_inbox::delete_inbox),
+        )
         .route("/job/{job_id}", get(handlers::get_job::get_job))
         .route("/jobs", get(handlers::list_jobs::list_jobs))
-        .route("/job/{job_id}/cancel", post(handlers::cancel_job::cancel_job))
+        .route(
+            "/job/{job_id}/cancel",
+            post(handlers::cancel_job::cancel_job),
+        )
         .route("/job/callback", post(handlers::job_callback::job_callback))
         .route("/job/progress", post(handlers::job_progress::job_progress))
-        .layer(axum::middleware::from_fn_with_state(app_state.auth_state.clone(), auth_middleware));
+        .layer(axum::middleware::from_fn_with_state(
+            app_state.auth_state.clone(),
+            auth_middleware,
+        ));
 
     // Combine routes
     let app = Router::new()
@@ -153,8 +163,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start metrics server on separate port using common infrastructure
     let metrics_state = app_state.clone();
-    let metrics_router = Router::new()
-        .route("/metrics", get(move || {
+    let metrics_router = Router::new().route(
+        "/metrics",
+        get(move || {
             let state = metrics_state.clone();
             async move {
                 let metric_families = state.metrics.registry.gather();
@@ -165,16 +176,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut buffer = String::new();
                 if let Err(e) = encoder.encode_utf8(&metric_families, &mut buffer) {
                     error!("Failed to encode metrics: {}", e);
-                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode metrics".to_string());
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to encode metrics".to_string(),
+                    );
                 }
                 (axum::http::StatusCode::OK, buffer)
             }
-        }));
-    if let Err(e) = common::start_metrics_server_with_router(
-        app_state.config.prometheus_port,
-        metrics_router,
-    )
-    .await
+        }),
+    );
+    if let Err(e) =
+        common::start_metrics_server_with_router(app_state.config.prometheus_port, metrics_router)
+            .await
     {
         error!("Failed to start metrics server: {}", e);
     }
@@ -211,11 +224,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = app_state.config.bind_address.clone();
     info!("Starting Citadel HTTP server on {}", addr);
 
-    let listener = TcpListener::bind(&addr).await
-        .unwrap_or_else(|e| {
-            error!("Failed to bind server: {}", e);
-            std::process::exit(1);
-        });
+    let listener = TcpListener::bind(&addr).await.unwrap_or_else(|e| {
+        error!("Failed to bind server: {}", e);
+        std::process::exit(1);
+    });
 
     // P1.3: Use the shared shutdown signal (created early for Ctrl+C during startup)
     axum::serve(listener, app)

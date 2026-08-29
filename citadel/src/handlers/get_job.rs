@@ -1,9 +1,9 @@
 //! Get job status handler
 
 use axum::{
+    Json,
     extract::{Extension, Path, State},
     http::StatusCode,
-    Json,
 };
 use serde::Serialize;
 
@@ -38,13 +38,11 @@ pub async fn get_job(
     }
 
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
-    
+
     let job = jobs_coll
         .find_one(mongodb::bson::doc! { "job_id": &job_id })
         .await
-        .map_err(|e| {
-            AppError::DatabaseError(format!("Failed to query job: {}", e))
-        })?
+        .map_err(|e| AppError::DatabaseError(format!("Failed to query job: {}", e)))?
         .ok_or_else(|| AppError::JobNotFound(job_id.clone()))?;
 
     let job_type_str = match &job.job_type {

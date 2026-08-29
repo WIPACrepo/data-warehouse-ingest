@@ -1,8 +1,8 @@
 //! Job executor trait and implementations
 
 use crate::error::Result;
-use crate::models::JobDB;
 use crate::jobs::types::JobStatusDetail;
+use crate::models::JobDB;
 
 /// Job executor trait
 #[async_trait::async_trait]

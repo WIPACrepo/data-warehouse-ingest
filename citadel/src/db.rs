@@ -18,18 +18,12 @@ pub const COLLECTION_CALLBACK_NONCES: &str = "callback_nonces";
 pub const TTL_EXPIRES_AT_INDEX: &str = "ttl_expires_at";
 
 /// Get the inboxes collection (shared with Barbican, read-only for Citadel)
-pub fn inboxes_collection(
-    client: &Client,
-    config: &CitadelConfig,
-) -> Collection<common::InboxDB> {
+pub fn inboxes_collection(client: &Client, config: &CitadelConfig) -> Collection<common::InboxDB> {
     common_db_collection(client, &config.mongodb_database, COLLECTION_INBOXES)
 }
 
 /// Get the jobs collection (Citadel-owned)
-pub fn jobs_collection(
-    client: &Client,
-    config: &CitadelConfig,
-) -> Collection<JobDB> {
+pub fn jobs_collection(client: &Client, config: &CitadelConfig) -> Collection<JobDB> {
     common_db_collection(client, &config.mongodb_database, COLLECTION_JOBS)
 }
 
@@ -49,10 +43,12 @@ pub fn callback_nonces_collection(
 pub fn ensure_citadel_indexes_spec() -> IndexModel {
     IndexModel::builder()
         .keys(mongodb::bson::doc! { "expires_at": 1 })
-        .options(IndexOptions::builder()
-            .expire_after(Some(std::time::Duration::from_secs(0)))
-            .name(TTL_EXPIRES_AT_INDEX.to_string())
-            .build())
+        .options(
+            IndexOptions::builder()
+                .expire_after(Some(std::time::Duration::from_secs(0)))
+                .name(TTL_EXPIRES_AT_INDEX.to_string())
+                .build(),
+        )
         .build()
 }
 
@@ -90,12 +86,12 @@ mod tests {
     fn test_ensure_citadel_indexes_spec_is_ttl_on_expires_at() {
         let spec = ensure_citadel_indexes_spec();
         let keys = &spec.keys;
-        assert_eq!(
-            keys.get("expires_at"),
-            Some(&mongodb::bson::Bson::Int32(1))
-        );
+        assert_eq!(keys.get("expires_at"), Some(&mongodb::bson::Bson::Int32(1)));
         let options = spec.options.unwrap();
-        assert_eq!(options.expire_after, Some(std::time::Duration::from_secs(0)));
+        assert_eq!(
+            options.expire_after,
+            Some(std::time::Duration::from_secs(0))
+        );
         assert_eq!(options.name.as_deref(), Some(TTL_EXPIRES_AT_INDEX));
     }
 }

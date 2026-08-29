@@ -23,7 +23,7 @@ mod tests {
     fn test_from_env_with_defaults() {
         clear_auth_env();
         let config = AuthConfig::from_env().expect("Should create config with defaults");
-        
+
         assert_eq!(config.keycloak_url, "http://localhost:8080");
         assert_eq!(config.keycloak_realm, "data-warehouse");
         assert_eq!(config.keycloak_client_id, "default-client");
@@ -47,7 +47,7 @@ mod tests {
         }
 
         let config = AuthConfig::from_env().expect("Should create config with custom values");
-        
+
         assert_eq!(config.keycloak_url, "http://keycloak.example.com");
         assert_eq!(config.keycloak_realm, "my-realm");
         assert_eq!(config.keycloak_client_id, "my-client");
@@ -66,7 +66,7 @@ mod tests {
         unsafe {
             std::env::set_var("PRODUCTION", "true");
         }
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "data-warehouse".to_string(),
@@ -79,14 +79,14 @@ mod tests {
 
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::InvalidValue(_))));
-        
+
         clear_auth_env();
     }
 
     #[test]
     fn test_validate_accepts_localhost_in_non_production() {
         clear_auth_env();
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "data-warehouse".to_string(),
@@ -123,7 +123,7 @@ mod tests {
         clear_auth_env();
         let mut algorithms = HashSet::new();
         algorithms.insert("HS256".to_string());
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "data-warehouse".to_string(),
@@ -143,7 +143,7 @@ mod tests {
         clear_auth_env();
         let mut algorithms = HashSet::new();
         algorithms.insert("none".to_string());
-        
+
         let config = AuthConfig {
             keycloak_url: "http://localhost:8080".to_string(),
             keycloak_realm: "data-warehouse".to_string(),

@@ -1,7 +1,7 @@
 //! Progress tracking for file transfers
 
-use chrono::Utc;
 use crate::jobs::types::JobProgress;
+use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -23,7 +23,7 @@ impl ProgressTracker {
             })),
         }
     }
-    
+
     pub async fn update_phase(&self, phase: &str) {
         let mut progress = self.progress.write().await;
         progress.phase = phase.to_string();
@@ -37,14 +37,14 @@ impl ProgressTracker {
         progress.total_files = total_files;
         progress.last_updated = Utc::now();
     }
-    
+
     pub async fn increment_files(&self, count: usize, bytes: u64) {
         let mut progress = self.progress.write().await;
         progress.processed_files += count;
         progress.processed_bytes += bytes;
         progress.last_updated = Utc::now();
     }
-    
+
     pub async fn get_progress(&self) -> JobProgress {
         self.progress.read().await.clone()
     }

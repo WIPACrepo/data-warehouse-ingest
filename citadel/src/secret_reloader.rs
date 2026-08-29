@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Load a callback secret from a file
 pub fn load_callback_secret(path: &PathBuf) -> Option<String> {
@@ -20,13 +20,10 @@ pub fn load_callback_secret(path: &PathBuf) -> Option<String> {
 ///
 /// Uses `notify` crate to watch for file modifications. On change, reads the new
 /// content atomically into the shared `Arc<RwLock<Option<String>>>`.
-pub async fn start_secret_watcher(
-    secret_file: PathBuf,
-    secret_store: Arc<RwLock<Option<String>>>,
-) {
+pub async fn start_secret_watcher(secret_file: PathBuf, secret_store: Arc<RwLock<Option<String>>>) {
     let secret_file_for_closure = secret_file.clone();
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        match res {
+    let mut watcher =
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(event) => {
                 if event.kind.is_modify() || event.kind.is_access() {
                     info!("Secret file changed, reloading: {:?}", event.paths);
@@ -46,19 +43,25 @@ pub async fn start_secret_watcher(
             Err(e) => {
                 error!("Secret watcher error: {}", e);
             }
-        }
-    }) {
-        Ok(w) => w,
-        Err(e) => {
-            error!("Failed to create secret file watcher: {}", e);
-            return;
-        }
-    };
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                error!("Failed to create secret file watcher: {}", e);
+                return;
+            }
+        };
 
     // Watch the parent directory for the secret file
     let watch_path = secret_file.parent().unwrap_or(&secret_file);
-    if let Err(e) = notify::Watcher::watch(&mut watcher, watch_path, notify::RecursiveMode::NonRecursive) {
-        error!("Failed to watch secret file directory {:?}: {}", watch_path, e);
+    if let Err(e) = notify::Watcher::watch(
+        &mut watcher,
+        watch_path,
+        notify::RecursiveMode::NonRecursive,
+    ) {
+        error!(
+            "Failed to watch secret file directory {:?}: {}",
+            watch_path, e
+        );
         return;
     }
 

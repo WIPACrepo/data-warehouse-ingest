@@ -31,7 +31,8 @@ mod transfer_tests {
             4,
             16,
             default_audit(),
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok());
         let transfer = result.unwrap();
@@ -61,7 +62,8 @@ mod transfer_tests {
             4,
             16,
             default_audit(),
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok(), "transfer failed: {:?}", result.err());
         let transfer = result.unwrap();
@@ -75,7 +77,10 @@ mod transfer_tests {
         // Target file should exist
         let target_file = protected_path.join("test.txt");
         assert!(target_file.exists());
-        assert_eq!(std::fs::read_to_string(&target_file).unwrap(), "hello world");
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "hello world"
+        );
     }
 
     #[tokio::test]
@@ -101,7 +106,8 @@ mod transfer_tests {
             2,
             16,
             default_audit(),
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok());
         let transfer = result.unwrap();
@@ -115,9 +121,18 @@ mod transfer_tests {
         assert!(!inbox_path.join("file3.txt").exists());
 
         // All target files exist with correct content
-        assert_eq!(std::fs::read_to_string(protected_path.join("file1.txt")).unwrap(), "aaa");
-        assert_eq!(std::fs::read_to_string(protected_path.join("file2.txt")).unwrap(), "bbbb");
-        assert_eq!(std::fs::read_to_string(protected_path.join("file3.txt")).unwrap(), "ccccc");
+        assert_eq!(
+            std::fs::read_to_string(protected_path.join("file1.txt")).unwrap(),
+            "aaa"
+        );
+        assert_eq!(
+            std::fs::read_to_string(protected_path.join("file2.txt")).unwrap(),
+            "bbbb"
+        );
+        assert_eq!(
+            std::fs::read_to_string(protected_path.join("file3.txt")).unwrap(),
+            "ccccc"
+        );
     }
 }
 
@@ -125,7 +140,7 @@ mod transfer_tests {
 #[cfg(test)]
 mod checksum_tests {
     use super::test_utils::TestFixture;
-    use sha2::{Sha512, Digest};
+    use sha2::{Digest, Sha512};
 
     #[tokio::test]
     async fn test_checksum_deterministic() {
@@ -134,8 +149,12 @@ mod checksum_tests {
         let test_file = fixture.temp_dir.path().join("deterministic.txt");
         std::fs::write(&test_file, "same content").unwrap();
 
-        let hash1 = crate::storage::checksum::compute_checksum(&test_file, 1024).await.unwrap();
-        let hash2 = crate::storage::checksum::compute_checksum(&test_file, 1024).await.unwrap();
+        let hash1 = crate::storage::checksum::compute_checksum(&test_file, 1024)
+            .await
+            .unwrap();
+        let hash2 = crate::storage::checksum::compute_checksum(&test_file, 1024)
+            .await
+            .unwrap();
         assert_eq!(hash1, hash2);
     }
 
@@ -148,7 +167,9 @@ mod checksum_tests {
         std::fs::write(&test_file, content).unwrap();
 
         let expected = hex::encode(Sha512::digest(content));
-        let actual = crate::storage::checksum::compute_checksum(&test_file, 1024).await.unwrap();
+        let actual = crate::storage::checksum::compute_checksum(&test_file, 1024)
+            .await
+            .unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -160,8 +181,12 @@ mod checksum_tests {
         let content = vec![0u8; 2048];
         std::fs::write(&test_file, &content).unwrap();
 
-        let hash_1 = crate::storage::checksum::compute_checksum(&test_file, 1).await.unwrap();
-        let hash_64 = crate::storage::checksum::compute_checksum(&test_file, 64 * 1024).await.unwrap();
+        let hash_1 = crate::storage::checksum::compute_checksum(&test_file, 1)
+            .await
+            .unwrap();
+        let hash_64 = crate::storage::checksum::compute_checksum(&test_file, 64 * 1024)
+            .await
+            .unwrap();
         assert_eq!(hash_1, hash_64);
     }
 }
@@ -235,10 +260,10 @@ mod storage_manager_tests {
 #[cfg(test)]
 mod builder_tests {
     use super::test_utils::builders::{
-        default_test_job, queued_publish_job, running_publish_job,
-        queued_delete_job, failed_job, JobBuilder,
+        JobBuilder, default_test_job, failed_job, queued_delete_job, queued_publish_job,
+        running_publish_job,
     };
-    use crate::jobs::types::{JobType, JobStatus};
+    use crate::jobs::types::{JobStatus, JobType};
 
     #[test]
     fn test_default_test_job() {
@@ -309,9 +334,9 @@ mod recursive_transfer_tests {
     use super::test_utils::TestFixture;
     use crate::config::InboxConfig;
     use crate::storage::transfer::{
-        check_disk_space, count_symlink_reference, is_external_to_inbox, temp_transfer_dir_name,
-        validate_symlink_target, validate_warehouse_path, AuditContext, TransferContext,
-        TransferError,
+        AuditContext, TransferContext, TransferError, check_disk_space, count_symlink_reference,
+        is_external_to_inbox, temp_transfer_dir_name, validate_symlink_target,
+        validate_warehouse_path,
     };
 
     fn default_audit() -> AuditContext {
@@ -389,9 +414,18 @@ mod recursive_transfer_tests {
         assert_eq!(result.total_bytes, 4 + 5 + 6 + 7);
 
         // Structure preserved, content correct.
-        assert_eq!(fs::read_to_string(warehouse.join("root.txt")).unwrap(), "root");
-        assert_eq!(fs::read_to_string(warehouse.join("a/one.txt")).unwrap(), "12345");
-        assert_eq!(fs::read_to_string(warehouse.join("a/b/two.txt")).unwrap(), "abcdef");
+        assert_eq!(
+            fs::read_to_string(warehouse.join("root.txt")).unwrap(),
+            "root"
+        );
+        assert_eq!(
+            fs::read_to_string(warehouse.join("a/one.txt")).unwrap(),
+            "12345"
+        );
+        assert_eq!(
+            fs::read_to_string(warehouse.join("a/b/two.txt")).unwrap(),
+            "abcdef"
+        );
         assert_eq!(
             fs::read_to_string(warehouse.join("a/b/c/three.txt")).unwrap(),
             "ghijklm"
@@ -430,7 +464,10 @@ mod recursive_transfer_tests {
 
         // Target is a regular file with the linked content.
         let target = warehouse.join("link.txt");
-        assert!(target.is_file(), "target of file symlink must be a regular file");
+        assert!(
+            target.is_file(),
+            "target of file symlink must be a regular file"
+        );
         assert_eq!(fs::read_to_string(&target).unwrap(), "link content");
         assert_eq!(
             fs::read_to_string(warehouse.join("real.txt")).unwrap(),
@@ -505,7 +542,9 @@ mod recursive_transfer_tests {
         let inner = match err {
             TransferError::TransferFailed { ref errors, .. } => {
                 assert!(
-                    errors.iter().any(|e| matches!(e, TransferError::SymlinkLoop(_))),
+                    errors
+                        .iter()
+                        .any(|e| matches!(e, TransferError::SymlinkLoop(_))),
                     "expected SymlinkLoop among {:?}",
                     errors
                 );
@@ -515,7 +554,10 @@ mod recursive_transfer_tests {
         };
         assert_inbox_untouched(&inbox, &["sub/real.txt", "sub/loop"]);
         assert_no_temp_dirs(fixture.protected_base.as_path());
-        assert!(!warehouse.exists(), "no partial warehouse data on loop failure");
+        assert!(
+            !warehouse.exists(),
+            "no partial warehouse data on loop failure"
+        );
         let _ = inner;
     }
 
@@ -544,7 +586,9 @@ mod recursive_transfer_tests {
         let err = result.expect_err("pure symlink cycle must fail");
         if let TransferError::TransferFailed { errors, .. } = err {
             assert!(
-                errors.iter().any(|e| matches!(e, TransferError::SymlinkLoop(_))),
+                errors
+                    .iter()
+                    .any(|e| matches!(e, TransferError::SymlinkLoop(_))),
                 "expected SymlinkLoop, got {:?}",
                 errors
             );
@@ -579,7 +623,9 @@ mod recursive_transfer_tests {
         let err = result.expect_err("broken symlink must fail the transfer");
         if let TransferError::TransferFailed { errors, .. } = err {
             assert!(
-                errors.iter().any(|e| matches!(e, TransferError::BrokenSymlink(_))),
+                errors
+                    .iter()
+                    .any(|e| matches!(e, TransferError::BrokenSymlink(_))),
                 "expected BrokenSymlink, got {:?}",
                 errors
             );
@@ -640,11 +686,7 @@ mod recursive_transfer_tests {
         let inbox = fixture.inbox_base.join("inbox_external");
         fs::create_dir_all(&inbox).unwrap();
         fs::write(inbox.join("local.txt"), "local").unwrap();
-        symlink(
-            external.path().join("secret.txt"),
-            inbox.join("ext_link"),
-        )
-        .unwrap();
+        symlink(external.path().join("secret.txt"), inbox.join("ext_link")).unwrap();
 
         let warehouse = fixture.protected_base.join("inbox_external");
         let cfg = scan_off_config(&fixture); // allow_external_symlinks = false (default)
@@ -685,11 +727,7 @@ mod recursive_transfer_tests {
         let inbox = fixture.inbox_base.join("inbox_ext_allowed");
         fs::create_dir_all(&inbox).unwrap();
         fs::write(inbox.join("local.txt"), "local").unwrap();
-        symlink(
-            external.path().join("ext_file.txt"),
-            inbox.join("ext_link"),
-        )
-        .unwrap();
+        symlink(external.path().join("ext_file.txt"), inbox.join("ext_link")).unwrap();
 
         let warehouse = fixture.protected_base.join("inbox_ext_allowed");
         let mut cfg = scan_off_config(&fixture);
@@ -830,7 +868,9 @@ mod recursive_transfer_tests {
         let err = result.expect_err("path length limit must fail");
         if let TransferError::TransferFailed { errors, .. } = err {
             assert!(
-                errors.iter().any(|e| matches!(e, TransferError::PathTooLong(_))),
+                errors
+                    .iter()
+                    .any(|e| matches!(e, TransferError::PathTooLong(_))),
                 "expected PathTooLong, got {:?}",
                 errors
             );
@@ -1031,13 +1071,21 @@ mod recursive_transfer_tests {
         // but did not abort the run.
         assert!(result.success);
         assert_eq!(result.files_transferred.len(), 1);
-        assert_eq!(fs::read_to_string(warehouse.join("good.txt")).unwrap(), "good");
+        assert_eq!(
+            fs::read_to_string(warehouse.join("good.txt")).unwrap(),
+            "good"
+        );
         assert_eq!(
             result.errors.len(),
             2,
             "both broken symlinks must be reported in result.errors"
         );
-        assert!(result.errors.iter().all(|e| matches!(e, TransferError::BrokenSymlink(_))));
+        assert!(
+            result
+                .errors
+                .iter()
+                .all(|e| matches!(e, TransferError::BrokenSymlink(_)))
+        );
         // Success still cleans up the inbox.
         assert!(!inbox.exists());
     }
@@ -1066,7 +1114,10 @@ mod recursive_transfer_tests {
         )
         .await;
 
-        assert!(result.is_err(), "broken symlink must still fail non-atomic transfer");
+        assert!(
+            result.is_err(),
+            "broken symlink must still fail non-atomic transfer"
+        );
         // Rollback: no partial data in the warehouse.
         let files: Vec<String> = if warehouse.exists() {
             fs::read_dir(&warehouse)
@@ -1132,16 +1183,16 @@ mod recursive_transfer_tests {
         // Outside.
         let outside = tempfile::TempDir::new().unwrap();
         let outside_wh = outside.path().join("w");
-        assert!(
-            matches!(
-                validate_warehouse_path(&outside_wh, &base).await,
-                Err(TransferError::InvalidWarehousePath(_))
-            )
-        );
+        assert!(matches!(
+            validate_warehouse_path(&outside_wh, &base).await,
+            Err(TransferError::InvalidWarehousePath(_))
+        ));
 
         // Nonexistent protected base → error.
         assert!(
-            validate_warehouse_path(&inside, &base.join("no_such_base")).await.is_err()
+            validate_warehouse_path(&inside, &base.join("no_such_base"))
+                .await
+                .is_err()
         );
     }
 
@@ -1210,8 +1261,14 @@ mod recursive_transfer_tests {
     #[test]
     fn test_count_symlink_reference() {
         let mut map = HashMap::new();
-        assert_eq!(count_symlink_reference(&mut map, 1, 100, Some(2)).unwrap(), 1);
-        assert_eq!(count_symlink_reference(&mut map, 1, 100, Some(2)).unwrap(), 2);
+        assert_eq!(
+            count_symlink_reference(&mut map, 1, 100, Some(2)).unwrap(),
+            1
+        );
+        assert_eq!(
+            count_symlink_reference(&mut map, 1, 100, Some(2)).unwrap(),
+            2
+        );
         assert!(matches!(
             count_symlink_reference(&mut map, 1, 100, Some(2)),
             Err(TransferError::MaxSymlinkReferencesExceeded(100))
@@ -1236,7 +1293,10 @@ mod recursive_transfer_tests {
         assert_eq!(ctx.error_count(), 2);
 
         let single = TransferContext::new(1);
-        assert!(single.record_error(), "Nth error with N=1 cancels immediately");
+        assert!(
+            single.record_error(),
+            "Nth error with N=1 cancels immediately"
+        );
     }
 
     #[tokio::test]
@@ -1293,8 +1353,12 @@ mod recursive_transfer_tests {
         assert_eq!(result.total_bytes, total_bytes);
         for i in 0..50 {
             let expected = format!("file {} content", i);
-            let got = fs::read_to_string(warehouse.join(format!("d{}", i % 5)).join(format!("f{}.txt", i)))
-                .unwrap_or_else(|_| panic!("missing file for i={}", i));
+            let got = fs::read_to_string(
+                warehouse
+                    .join(format!("d{}", i % 5))
+                    .join(format!("f{}.txt", i)),
+            )
+            .unwrap_or_else(|_| panic!("missing file for i={}", i));
             assert_eq!(got, expected);
         }
         assert!(!inbox.exists());
@@ -1327,7 +1391,11 @@ mod recursive_transfer_tests {
         .await;
 
         let err = result.expect_err("scan must reject external symlink pre-transfer");
-        if let TransferError::TransferFailed { ref errors, ref audit_events } = err {
+        if let TransferError::TransferFailed {
+            ref errors,
+            ref audit_events,
+        } = err
+        {
             assert!(
                 errors
                     .iter()
@@ -1447,7 +1515,10 @@ mod recursive_transfer_tests {
     #[test]
     fn test_inbox_config_security_defaults() {
         let cfg = InboxConfig::default();
-        assert!(!cfg.allow_external_symlinks, "external symlinks must be denied by default");
+        assert!(
+            !cfg.allow_external_symlinks,
+            "external symlinks must be denied by default"
+        );
         assert_eq!(cfg.max_recursion_depth, 25);
         assert_eq!(cfg.max_errors_before_fail, 1);
         assert_eq!(cfg.max_path_length, Some(4096));
@@ -1604,7 +1675,10 @@ mod progress_wiring_tests {
         )
         .await;
 
-        assert!(result.is_err(), "pre-cancelled token must fail the transfer");
+        assert!(
+            result.is_err(),
+            "pre-cancelled token must fail the transfer"
+        );
         let inner = result.unwrap_err();
         assert!(
             matches!(inner, TransferError::TransferFailed { .. })

@@ -1,8 +1,8 @@
 //! Test fixtures for Citadel
 
 use crate::config::CitadelConfig;
-use crate::storage::manager::StorageManager;
 use crate::jobs::executor::MockExecutor;
+use crate::storage::manager::StorageManager;
 use std::path::PathBuf;
 use tempfile::TempDir;
 

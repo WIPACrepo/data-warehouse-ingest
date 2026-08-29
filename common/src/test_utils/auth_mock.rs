@@ -1,12 +1,7 @@
 //! Mock Keycloak server for unit tests
 //! Generates real keypairs for testing multiple algorithms (RS256, ES256, EdDSA)
 
-use axum::{
-    http::StatusCode,
-    response::Json,
-    routing::get,
-    Router,
-};
+use axum::{Router, http::StatusCode, response::Json, routing::get};
 use serde_json::json;
 use tokio::net::TcpListener;
 
@@ -45,12 +40,11 @@ pub fn mock_jwks() -> serde_json::Value {
 /// Create a mock Keycloak server for testing
 pub async fn create_mock_keycloak_server() -> (String, tokio::task::JoinHandle<()>) {
     let app = Router::new()
-        .route("/auth/realms/test/protocol/openid-connect/certs", get(|| async {
-            Json(mock_jwks())
-        }))
-        .route("/auth/realms/test", get(|| async {
-            StatusCode::OK
-        }));
+        .route(
+            "/auth/realms/test/protocol/openid-connect/certs",
+            get(|| async { Json(mock_jwks()) }),
+        )
+        .route("/auth/realms/test", get(|| async { StatusCode::OK }));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

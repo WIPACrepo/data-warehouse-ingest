@@ -7,18 +7,18 @@ use std::collections::BTreeMap;
 
 use crate::config::CitadelConfig;
 use crate::error::{AppError, Result};
-use crate::jobs::types::{JobStatus, JobStatusDetail, JobExecutorInfo};
 use crate::jobs::executor::JobExecutor;
+use crate::jobs::types::{JobExecutorInfo, JobStatus, JobStatusDetail};
 use crate::models::JobDB;
 use k8s_openapi::api::batch::v1::Job as K8sJob;
 use k8s_openapi::api::core::v1::{
-    PodSpec, PodTemplateSpec, Container, EnvVar, ResourceRequirements,
-    Volume, VolumeMount, SecretVolumeSource, EmptyDirVolumeSource,
-    SecurityContext, PodSecurityContext, Capabilities,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, PodSecurityContext, PodSpec,
+    PodTemplateSpec, ResourceRequirements, SecretVolumeSource, SecurityContext, Volume,
+    VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 pub struct KubernetesExecutor {
@@ -49,9 +49,9 @@ impl KubernetesExecutor {
                 AppError::KubernetesError(format!("Failed to create K8s client: {}", e))
             })?
         } else {
-            kube::Client::try_default()
-                .await
-                .map_err(|e| AppError::KubernetesError(format!("Failed to create K8s client: {}", e)))?
+            kube::Client::try_default().await.map_err(|e| {
+                AppError::KubernetesError(format!("Failed to create K8s client: {}", e))
+            })?
         };
 
         let namespace = config.kube_namespace.clone();
@@ -83,12 +83,14 @@ impl KubernetesExecutor {
         };
 
         let (cpu_limit, memory_limit) = match &job.job_type {
-            crate::jobs::types::JobType::PublishInbox { .. } => {
-                (&config.queue_publish_cpu_limit, &config.queue_publish_memory_limit)
-            }
-            crate::jobs::types::JobType::DeleteInbox { .. } => {
-                (&config.queue_delete_cpu_limit, &config.queue_delete_memory_limit)
-            }
+            crate::jobs::types::JobType::PublishInbox { .. } => (
+                &config.queue_publish_cpu_limit,
+                &config.queue_publish_memory_limit,
+            ),
+            crate::jobs::types::JobType::DeleteInbox { .. } => (
+                &config.queue_delete_cpu_limit,
+                &config.queue_delete_memory_limit,
+            ),
         };
 
         // Build resource limits/requests using BTreeMap<Quantity>
@@ -281,7 +283,10 @@ impl KubernetesExecutor {
             "citadel/job-max-duration".to_string(),
             config.job_max_duration_secs.to_string(),
         );
-        annotations.insert("citadel/job-submitted-at".to_string(), timestamp.to_string());
+        annotations.insert(
+            "citadel/job-submitted-at".to_string(),
+            timestamp.to_string(),
+        );
 
         let k8s_job = K8sJob {
             metadata: ObjectMeta {
@@ -314,10 +319,16 @@ impl JobExecutor for KubernetesExecutor {
 
         let k8s_job = self.create_job_spec(job, &nonce, &timestamp)?;
 
-        match jobs_api.create(&kube::api::PostParams::default(), &k8s_job).await {
+        match jobs_api
+            .create(&kube::api::PostParams::default(), &k8s_job)
+            .await
+        {
             Ok(created) => {
                 let job_name = created.metadata.name.unwrap_or_default();
-                info!("Submitted Kubernetes job {} for citadel job {}", job_name, job.job_id);
+                info!(
+                    "Submitted Kubernetes job {} for citadel job {}",
+                    job_name, job.job_id
+                );
                 Ok(job_name)
             }
             Err(e) => {
@@ -342,7 +353,10 @@ impl JobExecutor for KubernetesExecutor {
                 Ok(())
             }
             Err(kube::Error::Api(e)) if e.code == 404 => {
-                warn!("Kubernetes job {} not found (may have already completed)", job_name);
+                warn!(
+                    "Kubernetes job {} not found (may have already completed)",
+                    job_name
+                );
                 Ok(())
             }
             Err(e) => {
@@ -372,17 +386,15 @@ impl JobExecutor for KubernetesExecutor {
                     },
                 })
             }
-            Err(kube::Error::Api(e)) if e.code == 404 => {
-                Ok(JobStatusDetail {
-                    job_id: job_id.to_string(),
-                    status: JobStatus::Completed,
-                    progress: None,
-                    executor: JobExecutorInfo {
-                        executor_type: "kubernetes".to_string(),
-                        executor_id: Some(format!("citadel-job-{}", job_id)),
-                    },
-                })
-            }
+            Err(kube::Error::Api(e)) if e.code == 404 => Ok(JobStatusDetail {
+                job_id: job_id.to_string(),
+                status: JobStatus::Completed,
+                progress: None,
+                executor: JobExecutorInfo {
+                    executor_type: "kubernetes".to_string(),
+                    executor_id: Some(format!("citadel-job-{}", job_id)),
+                },
+            }),
             Err(e) => {
                 error!("Failed to get Kubernetes job status: {}", e);
                 Err(AppError::KubernetesError(format!(
@@ -452,7 +464,10 @@ mod tests {
         assert!(result.is_ok());
 
         let k8s_job = result.unwrap();
-        assert_eq!(k8s_job.metadata.name, Some("citadel-job-test-job-123".to_string()));
+        assert_eq!(
+            k8s_job.metadata.name,
+            Some("citadel-job-test-job-123".to_string())
+        );
         assert_eq!(k8s_job.metadata.namespace, Some("test".to_string()));
 
         // Check container config
@@ -481,7 +496,9 @@ mod tests {
                     .map(|e| (e.name, e.value.unwrap_or_default()))
                     .collect();
                 assert_eq!(
-                    env_map.get("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS").map(String::as_str),
+                    env_map
+                        .get("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS")
+                        .map(String::as_str),
                     Some("30")
                 );
                 assert_eq!(
