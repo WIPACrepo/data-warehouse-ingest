@@ -1,6 +1,7 @@
 //! HTTP handlers for Citadel API
 
 pub mod cancel_job;
+pub mod compensate;
 pub mod create_inbox;
 pub mod delete_inbox;
 pub mod get_job;

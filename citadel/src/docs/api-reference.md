@@ -23,9 +23,9 @@ Complete documentation for all Citadel HTTP API endpoints.
 
 ## Overview
 
-Citadel exposes a small, command-style HTTP API (rather than CRUD) for orchestrating inbox and job operations. All routes under `/api/v1/` require JWT authentication; `/health` and `/ready` are public.
+Citadel exposes a small, command-style HTTP API (rather than CRUD) for orchestrating inbox and job operations. User routes under `/api/v1/` require a JWT with a `CITADEL_REQUIRED_ROLES` role; the job routes (`/api/v1/job/callback`, `/api/v1/job/progress`) accept an admin JWT **or** the `citadel-job` callback credentials (D11); `/health` and `/ready` are public. The router is built by `citadel::create_app` ([`lib.rs`](../lib.rs)).
 
-The endpoints map to the following handlers (see [`src/handlers/`](../src/handlers/)):
+The endpoints map to the following handlers (see [`src/handlers/`](../handlers/)):
 
 | Method | Path | Handler | Role |
 |--------|------|---------|------|
@@ -35,8 +35,8 @@ The endpoints map to the following handlers (see [`src/handlers/`](../src/handle
 | `GET` | `/api/v1/job/{job_id}` | `get_job` | read |
 | `GET` | `/api/v1/jobs` | `list_jobs` | read |
 | `POST` | `/api/v1/job/{job_id}/cancel` | `cancel_job` | admin |
-| `POST` | `/api/v1/job/callback` | `job_callback` | timestamp+nonce |
-| `POST` | `/api/v1/job/progress` | `job_progress` | timestamp+nonce |
+| `POST` | `/api/v1/job/callback` | `job_callback` | admin JWT, or secret+timestamp+nonce |
+| `POST` | `/api/v1/job/progress` | `job_progress` | admin JWT, or secret+timestamp+nonce |
 | `GET` | `/health` | `health` | none |
 | `GET` | `/ready` | `ready` | none |
 
@@ -50,7 +50,7 @@ http://<citadel-host>:8081
 
 All operational endpoints are versioned under `/api/v1/`.
 
-> **Note**: This endpoint set reflects the current source code (handlers in [`src/handlers/`](../src/handlers/)).
+> **Note**: This endpoint set reflects the current source code (handlers in [`src/handlers/`](../handlers/)).
 
 ---
 
@@ -58,7 +58,7 @@ All operational endpoints are versioned under `/api/v1/`.
 
 ### JWT Token Requirements
 
-All `/api/v1/` endpoints require a JWT in the `Authorization` header:
+All `/api/v1/` endpoints except the job routes require a JWT in the `Authorization` header (for the job routes see [Job Callback Endpoint](#job-callback-endpoint)):
 
 ```http
 Authorization: Bearer <jwt_token>
@@ -66,7 +66,7 @@ Authorization: Bearer <jwt_token>
 
 ### Token Validation
 
-Citadel validates JWT tokens with the following checks (see [`auth/jwt_validator.rs`](../src/auth/jwt_validator.rs)):
+Citadel validates JWT tokens with the following checks (see [`auth/jwt_validator.rs`](../../../common/src/auth/jwt_validator.rs)):
 
 1. **Header algorithm**: must be in `CITADEL_ALLOWED_ALGORITHMS` (default `RS256`); `alg: none` is explicitly rejected
 2. **Key ID**: the `kid` must match an entry in the Keycloak JWKS
@@ -83,7 +83,7 @@ Citadel validates JWT tokens with the following checks (see [`auth/jwt_validator
 | Create / Publish / Delete inbox | `write` or `admin` |
 | Get / List jobs | `read` or `write` or `admin` |
 | Cancel job | `admin` only |
-| Job callback | timestamp + nonce (see below) |
+| Job callback / progress | `admin` (JWT), or no JWT + `X-Callback-Secret` + timestamp + nonce (see below) |
 | `/health`, `/ready` | none |
 
 Roles are read from the `resource_access.citadel.roles` claim. Helper methods on `Claims` (`common/src/auth/claims.rs`) take the service name (`"citadel"`): `get_roles(service)`, `has_role(service, role)`, `is_admin(service)`, `can_write(service)` (`admin` or `write`), `can_read(service)` (`admin` or `read` — a `write`-only token is **not** `can_read`), and `is_internal(service)` (exists but unused — there is no `internal` role, D9).
@@ -118,8 +118,10 @@ Content-Type: application/json
 **Behavior:**
 1. Reads inbox metadata from the shared MongoDB (`inboxes` collection, read-only)
 2. Validates the inbox doesn't already have an `inbox_path`
-3. Creates `CITADEL_INBOX_BASE_PATH/{inbox_id}/`
-4. Transitions the inbox state via the Barbican API
+3. Barbican `create/start` (inbox → `creating`)
+4. Creates `CITADEL_INBOX_BASE_PATH/{inbox_id}/`
+5. Barbican `create/complete`
+6. **Compensation**: if step 4 or 5 fails, Citadel calls Barbican `create/failure` (`storage_error` / `barbican_error`, inbox → `failed`) best-effort and returns the original error. The directory is kept (creation is idempotent, so a retry reuses it)
 
 **Response (201 Created):**
 ```json
@@ -159,6 +161,7 @@ Authorization: Bearer <jwt_token>
 4. Quota check (in-flight MongoDB count) — `429` if at/above `CITADEL_QUEUE_PUBLISH_RATE_LIMIT`
 5. Transitions the inbox to `publishing` via the Barbican API
 6. Submits the job to the executor; updates the job to `running` with the executor id
+7. **Compensation**: if the executor submission fails, Citadel calls Barbican `publish/failure` with `executor_error` (inbox → `failed`) and marks the job `failed` with an error entry, so it leaves the in-flight quota; best-effort, the original error is returned. If submission succeeded but recording the executor info fails, the error is only logged and the request still returns `202` (the job is running and must not be compensated)
 
 **Response (202 Accepted):**
 ```json
@@ -202,6 +205,7 @@ Authorization: Bearer <jwt_token>
 4. Quota check (in-flight MongoDB count) — `429` if at/above `CITADEL_QUEUE_DELETE_RATE_LIMIT`
 5. Transitions the inbox to `deleting` via the Barbican API
 6. Submits the job to the executor; updates the job to `running` with the executor id
+7. **Compensation**: as for publish — a failed submission triggers `delete/failure` (`executor_error`) and marks the job `failed`
 
 **Response (202 Accepted):**
 ```json
@@ -336,7 +340,7 @@ Authorization: Bearer <jwt_token>
 
 ## Job Callback Endpoint
 
-Receives completion/failure notifications from job workers (`citadel-job`).
+Receives completion/failure notifications from job workers (`citadel-job`), or from an operator holding Citadel `admin` (e.g. to finish a stuck job).
 
 **Request:**
 ```http
@@ -345,7 +349,10 @@ Content-Type: application/json
 X-Callback-Secret: <shared-secret>
 ```
 
-**Authentication:** the route sits inside the same JWT auth layer as the other `/api/v1` routes; the callback itself is additionally authenticated via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)). **Known gap:** `citadel-job` currently sends only `X-Callback-Secret` (no `Authorization` header), so it is rejected by the JWT layer unless the route is reached another way.
+**Authentication** (D11, see [Job Route Security](authentication.md#job-route-security)) — the route is **not** behind the user JWT layer; one of:
+
+- **Admin JWT**: `Authorization: Bearer <jwt>` with Citadel `admin`. `timestamp`, `nonce` and `X-Callback-Secret` are not required. Invalid/expired/malformed token → `401 auth_error`; valid token without `admin` → `403 forbidden`. A present `Authorization` header is authoritative: there is no fall-through to the secret path.
+- **Worker (no `Authorization` header)**: `X-Callback-Secret` + `timestamp` + `nonce` (steps 1–3 below). Missing `timestamp`/`nonce` → `401 auth_error`.
 
 **Request Body:**
 ```json
@@ -362,8 +369,10 @@ X-Callback-Secret: <shared-secret>
 }
 ```
 
+`timestamp` and `nonce` are optional in the schema (required only on the worker path).
+
 **Behavior:**
-1. **Callback secret validation** (when configured): `X-Callback-Secret` must match the configured secret using a **constant-time comparison**; missing/mismatch → `401 invalid_callback_secret`. When no secret is configured, a warning is logged and validation falls back to timestamp + nonce only.
+1. **Callback secret validation** (worker path only; steps 1–3 are skipped for admin callers) (when configured): `X-Callback-Secret` must match the configured secret using a **constant-time comparison**; missing/mismatch → `401 invalid_callback_secret`. When no secret is configured, a warning is logged and validation falls back to timestamp + nonce only.
 2. **Timestamp validation**: `age < 300 s` (`NONCE_TTL_SECS`) and no more than 60 s in the future (`TIMESTAMP_SKEW_SECS`). `citadel-job` stamps a fresh timestamp + UUID nonce on **every** send attempt (including retries), so long-running jobs are not rejected
 3. **Nonce validation**: a *live* (unexpired) nonce is rejected as replayed (`callback_nonce_reused`); an *expired-but-present* nonce is reused with a fresh 5-minute window (the TTL index on `callback_nonces.expires_at` garbage-collects old rows — P2.2)
 4. Loads the job; ignores callbacks for already-terminal jobs
@@ -379,10 +388,10 @@ X-Callback-Secret: <shared-secret>
 }
 ```
 
-**Errors (401 Unauthorized):**
-- `invalid_callback_secret`
-- `callback_timestamp_expired`
-- `callback_nonce_reused`
+**Errors:**
+- `401` — `auth_error` (bad/expired/malformed JWT; or worker request missing `timestamp`/`nonce`), `invalid_callback_secret`, `callback_timestamp_expired`, `callback_nonce_reused`
+- `403` — `forbidden` (valid JWT without Citadel `admin`)
+- `503` — `service_unavailable` (JWKS unavailable while validating a JWT)
 
 ---
 
@@ -396,7 +405,7 @@ Content-Type: application/json
 X-Callback-Secret: <shared-secret>
 ```
 
-Authenticated exactly like the job callback (service JWT + secret + timestamp + nonce). Body:
+Authenticated exactly like the job callback (admin JWT, or `X-Callback-Secret` + `timestamp` + `nonce`). Body:
 
 ```json
 {
@@ -526,16 +535,16 @@ Citadel's `AppError` is a re-export of `common::AppError` ([`citadel/src/error.r
 |------|---------|----------------|
 | 400 | `invalid_json` (status from the axum rejection; usually 400/415/422) | `JsonRejection` |
 | 400 | `invalid_publish_parameters`, `validation_error` | `InvalidPublishParameters`, `ValidationError` |
-| 401 | `auth_error` | `AuthError` (missing/invalid JWT) |
+| 401 | `auth_error` | `AuthError` (missing/invalid JWT; job-route worker request without `timestamp`/`nonce`) |
 | 401 | `invalid_callback_secret`, `callback_timestamp_expired`, `callback_nonce_reused` | Callback/progress authentication |
-| 403 | `forbidden` | `Forbidden` (insufficient role, path traversal) |
+| 403 | `forbidden` | `Forbidden` (insufficient role incl. non-admin JWT on a job route, path traversal) |
 | 404 | `inbox_not_found`, `job_not_found`, `file_not_found` | Lookup failures |
 | 409 | `inbox_not_deletable`, `inbox_already_publishing`, `conflict` | State conflicts (incl. Barbican 409) |
 | 422 | `invalid_state_transition` | `InvalidStateTransition` |
 | 429 | `too_many_requests` | In-flight job quota exceeded |
 | 500 | `storage_error`, `file_transfer_failed`, `checksum_mismatch`, `database_error`, `internal_error` | Server-side failures |
-| 502 | `bad_gateway` | Barbican request failed / non-2xx |
-| 503 | `kubernetes_error`, `k8s_api_error`, `service_unavailable` | K8s API down; Barbican circuit breaker open |
+| 502 | `bad_gateway` | Barbican request failed / non-2xx, incl. a persistent `401` (service token rejected) |
+| 503 | `kubernetes_error`, `k8s_api_error`, `service_unavailable` | K8s API down; Barbican circuit breaker open; Barbican service token unavailable; JWKS unavailable |
 | 504 | `job_timeout` | Job exceeded max duration |
 
 > **Security note**: the full error (`?self`) is logged server-side (`error` for 5xx, `warn` for 4xx). The response `message` is the variant's detail string (fixed strings for the three callback errors), so call sites must not put internal paths or driver errors into user-facing variants. Note that `From<mongodb::error::Error>` maps the raw driver message into `database_error`'s `message`.
@@ -545,5 +554,5 @@ Citadel's `AppError` is a re-export of `common::AppError` ([`citadel/src/error.r
 *See also:*
 - [Architecture](architecture.md) - System design
 - [State Machine](state-machine.md) - Job lifecycle
-- [Authentication](authentication.md) - JWT and callback security
+- [Authentication](authentication.md) - JWT, job-route, and service-token security
 - [Configuration](configuration.md) - Environment variables

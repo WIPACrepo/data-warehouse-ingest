@@ -2,8 +2,8 @@
 //!
 //! `citadel-job` reports transfer progress to Citadel (the single trust edge
 //! for coordination, D9) via `POST /api/v1/job/progress`. This endpoint is
-//! authenticated like the job callback (X-Callback-Secret + timestamp +
-//! nonce). Citadel then forwards the counts to Barbican's
+//! authenticated like the job callback: an admin JWT, or X-Callback-Secret +
+//! timestamp + nonce (see `middleware::job_auth`). Citadel then forwards the counts to Barbican's
 //! `publish/progress` / `delete/progress` action endpoints so the inbox's
 //! `progress` field stays live during long transfers.
 //!
@@ -11,7 +11,7 @@
 //! Barbican, metered by the client) but never fail the callback or the
 //! transfer.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Extension, Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
@@ -20,13 +20,18 @@ use tracing::info;
 use crate::AppState;
 use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
+use crate::middleware::job_auth::JobCaller;
 
 /// Progress report from a job executor.
 #[derive(Debug, Deserialize)]
 pub struct JobProgressRequest {
     pub job_id: String,
-    pub timestamp: DateTime<Utc>,
-    pub nonce: String,
+    /// Required for `citadel-job` (secret path); optional for an admin JWT.
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    /// Required for `citadel-job` (secret path); optional for an admin JWT.
+    #[serde(default)]
+    pub nonce: Option<String>,
     /// Total files discovered by the transfer (0 when unknown).
     #[serde(default)]
     pub total_files: u64,
@@ -55,16 +60,18 @@ pub struct JobProgressResponse {
 /// Handle a progress report, forwarding to Barbican for the matching job type.
 pub async fn job_progress(
     State(app_state): State<AppState>,
+    Extension(caller): Extension<JobCaller>,
     headers: axum::http::HeaderMap,
     Json(request): Json<JobProgressRequest>,
 ) -> Result<(StatusCode, Json<JobProgressResponse>)> {
-    // Authenticate like the job callback: X-Callback-Secret + timestamp +
-    // nonce (TTL + replay protection). Non-200s surface as JSON error bodies.
-    crate::handlers::job_callback::validate_callback_credentials(
+    // Authenticate like the job callback: admin JWT, or X-Callback-Secret +
+    // timestamp + nonce (TTL + replay protection). Non-200s are JSON errors.
+    crate::handlers::job_callback::authenticate_job_caller(
         &app_state,
+        &caller,
         &headers,
         request.timestamp,
-        &request.nonce,
+        request.nonce.as_deref(),
     )
     .await?;
 
@@ -231,8 +238,8 @@ mod forwarding_tests {
     fn request() -> JobProgressRequest {
         JobProgressRequest {
             job_id: "job-1".to_string(),
-            timestamp: Utc::now(),
-            nonce: "nonce-1".to_string(),
+            timestamp: Some(Utc::now()),
+            nonce: Some("nonce-1".to_string()),
             total_files: 10,
             processed_files: 4,
             total_bytes: 1000,

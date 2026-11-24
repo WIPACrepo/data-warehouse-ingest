@@ -11,6 +11,7 @@ This document covers the `auth` feature of `common`: how Barbican and Citadel lo
 - [Validation Rules](#validation-rules)
 - [Building the Middleware State](#building-the-middleware-state)
 - [Role Checks](#role-checks)
+- [Service-to-service tokens](#service-to-service-tokens)
 - [Design Decision D10](#design-decision-d10)
 - [Leeway Units (fixed)](#leeway-units-fixed)
 - [See also](#see-also)
@@ -28,9 +29,11 @@ All JWT handling lives in `common/src/auth/` behind the `auth` Cargo feature (wh
 | `jwt_validator.rs` | `JwtValidator` — signature, `exp`, `iss`, `aud` and algorithm checks |
 | `claims.rs` | `Claims` — `resource_access` client-role helpers (`has_role`, `is_admin`) |
 | `middleware.rs` | `AuthMiddlewareState`, `auth_middleware`, `ClaimsExtractor` |
-| `error.rs` | `AuthError`, `ConfigError` |
+| `service_token.rs` | `SecretString`, `ServiceTokenSource`, `ServiceTokenProvider` — outgoing service-to-service Bearer tokens (see [below](#service-to-service-tokens)) |
+| `metrics.rs` | Auth Prometheus metrics (`AUTH_REGISTRY`, `init_auth_metrics`, ...); re-exported as `common::metrics::*` |
+| `error.rs` | `AuthError` (incl. `TokenRequestFailed` → `503`), `ConfigError` |
 
-All of these are re-exported from the crate root (e.g. `common::AuthConfig`, `common::build_auth_state`).
+The main types are re-exported from the crate root (e.g. `common::AuthConfig`, `common::build_auth_state`, `common::ServiceTokenProvider`).
 
 ---
 
@@ -72,15 +75,16 @@ let auth_config = common::AuthConfig::from_lookup("CITADEL", |name| map.get(name
 
 List values are split on `,`, trimmed, and empty entries dropped. Numeric values that fail to parse produce a `ConfigError::InvalidValue` naming the full variable, e.g. `CITADEL_JWKS_REFRESH_SECS must be a non-negative integer, got 'abc'`.
 
-There is no client-secret variable: services only *validate* tokens, they do not request them from Keycloak, so `*_KEYCLOAK_CLIENT_SECRET` was removed.
+`*_KEYCLOAK_CLIENT_SECRET` was removed: validation needs no secret. Credentials for *calling* the peer service are separate, per-peer variables — see [Service-to-service tokens](#service-to-service-tokens).
 
 ---
 
 ## Derived URLs: Issuer and JWKS
 
 ```text
-issuer   = {KEYCLOAK_URL}/realms/{realm}
-jwks_url = {KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/certs
+issuer    = {KEYCLOAK_URL}/realms/{realm}
+jwks_url  = {KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/certs
+token_url = {KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/token   # AuthConfig::token_url()
 ```
 
 No `/auth/` segment is hard-coded. For Keycloak 17+ (Quarkus) set the bare host; for legacy deployments include the prefix in the URL:
@@ -131,6 +135,69 @@ An **empty** `required_roles` list disables the role gate (any valid token passe
 
 ---
 
+## Service-to-service tokens
+
+Barbican and Citadel call each other with a Bearer JWT that the peer's `auth_middleware` validates:
+
+| Caller → peer | `from_env(prefix, peer, ..)` | Peer routes |
+|---------------|------------------------------|-------------|
+| Citadel → Barbican | `("CITADEL", "BARBICAN")` | Barbican internal `*/{start,progress,complete,failure}` routes (any valid token, no role gate) |
+| Barbican → Citadel | `("BARBICAN", "CITADEL")` | Citadel `/api/v1/inbox/*` (one of `CITADEL_REQUIRED_ROLES`) |
+
+Implemented in `common/src/auth/service_token.rs`.
+
+### Configuration (`ServiceTokenSource`)
+
+`ServiceTokenSource::from_env(prefix, peer, &auth_config)` (or `from_lookup(prefix, peer, &auth_config, lookup)` for tests) reads, with `{P}` = caller prefix and `{Q}` = peer:
+
+| Variable | Mode | Notes |
+|----------|------|-------|
+| `{P}_{Q}_CLIENT_ID` | `ClientCredentials` | Keycloak client of the **caller** (e.g. `citadel`). |
+| `{P}_{Q}_CLIENT_SECRET` | `ClientCredentials` | Read from an **environment variable**; in Kubernetes inject it from a Secret via `env.valueFrom.secretKeyRef`. Held as `SecretString`, whose `Debug`/`Display` print `[REDACTED]`. |
+| `{P}_{Q}_SERVICE_TOKEN_FILE` | `StaticFile(path)` | **Development only**: a pre-issued token, re-read from disk on every refresh. |
+
+The token URL is `AuthConfig::token_url()` of the caller's own auth config. Empty values count as unset. Rules:
+
+| Configured | Result |
+|------------|--------|
+| ID + secret | `Some(ClientCredentials { token_url, client_id, client_secret })` |
+| Token file | `Some(StaticFile(path))`; **error** if `PRODUCTION=true` |
+| ID without secret, or secret without ID | error |
+| Credentials **and** token file | error |
+| Nothing | `None` (no `Authorization` header is sent); **error** if `PRODUCTION=true` |
+
+Errors are `ConfigError::InvalidValue` naming the variables; services treat them as fatal at startup.
+
+Kubernetes example (Citadel calling Barbican):
+
+```yaml
+env:
+  - name: CITADEL_BARBICAN_CLIENT_ID
+    value: citadel
+  - name: CITADEL_BARBICAN_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: citadel-keycloak-client   # Secret holding the client secret
+        key: client-secret
+```
+
+### Fetching and caching (`ServiceTokenProvider`)
+
+- `ServiceTokenProvider::new(source)`; `source()` returns the configuration.
+- `bearer().await` returns a cached token, fetching a new one when due. The cache mutex is held during a refresh, so concurrent callers trigger a single fetch.
+- **Client credentials**: `POST token_url` with `grant_type=client_credentials`, `client_id`, `client_secret` (10 s HTTP timeout). Refresh is scheduled 30 s before `expires_in` runs out, capped at half the lifetime for short-lived tokens.
+- **Static file**: the token's `exp` is decoded **without signature verification**, only to schedule the next re-read (same 30 s / half-lifetime rule); the peer still verifies the token. Without a readable `exp`, the file is re-read every 60 s.
+- `invalidate().await` drops the cached token. Both service clients call it after a `401` from the peer and retry once.
+- Failures (unreachable Keycloak, non-2xx token response, unreadable file) return `AuthError::TokenRequestFailed`, which maps to `503 Service Unavailable`. Only the HTTP status of a failed token response is logged, never its body or the secret.
+
+### Keycloak requirements
+
+- **Audience mapper**: the peer validates `aud` against its own `{Q}_KEYCLOAK_CLIENT_ID`, so the caller's client needs an audience mapper that adds the **peer's client ID** to `aud` (Citadel's token must contain `barbican`; Barbican's must contain `citadel`).
+- **Issuer**: the token is issued by the caller's realm (`token_url()`), so both services must use the same Keycloak URL and realm for the peer's `iss` check to pass.
+- **Roles**: the `barbican` client's service account needs a Citadel client role listed in `CITADEL_REQUIRED_ROLES` (grant `write`). Barbican's internal routes have no role gate.
+
+---
+
 ## Design Decision D10
 
 **Decision:** one shared auth-config parser in `common`, reading service-owned, prefixed environment variables.
@@ -158,6 +225,6 @@ An **empty** `required_roles` list disables the role gate (any valid token passe
 
 - [README.md](README.md) - Main index
 - [infrastructure.md](infrastructure.md) - `AppError` mapping for `auth_error` / `forbidden`
-- [testing.md](testing.md) - `test-utils` auth mocks (RSA key generation, signed test tokens)
+- [testing.md](testing.md) - `test-utils` auth mocks (runtime RSA key, signed test tokens, mock Keycloak)
 - [Barbican configuration](../../barbican/src/docs/configuration.md)
 - [Citadel configuration](../../citadel/src/docs/configuration.md)

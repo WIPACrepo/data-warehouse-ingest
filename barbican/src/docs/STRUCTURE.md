@@ -68,7 +68,7 @@ barbican/src/docs/
 │   ├── Token Validation
 │   ├── JWKS Management
 │   ├── Role-Based Access Control
-│   └── Service Accounts
+│   └── Service Accounts (Citadel ↔ Barbican client-credentials tokens)
 │
 ├── citadel-integration.md       # Backend coordination
 │   ├── Automatic Triggers
@@ -78,7 +78,9 @@ barbican/src/docs/
 │
 ├── configuration.md             # Settings
 │   ├── Required Configuration
-│   ├── Environment Variables (service: Config; auth: AuthConfig, D10)
+│   ├── Environment Variables (service: Config; auth: AuthConfig, D10;
+│   │   Citadel token: ServiceTokenSource)
+│   ├── Citadel service token
 │   ├── Example Configurations
 │   └── Validation Rules
 │

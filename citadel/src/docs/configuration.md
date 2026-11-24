@@ -23,7 +23,7 @@ Complete guide to configuring Citadel via environment variables.
 
 ## Overview
 
-Citadel is configured entirely through environment variables, loaded in [`src/config.rs`](../src/config.rs) by `CitadelConfig::from_env()`. Each variable falls back to a sensible default, so a bare `cargo run --bin citadel` works with defaults (though `CITADEL_JOB_EXECUTOR=kubernetes` will try to connect to a cluster — use `mock` for local development).
+Citadel is configured entirely through environment variables, loaded in [`src/config.rs`](../config.rs) by `CitadelConfig::from_env()`. Each variable falls back to a sensible default, so a bare `cargo run --bin citadel` works with defaults (though `CITADEL_JOB_EXECUTOR=kubernetes` will try to connect to a cluster — use `mock` for local development).
 
 ### Configuration Loading
 
@@ -79,7 +79,7 @@ CITADEL_PROTECTED_BASE_PATH=/var/data/protected
 | `CITADEL_MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `CITADEL_MONGODB_DATABASE` | `data_warehouse` | Database name |
 
-Citadel uses three collections (names are constants in [`src/db.rs`](../src/db.rs)):
+Citadel uses three collections (names are constants in [`src/db.rs`](../db.rs)):
 
 | Collection | Owner | Purpose |
 |------------|-------|---------|
@@ -171,6 +171,8 @@ CITADEL_JOB_MAX_DURATION_SECS=86400
 
 **Memory bound**: `CITADEL_TRANSFER_CHUNK_SIZE_MB × CITADEL_TRANSFER_PARALLELISM` (e.g. 16 MB × 4 = 64 MB max per job).
 
+**Strict parsing (`citadel-job`)**: `JobConfig::from_lookup` ([`job_main.rs`](../job_main.rs)) requires `CITADEL_TRANSFER_PARALLELISM`, `CITADEL_TRANSFER_CHUNK_SIZE_MB`, `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` and `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` to be positive integers when set; a malformed or zero value aborts the job at startup with an error naming the variable (previously such values silently fell back to the default, and a zero interval would panic `tokio::time::interval`). Unset → default.
+
 ```bash
 CITADEL_TRANSFER_PARALLELISM=4
 CITADEL_TRANSFER_CHUNK_SIZE_MB=16
@@ -228,7 +230,7 @@ CITADEL_INBOX_PRE_TRANSFER_INTEGRITY_SCAN=true
 |----------|---------|-------------|
 | `CITADEL_JOB_CALLBACK_SECRET_FILE` | `/etc/citadel/secrets/callback-secret` | Path to the shared callback secret file |
 
-The secret is read by `citadel-job` and sent as the `X-Callback-Secret` header. Server-side validation is active: when a secret is configured, the handler verifies the header with a **constant-time comparison** and rejects missing/mismatching values (`401`); when none is configured it logs a warning and falls back to timestamp + nonce only. The configured secret is hot-reloaded from this file via the `notify` watcher.
+The secret is read by `citadel-job` and sent as the `X-Callback-Secret` header (the worker sends no `Authorization` header). Server-side validation applies to job-route requests **without** an `Authorization` header; requests with a Bearer JWT must instead carry Citadel `admin` and skip the secret (D11, see [Job Route Security](authentication.md#job-route-security)). On the worker path: when a secret is configured, the handler verifies the header with a **constant-time comparison** and rejects missing/mismatching values (`401`); when none is configured it logs a warning and falls back to timestamp + nonce only. The configured secret is hot-reloaded from this file via the `notify` watcher.
 
 ```bash
 CITADEL_JOB_CALLBACK_SECRET_FILE=/etc/citadel/secrets/callback-secret
@@ -252,6 +254,23 @@ CITADEL_BARBICAN_API_RETRY_BACKOFF_MS=1000
 CITADEL_BARBICAN_API_TIMEOUT_SECS=10
 ```
 
+### Barbican Service Token
+
+Barbican's internal routes require a Bearer JWT with `barbican` in `aud` (no role, D9). Parsed by `common::ServiceTokenSource::from_env("CITADEL", "BARBICAN", &auth_config)` in `main.rs`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CITADEL_BARBICAN_CLIENT_ID` | *(unset)* | Keycloak client for the client-credentials grant |
+| `CITADEL_BARBICAN_CLIENT_SECRET` | *(unset)* | Its secret, read from this **environment variable** (Kubernetes: `env.valueFrom.secretKeyRef`). Rotation requires a pod restart |
+| `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` | *(unset)* | **Development only**: pre-issued token file, re-read on each refresh |
+
+Tokens come from `{CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}/protocol/openid-connect/token` and are cached, refreshed 30 s before expiry (capped at half the lifetime). Startup fails if only one of ID/secret is set, if client credentials and the token file are both set, or — with `PRODUCTION=true` — if the token file is used or nothing is configured. With nothing configured outside production, Citadel logs a warning and sends no `Authorization` header, so Barbican rejects its calls. The Keycloak client needs an **audience mapper** adding `barbican` to `aud`. Behaviour on `401` and errors: [Authentication](authentication.md#outbound-citadel--barbican-service-token).
+
+```bash
+CITADEL_BARBICAN_CLIENT_ID=citadel
+CITADEL_BARBICAN_CLIENT_SECRET=...   # from a Kubernetes Secret
+```
+
 ---
 
 ## Polling & Progress
@@ -263,8 +282,8 @@ Three distinct knobs — one service-side, two passed to the job pod:
 | Variable | Default | Where it runs | Description |
 |----------|---------|---------------|-------------|
 | `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` | `30` | Citadel service | Cadence of the background job-status poller (`polling/job_status.rs`): K8s job status, timeouts, missed-callback reconciliation. Must be `>= 1` (startup error otherwise) |
-| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | `citadel-job` (pod env) | Worker's bail-out poll of the `inboxes` collection during a publish |
-| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | `citadel-job` (pod env) | Cadence at which the worker POSTs `POST /api/v1/job/progress`, forwarded to Barbican's `publish/progress`/`delete/progress` (P4.1) |
+| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | `citadel-job` (pod env) | Worker's bail-out poll of the `inboxes` collection during a publish. Positive integer (job startup error otherwise) |
+| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | `citadel-job` (pod env) | Cadence at which the worker POSTs `POST /api/v1/job/progress`, forwarded to Barbican's `publish/progress`/`delete/progress` (P4.1). Positive integer (job startup error otherwise) |
 
 ```bash
 CITADEL_JOB_STATUS_POLL_INTERVAL_SECS=30
@@ -347,7 +366,8 @@ CITADEL_ALLOWED_ALGORITHMS=RS256
 # Job executor (mock = no cluster)
 CITADEL_JOB_EXECUTOR=mock
 
-# Barbican
+# Barbican (without a service token Barbican rejects Citadel's calls;
+# set CITADEL_BARBICAN_CLIENT_ID/SECRET or CITADEL_BARBICAN_SERVICE_TOKEN_FILE)
 CITADEL_BARBICAN_API_URL=http://localhost:8080
 
 # Transfer
@@ -399,6 +419,8 @@ CITADEL_JOB_MAX_DURATION_SECS=86400
 CITADEL_BARBICAN_API_URL=http://barbican.data-warehouse.svc.cluster.local:8080
 CITADEL_BARBICAN_API_RETRY_MAX=5
 CITADEL_BARBICAN_API_TIMEOUT_SECS=5
+CITADEL_BARBICAN_CLIENT_ID=citadel-service   # required when PRODUCTION=true
+# CITADEL_BARBICAN_CLIENT_SECRET injected via env.valueFrom.secretKeyRef
 
 # Transfer
 CITADEL_TRANSFER_PARALLELISM=8
@@ -460,6 +482,9 @@ RUST_LOG=info,citadel=info
 | `CITADEL_BARBICAN_API_RETRY_MAX` | `5` |
 | `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS` | `1000` |
 | `CITADEL_BARBICAN_API_TIMEOUT_SECS` | `10` |
+| `CITADEL_BARBICAN_CLIENT_ID` | *(unset)* |
+| `CITADEL_BARBICAN_CLIENT_SECRET` | *(unset)* |
+| `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` | *(unset; dev only)* |
 | `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` | `30` |
 | `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` |
 | `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` |

@@ -11,7 +11,7 @@ Welcome to the `common` crate documentation. This directory contains guides and 
 | [Overview](overview.md) | How `common` fits into the Barbican/Citadel architecture, module structure, and ownership boundary |
 | [Data Model](models.md) | Shared inbox models: `InboxDB`, `InboxStatus`, `InboxProgress`, `InboxError`, `CreateInbox` |
 | [Infrastructure](infrastructure.md) | Shared utilities: config/logging, DB access, error handling, metrics, middleware |
-| [Authentication](auth.md) | JWT/Keycloak auth (`auth` feature): prefixed `AuthConfig` env vars, `build_auth_state`, decision D10 |
+| [Authentication](auth.md) | JWT/Keycloak auth (`auth` feature): prefixed `AuthConfig` env vars, `build_auth_state`, service-to-service tokens, decision D10 |
 | [Testing](testing.md) | Test utilities (builders, fixtures, mock store) and testing conventions |
 
 ### Module Files
@@ -59,9 +59,9 @@ Both services depend on `common` via the workspace (`common = { path = "common" 
 |  External   | ------------> |  Barbican   |
 |  Clients    |               |  (Frontend) |
 +-------------+               +------+------+
-                                      |
-                                      | service token
-                                      v
+                                    ^ |
+                                    | | service tokens (both directions)
+                                    | v
                               +-------------+
                               |  Citadel    |
                               |  (Backend)  |
@@ -91,7 +91,8 @@ Both services share the `common` crate for the inbox data model, the `InboxStore
 common/src/
 ├── lib.rs               # Library exports and public API surface
 ├── adapters.rs          # MongoInboxStore (MongoDB InboxStore implementation)
-├── auth/                # JWT/Keycloak auth (feature `auth`): AuthConfig, build_auth_state, middleware
+├── auth/                # JWT/Keycloak auth (feature `auth`): AuthConfig, build_auth_state, middleware,
+│                        #   service-to-service tokens, auth metrics
 ├── config.rs            # logging_setup, shutdown_signal
 ├── db.rs                # db_setup, db_database, db_collection (MongoDB helpers)
 ├── error.rs             # AppError, AppJson, log_app_errors
@@ -112,12 +113,14 @@ common/src/
 
 - `use common::{CreateInbox, InboxDB, InboxStatus, InboxStore, MongoInboxStore};`
 - `AuthConfig::from_env_prefixed("BARBICAN")` + `build_auth_state(&cfg, "barbican")` for JWT auth ([auth.md](auth.md))
+- `ServiceTokenSource::from_env("BARBICAN", "CITADEL", &cfg)` + `ServiceTokenProvider` for its Bearer token to Citadel
 - `db_collection`, `logging_setup`, `shutdown_signal`, `start_metrics_server`, `router_logging_layer`, `AppError`, `AppJson`, `log_app_errors`
 
 ### Citadel
 
 - `use common::models::InboxDB;` — reads the shared inbox model whenever it fetches inbox metadata (via `barbican_client.get_inbox`) or persists to the shared `inboxes` collection.
 - `AuthConfig::from_env_prefixed("CITADEL")` + `build_auth_state(&cfg, "citadel")` for JWT auth ([auth.md](auth.md))
+- `ServiceTokenSource::from_env("CITADEL", "BARBICAN", &cfg)` + `ServiceTokenProvider` for its Bearer token to Barbican
 
 See [Overview](overview.md) for details.
 

@@ -1,6 +1,6 @@
 //! Job callback handler - receives completion notifications from job executors
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Extension, Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use mongodb::bson::doc;
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use crate::AppState;
 use crate::db::{callback_nonces_collection, inboxes_collection, jobs_collection};
 use crate::error::{AppError, Result};
 use crate::jobs::types::JobType;
+use crate::middleware::job_auth::JobCaller;
 use crate::models::{CallbackNonceDB, JobStatus, TransferResult};
 
 /// Nonce TTL window (seconds). Expired-but-present nonces are reusable; a
@@ -22,8 +23,12 @@ pub const TIMESTAMP_SKEW_SECS: i64 = 60;
 pub struct JobCallbackRequest {
     pub job_id: String,
     pub status: String,
-    pub timestamp: DateTime<Utc>,
-    pub nonce: String,
+    /// Required for `citadel-job` (secret path); optional for an admin JWT.
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    /// Required for `citadel-job` (secret path); optional for an admin JWT.
+    #[serde(default)]
+    pub nonce: Option<String>,
     pub result: Option<CallbackResult>,
 }
 
@@ -96,13 +101,32 @@ async fn validate_and_store_nonce(app_state: &AppState, nonce: &str) -> Result<(
     Ok(())
 }
 
-/// Authenticate callback request
-async fn authenticate_callback(
+/// Authenticate a job-route request according to who the middleware says is
+/// calling (see `middleware::job_auth`).
+///
+/// - [`JobCaller::Admin`]: already authenticated by a JWT with Citadel
+///   `admin`; no secret/timestamp/nonce needed.
+/// - [`JobCaller::Job`]: `timestamp` and `nonce` are mandatory, then the
+///   shared secret + timestamp + nonce check runs.
+pub(crate) async fn authenticate_job_caller(
     app_state: &AppState,
+    caller: &JobCaller,
     headers: &axum::http::HeaderMap,
-    request: &JobCallbackRequest,
+    timestamp: Option<DateTime<Utc>>,
+    nonce: Option<&str>,
 ) -> Result<()> {
-    validate_callback_credentials(app_state, headers, request.timestamp, &request.nonce).await
+    match caller {
+        JobCaller::Admin { .. } => Ok(()),
+        JobCaller::Job => {
+            let (Some(timestamp), Some(nonce)) = (timestamp, nonce) else {
+                app_state.metrics.callback_errors_total.inc();
+                return Err(AppError::AuthError(
+                    "Requests without a Bearer token must include timestamp and nonce".to_string(),
+                ));
+            };
+            validate_callback_credentials(app_state, headers, timestamp, nonce).await
+        }
+    }
 }
 
 /// Validate the shared callback credentials (timestamp + secret + nonce).
@@ -432,11 +456,27 @@ async fn forward_terminal_transition(
 
 pub async fn job_callback(
     State(app_state): State<AppState>,
+    Extension(caller): Extension<JobCaller>,
     headers: axum::http::HeaderMap,
     Json(request): Json<JobCallbackRequest>,
 ) -> Result<(StatusCode, Json<JobCallbackResponse>)> {
-    // Authenticate the callback
-    authenticate_callback(&app_state, &headers, &request).await?;
+    // Authenticate the callback (admin JWT, or secret + timestamp + nonce)
+    authenticate_job_caller(
+        &app_state,
+        &caller,
+        &headers,
+        request.timestamp,
+        request.nonce.as_deref(),
+    )
+    .await?;
+    if let JobCaller::Admin { subject } = &caller {
+        info!(
+            "Job callback for {} submitted by admin {} (status {})",
+            request.job_id, subject, request.status
+        );
+    }
+    // Event time for error records: the worker's timestamp, or now for admins.
+    let event_time = request.timestamp.unwrap_or_else(Utc::now);
 
     let jobs_coll = jobs_collection(&app_state.db_client, &app_state.config);
 
@@ -496,7 +536,7 @@ pub async fn job_callback(
                                 "Job failed with {} bytes transferred",
                                 result.total_bytes
                             ),
-                            timestamp: request.timestamp,
+                            timestamp: event_time,
                         }],
                     )
                 }
@@ -507,7 +547,7 @@ pub async fn job_callback(
                     vec![crate::models::JobError {
                         code: "missing_result".to_string(),
                         message: "Callback completed without a result payload".to_string(),
-                        timestamp: request.timestamp,
+                        timestamp: event_time,
                     }],
                 )
             }
@@ -520,7 +560,7 @@ pub async fn job_callback(
                 vec![crate::models::JobError {
                     code: "job_execution_failed".to_string(),
                     message: format!("Job failed with {} bytes transferred", bytes),
-                    timestamp: request.timestamp,
+                    timestamp: event_time,
                 }],
             )
         }

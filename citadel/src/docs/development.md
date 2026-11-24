@@ -124,6 +124,9 @@ export CITADEL_KEYCLOAK_CLIENT_ID=citadel
 export CITADEL_JOB_EXECUTOR=mock
 export CITADEL_BARBICAN_API_URL=http://localhost:8080
 export CITADEL_JOB_CALLBACK_SECRET_FILE=./dev/callback-secret
+# Service token for Barbican (without one Barbican rejects Citadel's calls)
+export CITADEL_BARBICAN_CLIENT_ID=citadel
+export CITADEL_BARBICAN_CLIENT_SECRET=...           # or CITADEL_BARBICAN_SERVICE_TOKEN_FILE (dev only)
 export RUST_LOG=info,citadel=debug
 ```
 
@@ -224,8 +227,26 @@ cargo test --package citadel -- --nocapture
 ### Current State
 
 - `mockall` and `axum-test` are available as dev-dependencies for unit tests
-- A full unit-test suite lives in [`src/tests/`](../src/tests/) with helpers in `src/tests/test_utils/`
+- A full unit-test suite lives in [`src/tests/`](../tests/) with helpers in `src/tests/test_utils/`
 - The **recursive transfer engine** has a dedicated suite (`tests::recursive_transfer_tests`) covering symlink loops, external symlinks, depth/count limits, error thresholds, atomic rollback, and cleanup — all pure filesystem tests (no services), gated `#[cfg(unix)]` because they use symlinks
+
+### Router-Level Auth Tests
+
+`citadel::create_app(AppState) -> Router` builds the real router, so auth wiring is tested end to end with `axum-test` ([`tests/job_auth_tests.rs`](../tests/job_auth_tests.rs)):
+
+- `common::test_utils::start_test_keycloak` serves a JWKS for an RSA key **generated at runtime** (no key in the repository) and signs test JWTs with chosen roles/audience.
+- `tests::test_utils::test_app_state` uses `UNREACHABLE_MONGO_URI` (port 1, 200 ms server selection). A request that passes authentication reaches MongoDB and fails with `database_error` — asserting that code proves auth passed, without a running database.
+- Covered: worker secret path, missing `timestamp`/`nonce`, admin JWT without secret, non-admin (`403`) / invalid (`401`) JWT rejected even with a valid secret, malformed header, and user routes still requiring a JWT.
+
+Related unit suites: `compensate_tests` (compensation against `MockInboxTransitioner`; job update swallowed) and `barbican_client_tests` (service token attached, refresh-and-retry on `401` against a stub Barbican).
+
+### MongoDB Integration Tests
+
+[`citadel/tests/compensation.rs`](../../tests/compensation.rs) checks that a publish whose executor submission fails calls `publish_failure` and takes the job out of the in-flight quota. It needs MongoDB:
+
+```bash
+cargo test -p citadel --test compensation --features integration-tests
+```
 
 ### Transfer Test Suite
 
@@ -303,7 +324,7 @@ cargo clippy --package citadel -- -D warnings
    ```rust
    tracing::info!(job_id = %job.job_id, "Submitting job");
    ```
-2. **Handle errors with `thiserror`**: `common::AppError` in [`src/error.rs`](../src/error.rs)
+2. **Handle errors with `thiserror`**: `common::AppError` in [`src/error.rs`](../error.rs)
 3. **Use async/await consistently** (tokio)
 4. **Document public items** with `///` doc comments
 5. **Return `crate::error::Result<T>`** from fallible operations
@@ -321,7 +342,7 @@ cargo clippy --package citadel -- -D warnings
 
 ### Example: New Job Type
 
-**1. Add the variant** in [`src/jobs/types.rs`](../src/jobs/types.rs):
+**1. Add the variant** in [`src/jobs/types.rs`](../jobs/types.rs):
 
 ```rust
 pub enum JobType {
@@ -331,11 +352,11 @@ pub enum JobType {
 }
 ```
 
-**2. Enforce the in-flight quota** in the new handler: call `count_in_flight_jobs(&app_state, "<job_type>")` from [`src/handlers/publish_inbox.rs`](../src/handlers/publish_inbox.rs) after inserting the `JobDB` and before the Barbican `*_start` call, and reject with `quota_exceeded` + `rollback_job` + `429` (as `publish_inbox`/`delete_inbox` do — D8). Add a `CITADEL_QUEUE_<TYPE>_RATE_LIMIT` setting if it needs its own limit.
+**2. Enforce the in-flight quota** in the new handler: call `count_in_flight_jobs(&app_state, "<job_type>")` from [`src/handlers/publish_inbox.rs`](../handlers/publish_inbox.rs) after inserting the `JobDB` and before the Barbican `*_start` call, and reject with `quota_exceeded` + `rollback_job` + `429` (as `publish_inbox`/`delete_inbox` do — D8). Add a `CITADEL_QUEUE_<TYPE>_RATE_LIMIT` setting if it needs its own limit.
 
-**3. Add a handler** in [`src/handlers/`](../src/handlers/) and register the route in [`src/main.rs`](../src/main.rs).
+**3. Add a handler** in [`src/handlers/`](../handlers/) and register the route in [`src/main.rs`](../main.rs).
 
-**4. Handle it in the callback** in [`src/handlers/job_callback.rs`](../src/handlers/job_callback.rs) if it has terminal semantics.
+**4. Handle it in the callback** in [`src/handlers/job_callback.rs`](../handlers/job_callback.rs) if it has terminal semantics.
 
 **5. Write tests** (new `src/tests/` module).
 
@@ -343,7 +364,7 @@ pub enum JobType {
 
 ### Example: New Configuration
 
-Add the field to `CitadelConfig` in [`src/config.rs`](../src/config.rs), a default, and an env override in `from_env`. Then add it to the [Configuration](configuration.md) reference.
+Add the field to `CitadelConfig` in [`src/config.rs`](../config.rs), a default, and an env override in `from_env`. Then add it to the [Configuration](configuration.md) reference.
 
 ---
 
@@ -436,7 +457,7 @@ The image tag doubles as the version for both binaries. Set `CITADEL_JOB_IMAGE` 
 
 - The service is intended to run as a Deployment with `/health` and `/ready` probes
 - Jobs are executed as Kubernetes Jobs in `CITADEL_KUBE_NAMESPACE`
-- Secrets (Keycloak client secret, callback secret) are mounted from Kubernetes Secrets
+- The callback secret is mounted as a file from a Kubernetes Secret; `CITADEL_BARBICAN_CLIENT_SECRET` is injected as an env var via `env.valueFrom.secretKeyRef` (rotation = pod restart)
 - Callback endpoint is intended to be restricted by a NetworkPolicy (deployment-level, not yet wired)
 
 ### Health Checks

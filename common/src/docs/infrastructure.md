@@ -196,6 +196,8 @@ Defined in `common/src/metrics.rs`, built on `axum-prometheus`:
 
 Services call `common::start_metrics_server_with_router(port, own_router)` for the dedicated metrics port (so their registry is rendered) and/or wrap their main router with `router_prometheus`.
 
+The helpers above need no optional feature. The **auth metrics** (`AUTH_REGISTRY`, `auth_jwks_*`, `auth_token_validation_*`, `auth_authz_*`, ..., and `init_auth_metrics()`) live in `common/src/auth/metrics.rs` because they use the optional `prometheus`/`once_cell` crates; with the `auth` feature they are re-exported from `common::metrics`, so existing `common::metrics::AUTH_REGISTRY`-style paths still resolve. This split is what lets `common` build with `--no-default-features`.
+
 ---
 
 ## HTTP Middleware

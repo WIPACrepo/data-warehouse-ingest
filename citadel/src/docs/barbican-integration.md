@@ -7,6 +7,7 @@ Documentation for the integration between Citadel and Barbican, from the Citadel
 - [Overview](#overview)
 - [Coordination Model](#coordination-model)
 - [Barbican API Client](#barbican-api-client)
+- [Authentication to Barbican](#authentication-to-barbican)
 - [Retry Strategy](#retry-strategy)
 - [Inbox State Ownership](#inbox-state-ownership)
 - [End-to-End Flows](#end-to-end-flows)
@@ -77,7 +78,7 @@ pub struct InboxDB {
 
 ## Barbican API Client
 
-The client lives at [`integrations/barbican.rs`](../src/integrations/barbican.rs).
+The client lives at [`integrations/barbican.rs`](../integrations/barbican.rs).
 
 ### Methods (`InboxTransitioner` trait)
 
@@ -105,20 +106,38 @@ Routes are registered in [`barbican/src/lib.rs`](../../../barbican/src/lib.rs) a
 ### Construction
 
 ```rust
-// main.rs
-let barbican_client: Arc<dyn InboxTransitioner> =
-    Arc::new(BarbicanClient::new(config.clone()).with_metrics(metrics.clone()));
+// main.rs (simplified)
+let token_source = common::ServiceTokenSource::from_env("CITADEL", "BARBICAN", &auth_config)?;
+let mut barbican = BarbicanClient::new(config.clone()).with_metrics(metrics.clone());
+if let Some(source) = token_source {
+    barbican = barbican.with_token_provider(Arc::new(common::ServiceTokenProvider::new(source)));
+} // else: warning, no Authorization header
+let barbican_client: Arc<dyn InboxTransitioner> = Arc::new(barbican);
 ```
 
 `BarbicanClient::new` builds a `reqwest::Client` with `CITADEL_BARBICAN_API_TIMEOUT_SECS` as the per-request timeout. `with_metrics` attaches `CitadelMetrics` so the client can increment `citadel_barbican_api_errors_total` and drive the `citadel_circuit_breaker_state` gauge. The client is shared through `AppState.barbican_client`.
 
 ### Response Handling
 
-All methods go through a private `post_action` → `do_post` helper:
+All methods go through a private `post_action` → `do_post` → `send_once` helper:
 
+- **401 Unauthorized** (with a token provider) → invalidate the cached token, retry **once** with a fresh one; see [Authentication to Barbican](#authentication-to-barbican)
 - **409 Conflict** → `AppError::Conflict` — fails immediately, no retry, does not trip the breaker
 - **Request error / other non-2xx / unparseable body** → `AppError::BadGateway` — retried
 - **2xx** → parses and returns the updated `InboxDB`
+
+---
+
+## Authentication to Barbican
+
+Barbican's internal routes require a Bearer JWT whose `aud` includes `barbican`; no role is checked (D9). Before D11 Citadel sent **no** `Authorization` header, so every Citadel → Barbican call was rejected with `401`.
+
+- **Token source**: `CITADEL_BARBICAN_CLIENT_ID` + `CITADEL_BARBICAN_CLIENT_SECRET` (secret from an environment variable; in Kubernetes from a Secret via `env.valueFrom.secretKeyRef`) → Keycloak client-credentials grant at `{CITADEL_KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/token`. Dev-only alternative: `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` (re-read on refresh). See [Configuration](configuration.md#barbican-service-token) for startup validation.
+- **Caching**: `common::ServiceTokenProvider` caches the token and refreshes it 30 s before expiry (capped at half the lifetime).
+- **401 from Barbican**: `do_post` invalidates the token and resends once. This inner retry is not a `post_action` retry and does not count toward the circuit breaker. If Barbican still answers `401`, the call fails with `BadGateway` ("check `CITADEL_BARBICAN_CLIENT_ID/SECRET` and the Keycloak audience mapper"), which `post_action` then treats like any other failure (retried, counted).
+- **Token unavailable** (Keycloak down, bad credentials): `ServiceUnavailable` (`503`) for that attempt.
+- **Secret rotation** requires a pod restart (the secret is read from the environment once at startup).
+- **Keycloak**: the `citadel` client needs an audience mapper adding `barbican` to its tokens' `aud`.
 
 ---
 
@@ -177,7 +196,18 @@ Barbican is the **single writer** for inbox state. Citadel never calls MongoDB d
 | Terminal | `job_callback` handler | `publish_complete`/`publish_failure`/`delete_complete`/`delete_failure` | `Published`/`Deleted`/`Failed` |
 | Self-heal | `polling/job_status.rs` | e.g. re-issues `publish_complete` for an inbox stuck in `Publishing` | `Published` |
 
-> `create_inbox` does not call `create_failure` if the directory creation fails after `create_start`; the inbox stays `Creating` until handled elsewhere.
+### Compensation
+
+Handled by [`handlers/compensate.rs`](../handlers/compensate.rs) when an operation fails **after** its `*/start` transition succeeded (otherwise the inbox would stay `Creating`/`Publishing`/`Deleting` and, for publish/delete, the `queued` job would count toward the in-flight quota forever):
+
+| Failure | Compensation | Error code |
+|---------|--------------|------------|
+| `StorageManager::create_inbox` fails after `create_start` | `create_failure` → `Failed` | `storage_error` |
+| `create_complete` fails | `create_failure` → `Failed`; the directory is kept (idempotent create, reused on retry) | `barbican_error` |
+| `executor.submit` fails after `publish_start` / `delete_start` | `publish_failure` / `delete_failure` → `Failed`, **and** job document set `failed` with an error entry (leaves the in-flight quota) | `executor_error` |
+| `publish_start` / `delete_start` itself fails | No Barbican call (the inbox never changed state); the just-inserted `queued` job row is deleted (`rollback_job`) so it cannot leak into the in-flight quota | — |
+
+Compensation is best-effort (its own failures are only logged) and the handler returns the **original** error. It never runs once a job may be running: if `executor.submit` succeeded but recording the executor info on the job fails, the error is logged and the request still returns `202`; the callback and the status poller reconcile the job.
 
 ### State Change Flow
 
@@ -269,6 +299,8 @@ worker removes inbox directory → callback → delete_complete / delete_failure
 | `CITADEL_BARBICAN_API_RETRY_MAX` | `5` | Retries per call after the first attempt; also the circuit-breaker trip threshold |
 | `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS` | `1000` | Initial backoff (doubles, capped 30s) |
 | `CITADEL_BARBICAN_API_TIMEOUT_SECS` | `10` | Per-request timeout |
+| `CITADEL_BARBICAN_CLIENT_ID` / `CITADEL_BARBICAN_CLIENT_SECRET` | *(unset)* | Service-token client credentials ([Authentication to Barbican](#authentication-to-barbican)) |
+| `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` | *(unset)* | Dev-only static token file |
 
 ### Example (Development)
 
@@ -286,6 +318,8 @@ CITADEL_BARBICAN_API_URL=http://barbican.data-warehouse.svc.cluster.local:8080
 CITADEL_BARBICAN_API_RETRY_MAX=5
 CITADEL_BARBICAN_API_RETRY_BACKOFF_MS=500
 CITADEL_BARBICAN_API_TIMEOUT_SECS=5
+CITADEL_BARBICAN_CLIENT_ID=citadel
+# CITADEL_BARBICAN_CLIENT_SECRET from env.valueFrom.secretKeyRef
 ```
 
 ---
@@ -301,6 +335,9 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 | Inbox not found | `InboxNotFound` (404) |
 | Inbox in wrong state | Barbican 409 → `AppError::Conflict` (409 `conflict`) |
 | Drop/network timeout | Per-request timeout; retry |
+| Barbican `401` (service token rejected) | Invalidate token, resend once; still `401` → `bad_gateway` (then retried as usual) |
+| Service token cannot be obtained | `service_unavailable` (503) for that attempt |
+| Failure after a `*/start` transition | [Compensation](#compensation) → inbox `Failed` |
 
 ### Response Codes Seen by Citadel Consumers
 

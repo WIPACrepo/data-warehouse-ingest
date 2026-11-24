@@ -1,6 +1,6 @@
 # Authentication & Authorization
 
-Comprehensive guide to JWT authentication, role-based access control, and callback security in Citadel.
+Comprehensive guide to JWT authentication, role-based access control, job-route (callback) security, and the outbound Barbican service token in Citadel.
 
 ## Table of Contents
 
@@ -9,7 +9,8 @@ Comprehensive guide to JWT authentication, role-based access control, and callba
 - [Token Validation](#token-validation)
 - [JWKS Management](#jwks-management)
 - [Role-Based Access Control](#role-based-access-control)
-- [Callback Security](#callback-security)
+- [Job Route Security](#job-route-security)
+- [Outbound: Citadel → Barbican Service Token](#outbound-citadel--barbican-service-token)
 - [Security Considerations](#security-considerations)
 - [Implementation Details](#implementation-details)
 
@@ -17,7 +18,15 @@ Comprehensive guide to JWT authentication, role-based access control, and callba
 
 ## Overview
 
-Citadel uses **JSON Web Tokens (JWT)** for authentication and **role-based access control (RBAC)** for authorization. All `/api/v1/` endpoints (except the job callback, which uses its own scheme) require a valid JWT. `/health` and `/ready` are public.
+Citadel uses **JSON Web Tokens (JWT)** for authentication and **role-based access control (RBAC)** for authorization. Routes fall into three groups, wired in `citadel::create_app` ([`lib.rs`](../lib.rs)):
+
+| Group | Routes | Credential |
+|-------|--------|------------|
+| Public | `/health`, `/ready` | none |
+| User | `/api/v1/inbox/{id}/{create,publish,delete}`, `/api/v1/job/{job_id}`, `/api/v1/jobs`, `/api/v1/job/{job_id}/cancel` | Bearer JWT with one of `CITADEL_REQUIRED_ROLES` (`common::auth_middleware`) |
+| Job | `/api/v1/job/callback`, `/api/v1/job/progress` | Bearer JWT with Citadel `admin`, **or** no `Authorization` header + `X-Callback-Secret` + `timestamp` + `nonce` ([`middleware/job_auth.rs`](../middleware/job_auth.rs), D11) |
+
+Outbound, Citadel authenticates to Barbican with a **service token** (client-credentials grant) — see [Outbound: Citadel → Barbican](#outbound-citadel--barbican-service-token).
 
 ### Authentication Flow
 
@@ -83,7 +92,7 @@ Citadel expects JWT tokens with the following structure:
 - Signed with Keycloak's private key
 - Verified using the JWKS public key
 
-### Claims Structure (from [`auth/jwt_validator.rs`](../src/auth/jwt_validator.rs))
+### Claims Structure (from [`auth/jwt_validator.rs`](../../../common/src/auth/jwt_validator.rs))
 
 ```rust
 pub struct Claims {
@@ -217,7 +226,7 @@ CITADEL_JWKS_REFRESH_SECS=60
 | `admin` | Full access, including job cancellation |
 | `write` | Create, publish, delete inboxes (inbox ops) |
 | `read` | Enumerate and read jobs only |
-| (no `internal`) | Barbican coordination does **not** use an internal role — see [Callback Security](#callback-security-and-the-citadel-job-trust-edge) |
+| (no `internal`) | Barbican coordination does **not** use an internal role — see [Job Route Security](#job-route-security) |
 
 ### Endpoint Authorization
 
@@ -241,8 +250,8 @@ CITADEL_JWKS_REFRESH_SECS=60
 
 | Endpoint | Required Roles |
 |----------|----------------|
-| `POST /api/v1/job/callback` | service JWT (route is inside the auth layer) **+** timestamp + nonce + `X-Callback-Secret` |
-| `POST /api/v1/job/progress` | service JWT **+** timestamp + nonce + `X-Callback-Secret` (P4.1) |
+| `POST /api/v1/job/callback` | Bearer JWT with `admin`, **or** (no `Authorization` header) `X-Callback-Secret` + `timestamp` + `nonce` — see [Job Route Security](#job-route-security) |
+| `POST /api/v1/job/progress` | same as the callback (P4.1) |
 | `GET /health` | None (public) |
 | `GET /ready` | None (public) |
 
@@ -272,13 +281,27 @@ CITADEL_REQUIRED_ROLES=read,write
 
 ---
 
-## Callback Security
+## Job Route Security
 
-The job callback endpoint (`POST /api/v1/job/callback`) authenticates job workers by **callback secret** (when configured), plus **timestamp + nonce** rather than a JWT.
+`POST /api/v1/job/callback` and `POST /api/v1/job/progress` are **not** behind the user JWT layer (D11). Before D11 they were, so every `citadel-job` callback (which carries no JWT) was rejected with `401`. They now accept exactly one of two credentials, decided by the `job_caller_auth` middleware ([`middleware/job_auth.rs`](../middleware/job_auth.rs)), which inserts a `JobCaller` into request extensions; the handlers then call `authenticate_job_caller` ([`handlers/job_callback.rs`](../handlers/job_callback.rs)).
 
-### Flow (from [`handlers/job_callback.rs`](../src/handlers/job_callback.rs))
+| Request | Outcome |
+|---------|---------|
+| `Authorization` header not `Bearer <token>` | `401 auth_error` |
+| Bearer JWT invalid / expired | `401 auth_error` (JWKS unavailable → `503 service_unavailable`) |
+| Valid JWT **without** Citadel `admin` (`resource_access.citadel.roles`) | `403 forbidden` |
+| Valid JWT **with** `admin` | `JobCaller::Admin` — secret, `timestamp`, `nonce` **not** required; logged with the JWT `sub` |
+| No `Authorization` header | `JobCaller::Job` — `timestamp` + `nonce` required (missing → `401 auth_error`), then the secret/timestamp/nonce flow below |
 
-1. **Callback secret validation** (when a secret is configured): the `X-Callback-Secret` header is compared in constant time; missing/mismatch → `401 invalid_callback_secret` (see [Callback Secret Validation](#callback-secret-validation-implemented))
+- **No fall-through**: a present `Authorization` header is authoritative. An invalid or non-admin token is rejected even if a valid `X-Callback-Secret` is also sent; the two credentials never combine.
+- **Admin replay protection** is the JWT signature + `exp`; no nonce is stored. Use the admin path for manual operator actions (e.g. finishing a stuck job). For error entries the handler uses the request `timestamp` if supplied, else the current time.
+- `timestamp` and `nonce` are optional JSON fields (`Option`) in `JobCallbackRequest` / `JobProgressRequest`; only the secret path enforces them.
+
+### Worker (secret) path — flow
+
+From `validate_callback_credentials` in [`handlers/job_callback.rs`](../handlers/job_callback.rs):
+
+1. **Callback secret validation** (when a secret is configured): the `X-Callback-Secret` header is compared in constant time; missing/mismatch → `401 invalid_callback_secret` (see [Callback Secret Validation](#callback-secret-validation-implemented)). Note: when no secret is configured, the worker path relies on timestamp + nonce only
 2. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew). `citadel-job` stamps a fresh timestamp and UUID nonce on **every** send attempt (`build_callback_request` / `build_progress_request` in `job_main.rs`), so the window bounds network delay only, not job duration
 3. **Nonce validation & storage**: look up `{ nonce }` in the `callback_nonces`
    collection:
@@ -349,6 +372,25 @@ the `notify` crate and atomically swaps the in-memory value
 
 ---
 
+## Outbound: Citadel → Barbican Service Token
+
+Barbican's internal routes (`/api/v1/inbox/{id}/{create,publish,delete}/{start,progress,complete,failure}`) require a valid Bearer JWT whose `aud` includes `barbican`; no role is required (D9). Before D11 Citadel sent **no** `Authorization` header, so every Citadel → Barbican call was rejected with `401`.
+
+`main.rs` builds a `common::ServiceTokenSource::from_env("CITADEL", "BARBICAN", &auth_config)` and attaches a `common::ServiceTokenProvider` via `BarbicanClient::with_token_provider` ([`integrations/barbican.rs`](../integrations/barbican.rs)):
+
+| Mode | Variables | Notes |
+|------|-----------|-------|
+| Client credentials (production) | `CITADEL_BARBICAN_CLIENT_ID`, `CITADEL_BARBICAN_CLIENT_SECRET` | Keycloak `client_credentials` grant at `{CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}/protocol/openid-connect/token`. The secret is read from the **environment variable** (in Kubernetes inject it from a Secret via `env.valueFrom.secretKeyRef`); rotating it requires a pod restart |
+| Static token file (development only) | `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` | Pre-issued token, re-read on every refresh |
+| None | — | Outside production: startup warning, requests carry no `Authorization` header (a JWT-protected Barbican rejects them) |
+
+- **Caching**: the token is cached and refreshed before expiry (30 s margin, capped at half the token lifetime); concurrent callers share one fetch.
+- **Startup errors**: ID without secret (or vice versa); client credentials and token file both set; with `PRODUCTION=true`, the static-file mode or nothing configured.
+- **401 handling**: on a `401` from Barbican the client invalidates the cached token and retries **once** with a fresh one. This inner retry does not count toward `post_action` retries or the circuit breaker. A persistent `401` becomes `502 bad_gateway` naming `CITADEL_BARBICAN_CLIENT_ID/SECRET` and the audience mapper. Failure to obtain a token → `503 service_unavailable`.
+- **Keycloak setup**: the `citadel` client needs service accounts enabled and an **audience mapper** adding `barbican` to its access tokens' `aud`.
+
+---
+
 ## Security Considerations
 
 ### Token Security
@@ -363,7 +405,9 @@ the `notify` crate and atomically swaps the in-memory value
 - **JWKS Cache**: refresh cache on rotation
 - **Algorithm Whitelist**: only asymmetric algorithms; reject `none` and HMAC-with-public-key
 
-### Callback Security Hardening (implemented / remaining)
+### Job Route & Callback Hardening (implemented / remaining)
+
+- Job routes: a present `Authorization` header is authoritative (no fall-through to the secret path); only Citadel `admin` JWTs are accepted (D11)
 
 - Shared file-based secret (`CITADEL_JOB_CALLBACK_SECRET_FILE`) with
   constant-time comparison and hot-reload (implemented)
@@ -394,7 +438,7 @@ Security-relevant events are logged with `tracing` (`info`/`warn`/`error`), incl
 
 ### Auth Middleware (`common/src/auth/middleware.rs`)
 
-`citadel/src/middleware/auth.rs` re-exports `common::auth_middleware`. Its state is the `Arc<AuthMiddlewareState>` built at startup:
+`citadel/src/middleware/auth.rs` re-exports `common::auth_middleware`; `create_app` applies it to the **user** route group only (the job routes use `middleware::job_auth::job_caller_auth`). Its state is the `Arc<AuthMiddlewareState>` built at startup:
 
 ```rust
 // main.rs (D10)
@@ -438,6 +482,9 @@ impl JwksCache {
 | `CITADEL_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval (minimum 60) |
 | `CITADEL_TOKEN_LEEWAY_MS` | `5000` | `exp`/`nbf` clock-skew leeway (maximum 60000) |
 | `CITADEL_JOB_CALLBACK_SECRET_FILE` | `/etc/citadel/secrets/callback-secret` | Path to shared callback secret |
+| `CITADEL_BARBICAN_CLIENT_ID` | (none) | Client ID for the Citadel → Barbican service token |
+| `CITADEL_BARBICAN_CLIENT_SECRET` | (none) | Client secret (env var; from a Kubernetes Secret) |
+| `CITADEL_BARBICAN_SERVICE_TOKEN_FILE` | (none) | Dev-only static token file (rejected with `PRODUCTION=true`) |
 
 Auth variables are parsed by `common::AuthConfig::from_env_prefixed("CITADEL")` (D10); malformed numbers abort startup naming the variable. `CITADEL_KEYCLOAK_CLIENT_SECRET` and the unprefixed `KEYCLOAK_*` names are no longer read. See [Configuration](configuration.md#keycloak-authentication).
 

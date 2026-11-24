@@ -235,7 +235,8 @@ coordination model — Barbican's external routes never call them.
 
 **Authentication:** the generic auth layer (valid Bearer JWT); there is **no
 `internal` role gate** — trust is delegated to Citadel, which is the only
-caller in a well-deployed network. (An agent-grade mutual-auth boundary is a
+caller in a well-deployed network. Citadel sends a client-credentials service
+token (`CITADEL_BARBICAN_CLIENT_ID`/`_CLIENT_SECRET`) on every call. (An agent-grade mutual-auth boundary is a
 separate, dedicated task; see [Authentication](authentication.md).)
 
 All actions validate the expected prior state and use optimistic locking
@@ -300,12 +301,18 @@ Request Body:
 ```json
 {
   "job_id": "uuid-string",
-  "error_code": "citadel_trigger_failed",
-  "error_message": "Citadel create trigger failed",
+  "error_code": "storage_error",
+  "error_message": "<Citadel error text>",
   "total_bytes": 0,
   "transferred_bytes": 0
 }
 ```
+
+`error_code` is free-form. Citadel sends `storage_error` (directory creation
+failed) or `barbican_error` (`create/complete` was rejected or unanswered);
+for publish/delete it sends `executor_error` (job submission failed) or
+`publish_failed`/`delete_failed` (job failed). See
+[Citadel Integration](citadel-integration.md#error-codes-sent-by-citadel).
 
 ---
 

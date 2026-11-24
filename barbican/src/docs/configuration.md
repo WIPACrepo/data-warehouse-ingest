@@ -20,19 +20,30 @@ Complete guide to configuring Barbican via environment variables.
 ## Overview
 
 Barbican is configured entirely through environment variables, loaded once at
-startup by two independent loaders (`barbican/src/main.rs`):
+startup by three independent loaders (`barbican/src/main.rs`):
 
 | Loader | Source | Variables |
 |--------|--------|-----------|
 | `Config::from_env()` | `barbican/src/config.rs` | Service settings: bind address, MongoDB, Citadel client, Prometheus port |
 | `AuthConfig::from_env_prefixed("BARBICAN")` | `common/src/auth/config.rs` | Keycloak/JWT settings (`BARBICAN_KEYCLOAK_*`, `BARBICAN_REQUIRED_ROLES`, ...) — decision **D10** |
+| `ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config)` | `common/src/auth/service_token.rs` | Bearer token for Barbican → Citadel calls (`BARBICAN_CITADEL_CLIENT_ID`/`_CLIENT_SECRET` or `_SERVICE_TOKEN_FILE`) |
+
+`Config::default()` returns the literal built-in defaults and reads **no**
+environment variables; `Config::from_env()` calls
+`Config::from_lookup(|name| env::var(name).ok())`, which overlays any set
+variables on those defaults (tests call `from_lookup` with a map).
 
 ### Configuration Loading
 
 ```rust
-// barbican/src/main.rs (abridged)
-let config = Config::from_env().expect("Failed to load configuration");
-// Fail fast, before connecting to MongoDB.
+// barbican/src/main.rs (abridged) — every loader fails fast, before MongoDB.
+let config = match Config::from_env() {
+    Ok(c) => c,
+    Err(e) => {
+        error!("Failed to load configuration: {e}");
+        std::process::exit(1);
+    }
+};
 let auth_config = match AuthConfig::from_env_prefixed("BARBICAN") {
     Ok(c) => c,
     Err(e) => {
@@ -40,27 +51,46 @@ let auth_config = match AuthConfig::from_env_prefixed("BARBICAN") {
         std::process::exit(1);
     }
 };
+// Option<ServiceTokenSource>; None (nothing configured, non-production)
+// logs a warning and sends no Authorization header to Citadel.
+let citadel_token = match ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config) {
+    Ok(source) => source,
+    Err(e) => {
+        error!("Invalid Citadel service-token configuration: {e}");
+        std::process::exit(1);
+    }
+};
 // ... connect to MongoDB ...
-serve(client, config, auth_config).await
+serve(client, config, auth_config, citadel_token).await
 ```
 
 ### Validation Rules
 
-- `Config::from_env()` never fails: every service setting has a default, and
-  a malformed number in a `BARBICAN_*` service variable silently falls back
-  to its default.
-- `AuthConfig::from_env_prefixed` **does** validate; any violation is logged
-  and the process exits with status 1 before MongoDB is contacted. See
-  [Keycloak Authentication](#keycloak-authentication) for the rules.
+All three loaders validate; any violation is logged and the process exits
+with status 1 before MongoDB is contacted.
+
+- `Config::from_env()`: unset variables take their defaults, but a malformed
+  `BARBICAN_CITADEL_API_TIMEOUT_SECS` (`u64`), `BARBICAN_CITADEL_API_RETRY_MAX`
+  (`u32`) or `BARBICAN_PROMETHEUS_PORT` (`u16`) is an error naming the
+  variable (surrounding whitespace is trimmed). These used to fall back to
+  the default silently.
+- `AuthConfig::from_env_prefixed`: see
+  [Keycloak Authentication](#keycloak-authentication).
+- `ServiceTokenSource::from_env`: see
+  [Citadel service token](#citadel-service-token).
 
 ---
 
 ## Required Configuration
 
-No variable is strictly required: every setting has a default suitable for
-local development. In production (`PRODUCTION=true`),
-`BARBICAN_KEYCLOAK_URL` **must** be set to a non-default value — the
-`http://localhost:8080` default is rejected at startup.
+No variable is strictly required for local development: every setting has a
+default, and without a Citadel service token Barbican starts with a warning
+(its calls to Citadel are then rejected). In production (`PRODUCTION=true`):
+
+- `BARBICAN_KEYCLOAK_URL` **must** be set to a non-default value — the
+  `http://localhost:8080` default is rejected at startup;
+- `BARBICAN_CITADEL_CLIENT_ID` and `BARBICAN_CITADEL_CLIENT_SECRET` **must**
+  be set (static-file mode and no token are both rejected).
 
 ---
 
@@ -152,7 +182,7 @@ own variable namespace. Barbican's `Config` has **no** auth fields.
 | `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated JWT algorithm allow-list. `HS*` and `none` are rejected |
 | `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval in seconds (minimum `60`) |
 | `BARBICAN_TOKEN_LEEWAY_MS` | `5000` | Clock-skew leeway for `exp`/`nbf` in milliseconds (maximum `60000`) |
-| `PRODUCTION` *(global, unprefixed)* | unset | When `true`, the localhost default `BARBICAN_KEYCLOAK_URL` is rejected |
+| `PRODUCTION` *(global, unprefixed)* | unset | When `true`, the localhost default `BARBICAN_KEYCLOAK_URL` is rejected, and Citadel client credentials become mandatory (see [Citadel service token](#citadel-service-token)) |
 
 > **Removed variables.** `BARBICAN_KEYCLOAK_CLIENT_SECRET` no longer exists
 > (it was required at startup but never used — validation is JWKS-based).
@@ -250,7 +280,58 @@ Configuration for communication with the Citadel backend service.
 | `BARBICAN_CITADEL_API_URL` | `http://citadel:8081` | Citadel API base URL |
 | `BARBICAN_CITADEL_API_TIMEOUT_SECS` | `30` | HTTP request timeout |
 | `BARBICAN_CITADEL_API_RETRY_MAX` | `3` | Maximum retry attempts |
-| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to JWT token file for authenticating to Citadel |
+| `BARBICAN_CITADEL_CLIENT_ID` | *(unset)* | Keycloak client ID for the client-credentials grant (production mode) |
+| `BARBICAN_CITADEL_CLIENT_SECRET` | *(unset)* | Its client secret, read from this **environment variable** |
+| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(unset)* | **Development only**: path to a pre-issued JWT, re-read on every refresh |
+
+Malformed numeric values are a startup error naming the variable.
+
+### Citadel service token
+
+Citadel's inbox routes are role-gated, so every Barbican → Citadel call needs
+a Bearer token. It is supplied by a shared `common::ServiceTokenProvider`
+(`common/src/auth/service_token.rs`) built from one of two sources:
+
+| Mode | Variables | Behaviour |
+|------|-----------|-----------|
+| Client credentials (production) | `BARBICAN_CITADEL_CLIENT_ID` + `BARBICAN_CITADEL_CLIENT_SECRET` | `grant_type=client_credentials` POST to `{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/token` |
+| Static file (development) | `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | File is re-read on every refresh (an external refresher may rewrite it) |
+
+- The token is cached and refreshed 30 s before it expires (the margin is
+  capped at half the token lifetime). A static token whose `exp` cannot be
+  read is re-read every 60 s.
+- On a **401** from Citadel the client invalidates the cached token and
+  retries once; that retry does not count against
+  `BARBICAN_CITADEL_API_RETRY_MAX`.
+- In Kubernetes inject the secret from a Secret via
+  `env.valueFrom.secretKeyRef`. Rotating it requires a pod restart (the
+  variable is read once at startup).
+- Keycloak: the token must carry `citadel` in `aud` (add an audience mapper
+  to the `barbican` client), and the `barbican` service account needs the
+  `write` role (Citadel's inbox routes require one of
+  `CITADEL_REQUIRED_ROLES`). See
+  [Authentication → Service Accounts](authentication.md#service-accounts).
+
+Startup errors (exit 1):
+
+- client ID without secret, or secret without ID (empty values count as unset);
+- both client credentials and `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` set;
+- `PRODUCTION=true` with static-file mode, or with nothing configured.
+
+With nothing configured and `PRODUCTION` not `true`, Barbican logs a warning
+and sends no `Authorization` header (Citadel rejects those calls).
+
+```yaml
+# Kubernetes container spec (excerpt)
+env:
+  - name: BARBICAN_CITADEL_CLIENT_ID
+    value: barbican
+  - name: BARBICAN_CITADEL_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: barbican-keycloak-client
+        key: client-secret
+```
 
 ### Automatic Trigger Configuration
 
@@ -266,20 +347,24 @@ Barbican automatically triggers Citadel for these operations:
 BARBICAN_CITADEL_API_URL=http://localhost:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=60
 BARBICAN_CITADEL_API_RETRY_MAX=5
-BARBICAN_CITADEL_SERVICE_TOKEN_FILE=./dev/citadel.jwt
+BARBICAN_CITADEL_SERVICE_TOKEN_FILE=./dev/citadel.jwt   # dev-only static token
 ```
 
 **Production:**
 ```bash
+PRODUCTION=true
 BARBICAN_CITADEL_API_URL=http://citadel.data-warehouse.svc.cluster.local:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=30
 BARBICAN_CITADEL_API_RETRY_MAX=3
-BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-service-jwt
+BARBICAN_CITADEL_CLIENT_ID=barbican
+BARBICAN_CITADEL_CLIENT_SECRET=<from a Kubernetes Secret>
 ```
 
 ### Retry Behavior
 
-Citadel triggers use exponential backoff:
+Connection/timeout errors are retried with exponential backoff (an HTTP
+error status is returned immediately; a 401 first gets one token refresh, see
+above). A failure to obtain the service token fails the call without retry.
 
 ```
 Attempt 1: Immediate
@@ -434,7 +519,7 @@ BARBICAN_TOKEN_LEEWAY_MS=5000
 BARBICAN_CITADEL_API_URL=http://localhost:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=60
 BARBICAN_CITADEL_API_RETRY_MAX=5
-BARBICAN_CITADEL_SERVICE_TOKEN_FILE=./dev/citadel.jwt
+BARBICAN_CITADEL_SERVICE_TOKEN_FILE=./dev/citadel.jwt   # dev-only
 
 # Observability
 BARBICAN_PROMETHEUS_PORT=9091
@@ -467,7 +552,8 @@ BARBICAN_JWKS_REFRESH_SECS=300
 BARBICAN_CITADEL_API_URL=http://citadel.data-warehouse.svc.cluster.local:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=30
 BARBICAN_CITADEL_API_RETRY_MAX=3
-BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-service-jwt
+BARBICAN_CITADEL_CLIENT_ID=barbican
+BARBICAN_CITADEL_CLIENT_SECRET=...   # env.valueFrom.secretKeyRef, never a literal
 
 # Observability
 BARBICAN_PROMETHEUS_PORT=9091
@@ -491,10 +577,9 @@ services:
       - BARBICAN_KEYCLOAK_REALM=data-warehouse
       - BARBICAN_KEYCLOAK_CLIENT_ID=barbican
       - BARBICAN_CITADEL_API_URL=http://citadel:8081
-      - BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-jwt
+      - BARBICAN_CITADEL_CLIENT_ID=barbican
+      - BARBICAN_CITADEL_CLIENT_SECRET=${BARBICAN_CITADEL_CLIENT_SECRET}
       - BARBICAN_PROMETHEUS_PORT=9091
-    volumes:
-      - ./secrets/citadel.jwt:/run/secrets/citadel-jwt:ro
     ports:
       - "8080:8080"
       - "9091:9091"
@@ -508,11 +593,20 @@ services:
 
 ## Configuration Validation
 
-Only the auth settings are validated (see
-[Startup validation](#startup-validation)); the logic lives in
-`AuthConfig::validate_with` in `common/src/auth/config.rs`. A failure is
-logged and the process exits with status 1 — it is a log line, not an HTTP
-response:
+Each loader validates its own settings: `Config::from_lookup`
+(`barbican/src/config.rs`), `AuthConfig::validate_with`
+(`common/src/auth/config.rs`, see [Startup validation](#startup-validation))
+and `ServiceTokenSource::from_lookup` (`common/src/auth/service_token.rs`). A
+failure is logged and the process exits with status 1 — it is a log line, not
+an HTTP response:
+
+```
+ERROR Failed to load configuration: Invalid value for BARBICAN_PROMETHEUS_PORT: 70000
+```
+
+```
+ERROR Invalid Citadel service-token configuration: Invalid configuration value: BARBICAN_CITADEL_CLIENT_ID is set but BARBICAN_CITADEL_CLIENT_SECRET is not
+```
 
 ```
 ERROR Failed to load auth configuration: Invalid configuration value: BARBICAN_ALLOWED_ALGORITHMS: symmetric algorithm 'HS256' not allowed

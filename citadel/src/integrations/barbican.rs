@@ -116,6 +116,10 @@ pub struct BarbicanClient {
     /// never `.await`, and these helpers are called from async code, where
     /// `tokio::sync::Mutex::blocking_lock` panics.
     breaker_opened_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Source of the Bearer token Barbican's internal routes require (set via
+    /// [`BarbicanClient::with_token_provider`]). `None` sends no
+    /// `Authorization` header (local/mock setups only).
+    token_provider: Option<Arc<common::ServiceTokenProvider>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +423,15 @@ impl BarbicanClient {
             breaker_open: std::sync::atomic::AtomicU8::new(0),
             breaker_failures: std::sync::atomic::AtomicU32::new(0),
             breaker_opened_at: std::sync::Mutex::new(None),
+            token_provider: None,
         }
+    }
+
+    /// Attach the service-token provider used to authenticate to Barbican
+    /// (`CITADEL_BARBICAN_CLIENT_ID` / `CITADEL_BARBICAN_CLIENT_SECRET`).
+    pub fn with_token_provider(mut self, provider: Arc<common::ServiceTokenProvider>) -> Self {
+        self.token_provider = Some(provider);
+        self
     }
 
     /// Attach a metrics handle so the client can meter Barbican API errors and
@@ -552,14 +564,46 @@ impl BarbicanClient {
         }
     }
 
-    async fn do_post(&self, url: &str, body: &impl serde::Serialize) -> Result<InboxDB> {
-        let response = self
-            .client
-            .post(url)
-            .json(body)
+    /// Send one POST, attaching the service token when configured.
+    async fn send_once(
+        &self,
+        url: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<reqwest::Response> {
+        let mut request = self.client.post(url).json(body);
+        if let Some(provider) = &self.token_provider {
+            let token = provider.bearer().await.map_err(|e| {
+                AppError::ServiceUnavailable(format!("Barbican service token unavailable: {e}"))
+            })?;
+            request = request.bearer_auth(token);
+        }
+        request
             .send()
             .await
-            .map_err(|e| AppError::BadGateway(format!("Request failed: {}", e)))?;
+            .map_err(|e| AppError::BadGateway(format!("Request failed: {}", e)))
+    }
+
+    /// POST to Barbican. A 401 means our cached token was rejected (expired
+    /// or revoked): invalidate it and retry once with a fresh token. This
+    /// inner retry is not a `post_action` retry and does not count toward the
+    /// circuit breaker.
+    async fn do_post(&self, url: &str, body: &impl serde::Serialize) -> Result<InboxDB> {
+        let mut response = self.send_once(url, body).await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && let Some(provider) = &self.token_provider
+        {
+            warn!("Barbican rejected the service token (401); refreshing and retrying once");
+            provider.invalidate().await;
+            response = self.send_once(url, body).await?;
+        }
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(AppError::BadGateway(
+                "Barbican rejected Citadel's service token (401); check \
+                 CITADEL_BARBICAN_CLIENT_ID/SECRET and the Keycloak audience mapper"
+                    .to_string(),
+            ));
+        }
 
         if response.status() == 409 {
             return Err(AppError::Conflict("Inbox state conflict".to_string()));

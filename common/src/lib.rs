@@ -48,7 +48,8 @@ pub use adapters::MongoInboxStore;
 #[cfg(feature = "auth")]
 pub use auth::{
     AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, Jwk, Jwks,
-    JwksCache, JwtValidator, auth_middleware, build_auth_state,
+    JwksCache, JwtValidator, SecretString, ServiceTokenProvider, ServiceTokenSource,
+    auth_middleware, build_auth_state,
 };
 pub use config::{logging_setup, shutdown_signal};
 pub use db::{db_collection, db_database, db_setup, db_setup_with_shutdown};

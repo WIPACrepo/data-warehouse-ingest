@@ -86,7 +86,7 @@ barbican/src/
 ├── db.rs                # ensure_inbox_indexes (unique warehouse_path, P1.5)
 ├── metrics.rs           # BarbicanMetrics: inboxes_total gauge + api_requests_total counter (P4.3)
 ├── clients/
-│   └── citadel.rs       # CitadelClient: triggers on Citadel /create|publish|delete (D9)
+│   └── citadel.rs       # CitadelClient: triggers on Citadel /create|publish|delete (D9); refreshing Bearer service token
 ├── handlers/
 │   ├── create_inbox.rs  # POST /api/v1/inbox (202 envelope)
 │   ├── get_inbox.rs     # GET /api/v1/inbox/{id}
@@ -103,7 +103,7 @@ barbican/src/
 │   └── mod.rs           # Re-exports common::auth_middleware (auth lives in common::auth)
 ├── test_utils/          # Test utilities (cfg(test))
 │   └── mod.rs           # create_test_state, test_auth_state; re-exports common::test_utils + MockInboxStore
-├── tests/               # Unit tests (mirroring src/)
+├── tests/               # Unit tests (mirroring src/; incl. config_tests.rs, citadel_client_tests.rs)
 └── docs/                # This documentation directory
 ```
 

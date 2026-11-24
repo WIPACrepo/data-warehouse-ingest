@@ -173,6 +173,10 @@ barbican/src/
 ├── tests/              # Integration tests
 │   ├── mod.rs
 │   ├── main_tests.rs
+│   ├── metrics_tests.rs
+│   ├── integration_tests.rs
+│   ├── config_tests.rs          # Config::from_lookup defaults/overrides/errors
+│   ├── citadel_client_tests.rs  # CitadelClient Bearer token + 401 refresh
 │   └── handlers/
 │       ├── create_inbox_tests.rs
 │       ├── get_inbox_tests.rs
@@ -243,8 +247,23 @@ async fn test_handler_with_mock() {
 **Production wiring** (outside tests), for reference:
 ```rust
 let auth_state = common::build_auth_state(&auth_config, "barbican");
-let state = Arc::new(AppState::new(store, config, auth_state));
+// Option<ServiceTokenSource> from ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config)
+let citadel_token = citadel_token.map(|s| Arc::new(ServiceTokenProvider::new(s)));
+let state = Arc::new(AppState::new(store, config, auth_state, citadel_token));
 ```
+
+**Config in tests:** `Config::default()` reads no environment variables, so
+it is safe in parallel tests. To test env parsing, call
+`Config::from_lookup` with a map instead of mutating the process environment
+(see `src/tests/config_tests.rs`).
+
+**Citadel client tests** (`src/tests/citadel_client_tests.rs`): a stub
+Citadel (axum on `127.0.0.1:0`) records the `Authorization` header and can
+reject the first N requests with 401; a mock Keycloak from
+`common::test_utils::start_test_keycloak` issues client-credentials tokens
+signed with an RSA test key generated at runtime (no key is stored in the
+repository). They cover: Bearer token sent, a single 401 triggers one
+refresh and retry, a persistent 401 returns an error.
 
 **Test Fixtures** (`common::test_utils`):
 ```rust

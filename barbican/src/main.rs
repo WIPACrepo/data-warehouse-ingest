@@ -1,4 +1,4 @@
-use barbican::{AuthConfig, Config, serve};
+use barbican::{AuthConfig, Config, ServiceTokenSource, serve};
 use common::{db_setup_with_shutdown, logging_setup, shutdown_signal};
 use futures::FutureExt;
 use futures::future::Shared;
@@ -13,13 +13,36 @@ async fn main() {
     let shutdown_shared: Shared<_> = shutdown_fut.shared();
 
     // Load configuration early so we can use it for metrics and database
-    let config = Config::from_env().expect("Failed to load configuration");
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        }
+    };
     // Auth settings come from BARBICAN_KEYCLOAK_*, BARBICAN_REQUIRED_ROLES, ...
     // (decision D10). Fail fast, before connecting to MongoDB.
     let auth_config = match AuthConfig::from_env_prefixed("BARBICAN") {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to load auth configuration: {e}");
+            std::process::exit(1);
+        }
+    };
+    // Bearer token for Citadel: BARBICAN_CITADEL_CLIENT_ID/_CLIENT_SECRET
+    // (secret from env, e.g. a K8s Secret) or dev-only _SERVICE_TOKEN_FILE.
+    let citadel_token = match ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config) {
+        Ok(source) => {
+            if source.is_none() {
+                tracing::warn!(
+                    "No BARBICAN_CITADEL_CLIENT_ID/SECRET configured: calls to Citadel carry no \
+                     Authorization header and will be rejected"
+                );
+            }
+            source
+        }
+        Err(e) => {
+            error!("Invalid Citadel service-token configuration: {e}");
             std::process::exit(1);
         }
     };
@@ -43,5 +66,5 @@ async fn main() {
     // Barbican metrics registry and the inbox-count refresh loop) and starts
     // the metrics server on the configured port via
     // start_metrics_server_with_router so the Barbican registry is rendered.
-    serve(client, config, auth_config).await
+    serve(client, config, auth_config, citadel_token).await
 }

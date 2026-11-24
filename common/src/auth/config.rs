@@ -181,6 +181,15 @@ impl AuthConfig {
         format!("{}/realms/{}", self.keycloak_url, self.keycloak_realm)
     }
 
+    /// Token endpoint (client-credentials grant):
+    /// `{keycloak_url}/realms/{realm}/protocol/openid-connect/token`.
+    pub fn token_url(&self) -> String {
+        format!(
+            "{}/realms/{}/protocol/openid-connect/token",
+            self.keycloak_url, self.keycloak_realm
+        )
+    }
+
     /// Clock-skew leeway in whole seconds, as `jsonwebtoken::Validation::leeway`
     /// expects. Rounded up so a non-zero millisecond setting never becomes 0.
     /// (Previously `leeway_ms` was passed through unconverted, so the 5000 ms

@@ -12,6 +12,7 @@ use tracing::{error, info};
 use crate::AppState;
 use crate::db::inboxes_collection;
 use crate::error::{AppError, Result};
+use crate::handlers::compensate::{Operation, codes, compensate};
 use common::Claims;
 
 #[derive(Debug, Deserialize)]
@@ -73,18 +74,44 @@ pub async fn create_inbox(
             e
         })?;
 
-    // Create inbox directory
-    let inbox_path = state.storage_manager.create_inbox(&object_id).await?;
+    // Create inbox directory. On failure, move the inbox out of `creating`
+    // (compensate) and return the original error.
+    let inbox_path = match state.storage_manager.create_inbox(&object_id).await {
+        Ok(path) => path,
+        Err(e) => {
+            compensate(
+                &state,
+                Operation::Create,
+                &object_id,
+                &job_id,
+                codes::STORAGE_ERROR,
+                &e,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
-    // Signal completion to Barbican
-    state
+    // Signal completion to Barbican. If that fails the directory stays
+    // (`create_dir_all` is idempotent, so a retried create reuses it) and the
+    // inbox is moved to `failed`.
+    if let Err(e) = state
         .barbican_client
         .create_complete(&object_id, &job_id, &inbox_path.to_string_lossy())
         .await
-        .map_err(|e| {
-            error!("Failed to signal create complete to Barbican: {}", e);
-            e
-        })?;
+    {
+        error!("Failed to signal create complete to Barbican: {}", e);
+        compensate(
+            &state,
+            Operation::Create,
+            &object_id,
+            &job_id,
+            codes::BARBICAN_ERROR,
+            &e,
+        )
+        .await;
+        return Err(e);
+    }
 
     info!("Created inbox {} at path {:?}", inbox_id, inbox_path);
 

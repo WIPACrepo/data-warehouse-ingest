@@ -98,55 +98,52 @@ pub struct JobConfig {
 
 impl JobConfig {
     pub fn from_env() -> Result<Self> {
-        let transfer_parallelism = env::var("CITADEL_TRANSFER_PARALLELISM")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4);
+        Self::from_lookup(|name| env::var(name).ok())
+    }
 
-        let transfer_chunk_size_mb = env::var("CITADEL_TRANSFER_CHUNK_SIZE_MB")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(16);
-
-        let metadata_poll_interval_secs = env::var("CITADEL_JOB_METADATA_POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(15);
-
-        let progress_update_interval_secs = env::var("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30);
-
-        let mongodb_uri = env::var("CITADEL_MONGODB_URI")
-            .unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
-        let mongodb_database =
-            env::var("CITADEL_MONGODB_DATABASE").unwrap_or_else(|_| "data_warehouse".to_string());
+    /// Parse the job configuration from `lookup` (testable without touching
+    /// the process environment). Numeric settings must be positive integers;
+    /// a malformed or zero value is a `ConfigError` naming the variable
+    /// (previously it silently fell back to the default, misconfiguring the
+    /// transfer; a zero interval would also panic `tokio::time::interval`).
+    pub fn from_lookup<F>(lookup: F) -> Result<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let positive = |name: &str, default: u64| -> Result<u64> {
+            match lookup(name) {
+                None => Ok(default),
+                Some(raw) => match raw.trim().parse::<u64>() {
+                    Ok(n) if n >= 1 => Ok(n),
+                    _ => Err(JobError::ConfigError(format!(
+                        "{name} must be a positive integer, got '{raw}'"
+                    ))),
+                },
+            }
+        };
+        let required = |name: &str| -> Result<String> {
+            lookup(name).ok_or_else(|| JobError::ConfigError(format!("Missing {name}")))
+        };
 
         Ok(Self {
-            job_id: env::var("JOB_ID")
-                .map_err(|_| JobError::ConfigError("Missing JOB_ID".to_string()))?,
-            job_type: env::var("JOB_TYPE")
-                .map_err(|_| JobError::ConfigError("Missing JOB_TYPE".to_string()))?,
-            inbox_id: env::var("INBOX_ID")
-                .map_err(|_| JobError::ConfigError("Missing INBOX_ID".to_string()))?,
-            inbox_path: env::var("INBOX_PATH")
+            job_id: required("JOB_ID")?,
+            job_type: required("JOB_TYPE")?,
+            inbox_id: required("INBOX_ID")?,
+            inbox_path: PathBuf::from(required("INBOX_PATH")?),
+            warehouse_path: PathBuf::from(required("WAREHOUSE_PATH")?),
+            callback_url: lookup("CITADEL_CALLBACK_URL")
+                .unwrap_or_else(|| "http://localhost:8081/api/v1/job/callback".to_string()),
+            callback_secret_file: lookup("CITADEL_CALLBACK_SECRET_FILE")
                 .map(PathBuf::from)
-                .map_err(|_| JobError::ConfigError("Missing INBOX_PATH".to_string()))?,
-            warehouse_path: env::var("WAREHOUSE_PATH")
-                .map(PathBuf::from)
-                .map_err(|_| JobError::ConfigError("Missing WAREHOUSE_PATH".to_string()))?,
-            callback_url: env::var("CITADEL_CALLBACK_URL")
-                .unwrap_or_else(|_| "http://localhost:8081/api/v1/job/callback".to_string()),
-            callback_secret_file: env::var("CITADEL_CALLBACK_SECRET_FILE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/etc/citadel/secrets/callback-secret")),
-            transfer_parallelism,
-            transfer_chunk_size_mb,
-            metadata_poll_interval_secs,
-            progress_update_interval_secs,
-            mongodb_uri,
-            mongodb_database,
+                .unwrap_or_else(|| PathBuf::from("/etc/citadel/secrets/callback-secret")),
+            transfer_parallelism: positive("CITADEL_TRANSFER_PARALLELISM", 4)? as usize,
+            transfer_chunk_size_mb: positive("CITADEL_TRANSFER_CHUNK_SIZE_MB", 16)? as usize,
+            metadata_poll_interval_secs: positive("CITADEL_JOB_METADATA_POLL_INTERVAL_SECS", 15)?,
+            progress_update_interval_secs: positive("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS", 30)?,
+            mongodb_uri: lookup("CITADEL_MONGODB_URI")
+                .unwrap_or_else(|| "mongodb://localhost:27017".to_string()),
+            mongodb_database: lookup("CITADEL_MONGODB_DATABASE")
+                .unwrap_or_else(|| "data_warehouse".to_string()),
         })
     }
 
@@ -216,6 +213,58 @@ mod tests {
         let req = build_progress_request("job-1", &progress, sent_at, "n-2".into());
         assert_eq!(req.timestamp, sent_at);
         assert_eq!(req.nonce, "n-2");
+    }
+
+    fn job_vars(extra: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        let mut m: std::collections::HashMap<String, String> = [
+            ("JOB_ID", "j"),
+            ("JOB_TYPE", "publish_inbox"),
+            ("INBOX_ID", "000000000000000000000000"),
+            ("INBOX_PATH", "/i"),
+            ("WAREHOUSE_PATH", "/w"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        for (k, v) in extra {
+            m.insert(k.to_string(), v.to_string());
+        }
+        m
+    }
+
+    #[test]
+    fn test_job_config_defaults() {
+        let vars = job_vars(&[]);
+        let c = JobConfig::from_lookup(|n| vars.get(n).cloned()).unwrap();
+        assert_eq!(c.transfer_parallelism, 4);
+        assert_eq!(c.transfer_chunk_size_mb, 16);
+        assert_eq!(c.metadata_poll_interval_secs, 15);
+        assert_eq!(c.progress_update_interval_secs, 30);
+    }
+
+    /// REVIEW follow-up #4: malformed/zero numbers are errors, not defaults.
+    #[test]
+    fn test_job_config_rejects_malformed_or_zero_numbers() {
+        for var in [
+            "CITADEL_TRANSFER_PARALLELISM",
+            "CITADEL_TRANSFER_CHUNK_SIZE_MB",
+            "CITADEL_JOB_METADATA_POLL_INTERVAL_SECS",
+            "CITADEL_PROGRESS_UPDATE_INTERVAL_SECS",
+        ] {
+            for bad in ["abc", "0", "-3"] {
+                let vars = job_vars(&[(var, bad)]);
+                let err = JobConfig::from_lookup(|n| vars.get(n).cloned()).unwrap_err();
+                assert!(err.to_string().contains(var), "{var}={bad}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_job_config_missing_required_names_variable() {
+        let mut vars = job_vars(&[]);
+        vars.remove("INBOX_PATH");
+        let err = JobConfig::from_lookup(|n| vars.get(n).cloned()).unwrap_err();
+        assert!(err.to_string().contains("INBOX_PATH"), "{err}");
     }
 
     #[test]

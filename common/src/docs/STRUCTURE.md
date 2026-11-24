@@ -12,7 +12,7 @@ This directory contains comprehensive documentation for the `common` crate, orga
 | [`overview.md`](overview.md) | ~9 KB | How `common` fits into the Barbican/Citadel architecture |
 | [`models.md`](models.md) | ~8 KB | Shared data model: inboxes, statuses, progress, errors |
 | [`infrastructure.md`](infrastructure.md) | ~10 KB | Shared utilities: config, DB, error, metrics, middleware |
-| [`auth.md`](auth.md) | ~9 KB | JWT/Keycloak auth: prefixed `AuthConfig`, `build_auth_state`, decision D10 |
+| [`auth.md`](auth.md) | ~14 KB | JWT/Keycloak auth: prefixed `AuthConfig`, `build_auth_state`, service-to-service tokens, decision D10 |
 | [`testing.md`](testing.md) | ~8 KB | Test utilities and conventions |
 
 ### Module Files
@@ -61,9 +61,11 @@ common/src/docs/
 │   ├── Environment Variables ({PREFIX}_KEYCLOAK_*, ...)
 │   ├── Derived URLs, Validation Rules
 │   ├── build_auth_state, Role Checks
+│   ├── Service-to-service tokens (ServiceTokenSource / ServiceTokenProvider)
 │   └── Design Decision D10
 │
 ├── testing.md                   # Test utilities
+│   ├── Signed test tokens and mock Keycloak
 │   ├── Builders
 │   ├── Fixtures & Helpers
 │   ├── Mock Store

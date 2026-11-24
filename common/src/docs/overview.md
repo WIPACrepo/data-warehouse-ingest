@@ -93,6 +93,8 @@ Documented in [infrastructure.md](infrastructure.md).
 - `AuthConfig::from_env_prefixed(prefix)` / `AuthConfig::from_lookup(prefix, lookup)` — parse `{PREFIX}_KEYCLOAK_*` etc.
 - `build_auth_state(&config, service_name)` — JWKS cache + validator + `AuthMiddlewareState`
 - `auth_middleware`, `Claims`, `ClaimsExtractor`, `JwtValidator`, `JwksCache`
+- `ServiceTokenSource`, `ServiceTokenProvider`, `SecretString` — outgoing service-to-service tokens (Citadel ↔ Barbican)
+- Auth Prometheus metrics (`auth/metrics.rs`), re-exported as `common::metrics::*` and `common::init_auth_metrics`
 
 Documented in [auth.md](auth.md).
 
@@ -101,7 +103,7 @@ Documented in [auth.md](auth.md).
 - `InboxBuilder`, `CreateInboxBuilder` — builder pattern for fixtures
 - Fixture/helper functions (`create_test_inbox`, `create_test_store`, ...)
 - `MockInboxStore` (re-exported from the crate root under `cfg(test)` / `test-utils`)
-- With `test-utils`: auth mocks (`mock_jwks`, `generate_test_token`, RSA key generation)
+- With `test-utils`: auth mocks (`mock_jwks`, `generate_test_token`) and real RS256 signing with a runtime-generated key (`sign_test_jwt`, `test_claims`, `start_test_keycloak`)
 
 The `test_utils` module itself is compiled only under `cfg(test)` or the `test-utils` feature.
 
@@ -115,24 +117,25 @@ Documented in [testing.md](testing.md).
 common/src/
 ├── lib.rs               # Public API surface (re-exports the shared types)
 ├── adapters.rs          # MongoInboxStore: MongoDB InboxStore implementation
-├── auth/                # (feature `auth`) AuthConfig, build_auth_state, JWKS, validator, middleware
+├── auth/                # (feature `auth`) AuthConfig, build_auth_state, JWKS, validator, middleware,
+│                        #   service_token (peer Bearer tokens), metrics (auth Prometheus metrics)
 ├── config.rs            # logging_setup, shutdown_signal
 ├── db.rs                # db_setup, db_database, db_collection
 ├── error.rs             # AppError, AppJson, log_app_errors
-├── metrics.rs           # metrics_app, router_prometheus, start_metrics_server
+├── metrics.rs           # metrics_app, router_prometheus, start_metrics_server (+ re-exports auth metrics under `auth`)
 ├── middleware.rs        # router_logging_layer (trace + 10s timeout)
 ├── models.rs            # InboxDB, InboxStatus, InboxProgress, InboxError, CreateInbox
 ├── traits.rs            # InboxStore trait (+ MockInboxStore via mockall, test/test-utils only)
 ├── test_utils/          # Builders, fixtures, helpers (cfg(test) or feature `test-utils`)
 │   ├── mod.rs
-│   ├── auth_mock.rs     # (feature `test-utils`) mock JWKS + signed test tokens
+│   ├── auth_mock.rs     # (feature `test-utils`) mock JWKS, runtime RSA key, signed tokens, mock Keycloak
 │   ├── builders.rs      # InboxBuilder, CreateInboxBuilder
 │   ├── fixtures.rs      # create_test_inbox, create_test_store, create_test_request, ...
 │   └── helpers.rs       # create_default_test_inbox, assert_inboxes_equal_*, ...
 ├── tests/               # Unit tests (per-module, mirroring src/)
 │   ├── mod.rs
 │   ├── adapters_tests.rs
-│   ├── auth/            # auth middleware/claims/JWKS tests
+│   ├── auth/            # (feature `auth`) config/middleware/claims/JWKS/service-token tests
 │   ├── config_tests.rs
 │   ├── db_tests.rs
 │   ├── error_tests.rs
@@ -188,12 +191,12 @@ Because `` `common` `` defines a single `InboxDB` type and both services connect
 - `mongodb` — database (BSON types come from its `mongodb::bson` re-export; there is no direct `bson` dependency)
 - `serde`, `serde_json` — serialization
 - `tokio`, `tower-http`, `tracing`, `tracing-subscriber` — async, middleware, logging
-- `async-trait`, `chrono`, `futures-util`, `reqwest`, `thiserror` — async traits, time, streams, HTTP client (JWKS), errors
+- `async-trait`, `chrono`, `futures-util`, `reqwest`, `thiserror` — async traits, time, streams, HTTP client (JWKS, service tokens), errors
 - Optional, feature `auth`: `jsonwebtoken`, `prometheus`, `once_cell`
-- Optional, feature `test-utils` (implies `auth`): `mockall`, `rsa`, `rand`
+- Optional, feature `test-utils` (implies `auth`): `mockall`, `rsa` (feature `getrandom`), `base64`
 - Dev-dependencies: `mockall` (for `cfg(test)` mocks), `tower`
 
-Features: `auth`; `test-utils` (= `auth` + mocks/keygen); `integration-tests` (implies `test-utils`, gates `common/tests/`).
+Features (none on by default): `auth`; `test-utils` (= `auth` + mocks/keygen); `integration-tests` (implies `test-utils`, gates `common/tests/`). The crate builds with `--no-default-features` and `cargo test -p common` runs standalone; CI checks both.
 
 Per the workspace `AGENTS.md`:
 
@@ -201,7 +204,7 @@ Per the workspace `AGENTS.md`:
 - Each crate keeps its own `src/tests/` directory with `test_utils/`.
 - Integration tests requiring services (e.g., MongoDB) live in `tests/` and are gated behind the `integration-tests` feature flag.
 
-> **Policy note:** `common` should not pull in service-specific logic (filesystem operations, job executors). JWT handling is shared by both services and therefore lives here, but behind the optional `auth` feature; test-only crates (`mockall`, `rsa`, `rand`) are optional and only enabled by `test-utils`. Keeping the dependency surface small keeps the shared library easy to reason about and fast to compile.
+> **Policy note:** `common` should not pull in service-specific logic (filesystem operations, job executors). JWT handling is shared by both services and therefore lives here, but behind the optional `auth` feature; test-only crates (`mockall`, `rsa`, `base64`) are optional and only enabled by `test-utils`. Keeping the dependency surface small keeps the shared library easy to reason about and fast to compile.
 
 ---
 

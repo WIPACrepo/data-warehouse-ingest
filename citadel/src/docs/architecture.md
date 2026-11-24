@@ -108,9 +108,10 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 3. Citadel auth middleware validates the JWT and `write` role
 4. Handler reads inbox metadata directly from MongoDB
 5. Handler validates the inbox has no `inbox_path` yet
-6. `StorageManager::create_inbox` creates the physical directory
-7. Handler transitions the inbox state via the Barbican API
-8. Handler returns `201 Created` with the `inbox_id` and `inbox_path`
+6. Handler calls Barbican `create_start` (inbox → `creating`)
+7. `StorageManager::create_inbox` creates the physical directory
+8. Handler calls Barbican `create_complete`; if step 7 or 8 fails it compensates with `create_failure` (see [Barbican Integration](barbican-integration.md#compensation))
+9. Handler returns `201 Created` with the `inbox_id` and `inbox_path`
 
 ### Publish Flow
 
@@ -119,10 +120,10 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 3. Handler reads inbox metadata from MongoDB and validates `inbox_path` is set
 4. Handler creates a `PublishInbox` job record in MongoDB (`queued`)
 5. Handler transitions the inbox to `publishing` via Barbican
-6. Handler submits the job to the executor (`KubernetesExecutor` or `MockExecutor`)
+6. Handler submits the job to the executor (`KubernetesExecutor` or `MockExecutor`); if submission fails it compensates (`publish_failure` + job `failed`)
 7. Executor (K8s) launches a `citadel-job` process that performs the transfer
 8. `citadel-job` executes recursive copy-verify-delete on the storage tree with the atomic transfer pattern
-9. `citadel-job` calls back to `POST /api/v1/job/callback` with the result
+9. `citadel-job` calls back to `POST /api/v1/job/callback` with the result (`X-Callback-Secret` + timestamp + nonce; no JWT)
 10. Handler updates the job record (`completed` / `failed`) and records the result
 
 > **Note:** Downstream notifications to the catalog / LTA are triggered from the callback handler but the notifier implementations are `NoOp` stubs (see [Implementation Status](#implementation-status)).
@@ -133,7 +134,7 @@ Barbican and Citadel share the same MongoDB inbox collection, but ownership is s
 2. Handler reads inbox metadata from MongoDB and validates `inbox_path` is set
 3. Handler creates a `DeleteInbox` job record in MongoDB (`queued`)
 4. Handler transitions the inbox to `deleting` via Barbican
-5. Handler submits the job to the executor
+5. Handler submits the job to the executor; if submission fails it compensates (`delete_failure` + job `failed`)
 6. The worker cleans up the inbox directory
 
 ### Job Status Flow
@@ -175,9 +176,9 @@ Both binaries are built from the same `citadel` crate (see [`Cargo.toml`](../Car
 
 ```
 citadel/src/
-├── main.rs              # citadel service entry point: tracing, config, router, metrics server
+├── main.rs              # citadel service entry point: tracing, config, Barbican token, create_app, metrics server
 ├── job_main.rs          # citadel-job binary entry point (transfer worker + callback)
-├── lib.rs               # Library exports and AppState (shared dependencies)
+├── lib.rs               # Library exports, AppState, create_app (router + per-group auth)
 ├── config.rs            # CitadelConfig (+ nested InboxConfig): CITADEL_* environment loading
 ├── error.rs             # Thin re-export of common::AppError (+ Result alias)
 ├── db.rs                # MongoDB client setup, collection helpers, collection name constants
@@ -187,6 +188,7 @@ citadel/src/
 ├── middleware/          # Re-exports (auth lives in common::auth)
 │   ├── mod.rs           # Module exports
 │   ├── auth.rs          # Re-exports common::auth_middleware / ClaimsExtractor
+│   ├── job_auth.rs      # Job-route auth: admin JWT or citadel-job secret path (D11)
 │   └── logging.rs       # Request logging middleware
 ├── handlers/            # HTTP handlers
 │   ├── mod.rs           # Module exports
@@ -196,7 +198,8 @@ citadel/src/
 │   ├── get_job.rs       # GET /api/v1/job/{job_id}
 │   ├── list_jobs.rs     # GET /api/v1/jobs
 │   ├── cancel_job.rs    # POST /api/v1/job/{job_id}/cancel
-│   ├── job_callback.rs  # POST /api/v1/job/callback (secret + timestamp + nonce validation)
+│   ├── compensate.rs    # Best-effort *_failure + job `failed` after a post-start failure
+│   ├── job_callback.rs  # POST /api/v1/job/callback (authenticate_job_caller; secret + timestamp + nonce)
 │   ├── job_progress.rs  # POST /api/v1/job/progress (P4.1: progress forwarding → Barbican)
 │   ├── health.rs        # GET /health
 │   └── ready.rs         # GET /ready
@@ -233,7 +236,7 @@ pub struct AppState {
     pub config: Arc<CitadelConfig>,
     pub auth_state: Arc<AuthMiddlewareState>,
     pub storage_manager: Arc<StorageManager>,
-    pub barbican_client: Arc<BarbicanClient>,
+    pub barbican_client: Arc<dyn InboxTransitioner>,
     pub executor: Arc<dyn JobExecutor>,
     pub catalog_notifier: Arc<dyn CatalogNotifier>,
     pub lta_notifier: Arc<dyn LtaNotifier>,
@@ -399,7 +402,7 @@ Update job: Completed / Failed / TimedOut
 
 ### 6. Replay-Protected Callback Authentication
 
-**Decision**: Job callbacks and progress reports carry a timestamp (validated: under 300 s old, at most 60 s in the future) and a UUID nonce stored in MongoDB (300 s TTL) to prevent replay. `citadel-job` mints a fresh pair for **every** send attempt, including retries, so jobs of any duration can report. When a callback secret is configured, the `X-Callback-Secret` header is verified with a **constant-time comparison** (`ct_eq`); the secret is hot-reloaded from file via the `notify` watcher.
+**Decision**: Job callbacks and progress reports carry a timestamp (validated: under 300 s old, at most 60 s in the future) and a UUID nonce stored in MongoDB (300 s TTL) to prevent replay. `citadel-job` mints a fresh pair for **every** send attempt, including retries, so jobs of any duration can report. When a callback secret is configured, the `X-Callback-Secret` header is verified with a **constant-time comparison** (`ct_eq`); the secret is hot-reloaded from file via the `notify` watcher. These checks apply to the worker path; an `admin` JWT caller relies on the JWT signature + `exp` instead (D11).
 
 **Rationale**: The callback endpoint is the trust boundary for job results; replay protection prevents forged/duplicated completions, and the shared secret authenticates the job caller (constant-time compare avoids timing side channels).
 
@@ -414,6 +417,21 @@ Update job: Completed / Failed / TimedOut
 **Decision**: JWT/Keycloak configuration is parsed once in `common` (`AuthConfig::from_env_prefixed(prefix)` + `build_auth_state`), while each service owns its variable namespace (`CITADEL_KEYCLOAK_URL`, `CITADEL_REQUIRED_ROLES`, ...). `CITADEL_KEYCLOAK_URL` includes any path prefix (e.g. `/auth` for Keycloak < 17) instead of `/auth/` being hard-coded. See [Configuration](configuration.md#keycloak-authentication).
 
 **Rationale**: Both services validate tokens identically, misconfigurations fail at startup with the variable named, and two services in one environment cannot accidentally share (or shadow) each other's settings — previously Citadel read unprefixed `KEYCLOAK_*` names, so its documented `CITADEL_KEYCLOAK_*` variables were ignored.
+
+### 9. Dual Job-Route Auth + Service-to-Service Tokens (D11)
+
+**Decision**:
+- `/api/v1/job/callback` and `/api/v1/job/progress` sit outside the user JWT layer and accept either a Bearer JWT with Citadel `admin` or, with no `Authorization` header, the `citadel-job` credentials (`X-Callback-Secret` + `timestamp` + `nonce`). A present header is authoritative (no fall-through). See [Job Route Security](authentication.md#job-route-security).
+- Citadel authenticates to Barbican with a Keycloak client-credentials token (`CITADEL_BARBICAN_CLIENT_ID` / `CITADEL_BARBICAN_CLIENT_SECRET`), cached, refreshed before expiry, and re-fetched once on a `401`. See [Barbican Integration](barbican-integration.md#authentication-to-barbican).
+- Router construction lives in `citadel::create_app(AppState) -> Router` so the auth wiring is tested at the router level.
+
+**Rationale**: Both paths were broken in production: the callback routes were inside the user JWT layer, so every `citadel-job` callback (which has no Keycloak identity, D9) was rejected with `401`, and Citadel sent no `Authorization` header, so every Citadel → Barbican call was rejected with `401`. Job pods keep the shared-secret edge; operators get an audited admin path for manual job actions; the no-fall-through rule stops a low-privilege JWT from being combined with the secret.
+
+### 10. Compensation After a Started Transition
+
+**Decision**: If an operation fails after its Barbican `*/start` transition, Citadel issues the matching `*_failure` (and, for publish/delete, marks the job `failed`) best-effort and returns the original error — but never after a successful `executor.submit`. See [Barbican Integration](barbican-integration.md#compensation).
+
+**Rationale**: Without it the inbox stays `creating`/`publishing`/`deleting` and the job counts toward the in-flight quota forever; compensating a live job would mark a running transfer failed.
 
 The full decision ledger lives in [Implementation Status](#implementation-status) and the per-topic documents above.
 
@@ -431,6 +449,9 @@ today.
 - JWT validation with JWKS caching, algorithm whitelist, `alg: none` rejection
 - Role-based authorization (`admin` / `write` / `read`; there is no `internal` role — D9)
 - Auth config parsed by `common::AuthConfig::from_env_prefixed("CITADEL")` (D10)
+- Job routes accept an admin JWT or the `citadel-job` secret path; router built by `create_app` (D11)
+- Citadel → Barbican service token (client credentials, cached, refresh-on-401) (D11)
+- Compensation (`*_failure` + job `failed`) after post-start failures in create/publish/delete
 - MongoDB connectivity and `jobs` / `callback_nonces` collection helpers
 - Job model (`JobDB`); per-type in-flight quota (`count_in_flight_jobs`, 429 when saturated — D8)
 - Barbican client (`InboxTransitioner`) with exponential-backoff retry, 409 conflict handling, and a circuit breaker (30 s half-open)
@@ -449,8 +470,8 @@ today.
   security-relevant incident and carried to callers on success *and* failure
 - **Pre-transfer integrity scan** (read-only fail-fast) + disk-space check
   (`statvfs`, 10% buffer)
-- `citadel-job` worker binary with environment-driven config and callback
-  reporting
+- `citadel-job` worker binary with environment-driven config (numeric
+  settings strictly validated) and callback reporting
 - Callback handler with **secret** (constant-time) + timestamp + nonce
   validation, job status updates, catalog/LTA notify hooks
 - **Kubernetes executor**: real K8s Job spec creation, `submit`/`cancel`/`status`
@@ -507,8 +528,9 @@ sync with the code.
 
 1. **External clients** (via Barbican): JWT with user roles (`read`, `write`, `admin`)
 2. **Service callers** of the Citadel API: JWT validated against Keycloak JWKS
-3. **Job callback**: `X-Callback-Secret` (constant-time compare, hot-reloaded) + timestamp + nonce validation
-4. **MongoDB**: native authentication/TLS (environment-dependent)
+3. **Job routes** (callback/progress): admin JWT, or (no `Authorization` header) `X-Callback-Secret` (constant-time compare, hot-reloaded) + timestamp + nonce validation (D11)
+4. **Outbound to Barbican**: client-credentials service token with `barbican` in `aud` (D11)
+5. **MongoDB**: native authentication/TLS (environment-dependent)
 
 ### Authorization Model
 
@@ -519,7 +541,7 @@ sync with the code.
 | `POST /api/v1/inbox/{id}/delete` | `write` or `admin` |
 | `GET /api/v1/job/{job_id}`, `GET /api/v1/jobs` | `read`, `write`, or `admin` |
 | `POST /api/v1/job/{job_id}/cancel` | `admin` |
-| `POST /api/v1/job/callback` | callback secret + timestamp + nonce |
+| `POST /api/v1/job/callback`, `POST /api/v1/job/progress` | `admin` JWT, or no JWT + callback secret + timestamp + nonce |
 | `/health`, `/ready` | None (public) |
 
 ### Security Measures in Code

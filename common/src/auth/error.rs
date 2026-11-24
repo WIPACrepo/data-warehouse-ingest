@@ -45,6 +45,11 @@ pub enum AuthError {
 
     #[error("Unsupported curve: {0}")]
     UnsupportedCurve(String),
+
+    /// Obtaining a service-to-service token failed (Keycloak unreachable,
+    /// bad client credentials, unreadable token file).
+    #[error("Service token unavailable: {0}")]
+    TokenRequestFailed(String),
 }
 
 #[derive(Debug, Error)]
@@ -74,7 +79,8 @@ impl From<AuthError> for axum::http::StatusCode {
             | AuthError::InvalidKey(_)
             | AuthError::UnsupportedAlgorithm(_)
             | AuthError::UnsupportedKeyType(_)
-            | AuthError::UnsupportedCurve(_) => Self::SERVICE_UNAVAILABLE,
+            | AuthError::UnsupportedCurve(_)
+            | AuthError::TokenRequestFailed(_) => Self::SERVICE_UNAVAILABLE,
         }
     }
 }

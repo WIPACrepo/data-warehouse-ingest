@@ -5,6 +5,7 @@ This document covers the test utilities in `common` and the testing conventions 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Signed test tokens and mock Keycloak](#signed-test-tokens-and-mock-keycloak)
 - [Builders](#builders)
 - [Fixtures & Helpers](#fixtures--helpers)
 - [The Mock Store](#the-mock-store)
@@ -36,19 +37,47 @@ pub use traits::MockInboxStore;
 
 // common/src/test_utils/mod.rs
 #[cfg(feature = "test-utils")]
-pub mod auth_mock;     // mock_jwks, generate_test_token, RSA key generation
+pub mod auth_mock;     // mock JWKS, runtime RSA test key, signed tokens, mock Keycloak
 pub mod builders;
 pub mod fixtures;
 pub mod helpers;
 ```
 
-`test_utils` and `MockInboxStore` exist only when `common` is compiled for its own unit tests (`cfg(test)`) or with the **`test-utils`** feature. Downstream crates get them by enabling that feature — Barbican, for example, declares `common` a second time as a dev-dependency with `features = ["test-utils"]`, so plain `cargo test -p barbican` sees `common::test_utils` and `common::MockInboxStore` while its production build (normal dependency, `auth` only) does not. `mockall`, `rsa` and `rand` are optional dependencies enabled only by `test-utils`, which keeps them out of production dependency graphs.
+`test_utils` and `MockInboxStore` exist only when `common` is compiled for its own unit tests (`cfg(test)`) or with the **`test-utils`** feature. Downstream crates get them by enabling that feature — Barbican, for example, declares `common` a second time as a dev-dependency with `features = ["test-utils"]`, so plain `cargo test -p barbican` sees `common::test_utils` and `common::MockInboxStore` while its production build (normal dependency, `auth` only) does not. `mockall`, `rsa` (with its `getrandom` feature) and `base64` are optional dependencies enabled only by `test-utils`, which keeps them out of production dependency graphs. (`rand` is no longer a dependency of `common`.)
 
 | Feature | Enables |
 |---------|---------|
-| `auth` | JWT validation (`jsonwebtoken`, `prometheus`, `once_cell`) |
-| `test-utils` | `auth` + `test_utils` module + `MockInboxStore` (`mockall`) + `auth_mock` (`rsa`, `rand`) |
+| *(none)* | Models, `InboxStore`, errors, DB, logging, HTTP metrics; checked in CI with `cargo check -p common --no-default-features` |
+| `auth` | JWT validation, service tokens, auth metrics (`jsonwebtoken`, `prometheus`, `once_cell`) |
+| `test-utils` | `auth` + `test_utils` module + `MockInboxStore` (`mockall`) + `auth_mock` (`rsa`, `base64`) |
 | `integration-tests` | `test-utils` + the MongoDB tests in `common/tests/` |
+
+### Running `common`'s tests
+
+`cargo test -p common` compiles and runs on its own (CI runs it, after `cargo check -p common --no-default-features`, because workspace feature unification would otherwise hide feature-gating mistakes). With `-p common` no feature is enabled, so the `tests/auth/` module (gated on `auth`) is skipped; run it with:
+
+```bash
+cargo test -p common --features auth        # auth unit tests
+cargo test -p common --features test-utils  # + signed-token tests against the mock Keycloak
+```
+
+A workspace-wide `cargo test` enables `auth`/`test-utils` through the services' dependencies, so all of them run there.
+
+---
+
+## Signed test tokens and mock Keycloak
+
+`common/src/test_utils/auth_mock.rs` (feature `test-utils`) signs real RS256 JWTs so tests exercise the production validator end to end:
+
+- **Signing key**: a 2048-bit RSA key **generated at runtime** on first use and shared by the whole test process (`OnceLock`); no private key is stored in the repository. Generation adds a few seconds to each test binary that uses it. `kid` = `TEST_RSA_KID`.
+- `test_signing_jwks()` — JWKS containing the test public key.
+- `sign_test_jwt(&claims)` — sign arbitrary claims.
+- `test_claims(issuer, aud, service, roles, ttl_secs)` — standard claims with `resource_access.<service>.roles`; a negative `ttl_secs` gives an expired token.
+- `start_test_keycloak(realm).await -> TestKeycloak` — an axum server on an ephemeral port serving `GET /realms/{realm}/protocol/openid-connect/certs` and a client-credentials `POST .../token`. The token endpoint accepts only `client_secret == TEST_CLIENT_SECRET` (otherwise `401`) and returns a signed token with `sub`/`azp` = `client_id` and `aud` = `"peer"`.
+  - Fields: `base_url`, `realm`, `token_requests` (count of token requests), `token_ttl_secs` (adjustable `expires_in`, default 300), `handle`.
+  - Methods: `issuer()`, `auth_config(aud)` (an `AuthConfig` pointed at the mock), `token(aud, service, roles, ttl_secs)`.
+
+The older `mock_jwks()` / `generate_test_token()` helpers (a fixed token with a fake signature) remain.
 
 ---
 
@@ -152,7 +181,8 @@ Unit tests live in `common/src/tests/`, one file per source module, mirroring `s
 common/src/tests/
 ├── mod.rs               # declares the test submodules
 ├── adapters_tests.rs    # MongoInboxStore type/behavior checks
-├── auth/                # auth config (via from_lookup, no env mutation)/middleware/claims/JWKS tests
+├── auth/                # (feature `auth`) config (via from_lookup), middleware, claims, JWKS,
+│                        #   service_token_tests, signed_token_tests (test-utils)
 ├── config_tests.rs      # logging/shutdown utilities
 ├── db_tests.rs          # db helpers (some conditionally run)
 ├── error_tests.rs       # AppError/AppJson

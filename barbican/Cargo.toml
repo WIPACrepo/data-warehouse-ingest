@@ -23,9 +23,10 @@ axum-test = { workspace = true }
 # test compilation, so `cargo test -p barbican` (and workspace/CI test runs)
 # compile Barbican's unit tests — which use `common::test_utils`
 # builders + `common::MockInboxStore` — WITHOUT requiring an explicit
-# `--features test-utils`. The normal dependency (auth only) keeps `rsa`/
-# `rand` out of the production build (P4.7); the dev-dependency is stripped
-# from non-test builds.
+# `--features test-utils`. The normal dependency (auth only) keeps the
+# test-only crates (`rsa`, `base64`, `mockall`) out of the production build
+# (P4.7); the dev-dependency is stripped from non-test builds. Citadel uses
+# the same pattern.
 common = { workspace = true, features = ["test-utils"] }
 mockall = { workspace = true }
 serde_json = { workspace = true }

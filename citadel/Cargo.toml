@@ -40,6 +40,10 @@ uuid = { workspace = true }
 [dev-dependencies]
 mockall = { workspace = true }
 axum-test = { workspace = true }
+# Same pattern as Barbican: tests use common::test_utils (signed test JWTs,
+# mock Keycloak). Cargo unifies features for test builds only, so the
+# production graph keeps `auth` alone.
+common = { workspace = true, features = ["test-utils"] }
 
 [features]
 default = []

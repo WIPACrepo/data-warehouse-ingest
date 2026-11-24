@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::inboxes_collection;
+use crate::handlers::compensate::{Operation, codes, compensate};
 use common::Claims;
 
 use crate::error::{AppError, Result};
@@ -100,29 +101,56 @@ pub async fn delete_inbox(
     }
 
     // Transition inbox state via Barbican delete_start action
-    app_state
+    let start_result = app_state
         .barbican_client
         .delete_start(&object_id, &job_id)
-        .await
-        .map_err(|e| {
-            error!("Failed to signal delete start to Barbican: {}", e);
-            e
-        })?;
+        .await;
+    // If Barbican refused or did not answer, the inbox never left its state,
+    // so there is nothing to compensate there — but the just-inserted job row
+    // is `queued` and would count toward the in-flight quota forever. Remove
+    // it, exactly as the quota-rejection path does.
+    if let Err(e) = start_result {
+        error!("Failed to signal delete start to Barbican: {}", e);
+        rollback_job(&app_state, &job_id).await;
+        return Err(e);
+    }
 
-    // Submit job to executor (Kubernetes or Mock)
-    let executor_id = app_state.executor.submit(&job).await?;
+    // Submit job to executor (Kubernetes or Mock). The job is not running
+    // if this fails, so it is safe to compensate: inbox -> failed via
+    // Barbican, job -> failed (leaves the in-flight quota).
+    let executor_id = match app_state.executor.submit(&job).await {
+        Ok(id) => id,
+        Err(e) => {
+            compensate(
+                &app_state,
+                Operation::Delete,
+                &object_id,
+                &job_id,
+                codes::EXECUTOR_ERROR,
+                &e,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
     // Update job with executor info
     job.executor.executor_id = Some(executor_id);
     job.status = JobStatus::Running;
 
-    jobs_coll
+    // The job is already running, so a failure here must NOT compensate
+    // (that would mark a live transfer failed). Log it and still report the
+    // job as accepted; its callback updates the job by `job_id` and the
+    // status poller reconciles the rest.
+    if let Err(e) = jobs_coll
         .replace_one(mongodb::bson::doc! { "job_id": &job_id }, &job)
         .await
-        .map_err(|e| {
-            error!("Failed to update job in MongoDB: {}", e);
-            AppError::DatabaseError(format!("Failed to update job: {}", e))
-        })?;
+    {
+        error!(
+            "Job {} was submitted but recording its executor info failed: {}",
+            job_id, e
+        );
+    }
 
     info!("Created delete job {} for inbox {}", job_id, object_id);
 

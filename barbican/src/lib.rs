@@ -78,7 +78,11 @@
 //!         .await
 //!         .expect("Failed to connect to MongoDB");
 //!
-//!     serve(client, config, auth_config).await;
+//!     let citadel_token =
+//!         barbican::ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config)
+//!             .expect("Invalid Citadel service-token configuration");
+//!
+//!     serve(client, config, auth_config, citadel_token).await;
 //! }
 //! ```
 
@@ -99,7 +103,7 @@ pub mod tests;
 pub use common::{
     AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, CreateInbox,
     InboxDB, InboxStatus, InboxStore, Jwk, Jwks, JwksCache, JwtValidator, MongoInboxStore,
-    auth_middleware,
+    ServiceTokenProvider, ServiceTokenSource, auth_middleware,
 };
 pub use config::Config;
 
@@ -133,8 +137,9 @@ impl AppState {
         store: Arc<dyn InboxStore>,
         config: Config,
         auth_state: Arc<AuthMiddlewareState>,
+        citadel_token: Option<Arc<common::ServiceTokenProvider>>,
     ) -> Self {
-        let citadel_client = CitadelClient::new(&config).ok();
+        let citadel_client = CitadelClient::new(&config, citadel_token).ok();
 
         let metrics = Arc::new(
             metrics::BarbicanMetrics::new().expect("Failed to initialize Barbican metrics"),
@@ -267,8 +272,15 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 /// Serve the application on the given address
 ///
 /// `auth_config` is loaded by the caller with
-/// `AuthConfig::from_env_prefixed("BARBICAN")` (decision D10).
-pub async fn serve(client: mongodb::Client, config: Config, auth_config: AuthConfig) {
+/// `AuthConfig::from_env_prefixed("BARBICAN")` (decision D10);
+/// `citadel_token` with
+/// `ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config)`.
+pub async fn serve(
+    client: mongodb::Client,
+    config: Config,
+    auth_config: AuthConfig,
+    citadel_token: Option<common::ServiceTokenSource>,
+) {
     let listener = tokio::net::TcpListener::bind(&config.bind_address)
         .await
         .unwrap();
@@ -288,7 +300,9 @@ pub async fn serve(client: mongodb::Client, config: Config, auth_config: AuthCon
     let store = Arc::new(MongoInboxStore::new(collection));
 
     let auth_state = common::build_auth_state(&auth_config, "barbican");
-    let state = Arc::new(AppState::new(store, config, auth_state));
+    let citadel_token =
+        citadel_token.map(|source| Arc::new(common::ServiceTokenProvider::new(source)));
+    let state = Arc::new(AppState::new(store, config, auth_state, citadel_token));
     let app = create_app(state.clone());
 
     // Serve Barbican's own prometheus registry on the metrics port (P4.3).

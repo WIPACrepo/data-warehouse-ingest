@@ -80,8 +80,8 @@ This document describes the system architecture, component relationships, and mo
 | Interaction | Direction | Protocol | Auth |
 |-------------|-----------|----------|------|
 | Client → Barbican | External | HTTP/REST | JWT (user roles) |
-| Barbican → Citadel | Internal | HTTP/REST | JWT (service account) |
-| Citadel → Barbican | Internal | HTTP/REST | Bearer JWT (no role gate — D9; trust delegated to Citadel) |
+| Barbican → Citadel | Internal | HTTP/REST | Bearer JWT from Keycloak client-credentials (`BARBICAN_CITADEL_CLIENT_ID`/`_SECRET`); `aud` must contain `citadel`, role `write` |
+| Citadel → Barbican | Internal | HTTP/REST | Bearer JWT from Keycloak client-credentials (`CITADEL_BARBICAN_CLIENT_ID`/`_SECRET`); no role gate — D9; trust delegated to Citadel |
 | Barbican → MongoDB | Internal | MongoDB Wire | Native auth |
 | Citadel → MongoDB | Internal | MongoDB Wire | Native auth |
 
@@ -126,6 +126,8 @@ barbican/src/
     ├── mod.rs               # Test module exports
     ├── main_tests.rs        # Health endpoint tests
     ├── metrics_tests.rs     # Barbican metrics tests (P4.3)
+    ├── config_tests.rs      # Config defaults, overrides, malformed-number errors
+    ├── citadel_client_tests.rs # CitadelClient service token: Bearer sent, 401 refresh/retry
     ├── integration_tests.rs # Handler tests
     └── handlers/            # Per-handler tests (incl. ready_tests.rs: /ready ping 200/503)
 ```
@@ -266,7 +268,10 @@ External Request
 
 ### 6. JWT Service Account for Citadel
 
-**Decision**: Citadel authenticates to Barbican using a service account JWT.
+**Decision**: Citadel authenticates to Barbican using a service account JWT,
+obtained by Keycloak client-credentials (`CITADEL_BARBICAN_CLIENT_ID`/
+`_CLIENT_SECRET`) and refreshed by `common::ServiceTokenProvider`. (Earlier
+Citadel sent no token, so every state-transition call was rejected.)
 
 **Rationale**:
 - Consistent authentication mechanism
@@ -279,9 +284,9 @@ External Request
 **Decision**: Keycloak/JWT settings are parsed by
 `common::AuthConfig::from_env_prefixed("BARBICAN")`, not by Barbican's
 `Config`. `main.rs` loads them before connecting to MongoDB and exits on
-error; `serve(client, config, auth_config)` builds the middleware state with
-`common::build_auth_state(&auth_config, "barbican")` and passes it to
-`AppState::new(store, config, auth_state)`.
+error; `serve(client, config, auth_config, citadel_token)` builds the
+middleware state with `common::build_auth_state(&auth_config, "barbican")` and
+passes it to `AppState::new(store, config, auth_state, citadel_token)`.
 
 **Rationale**:
 - Every service validates JWTs identically (one parser, one validator)
@@ -292,6 +297,40 @@ error; `serve(client, config, auth_config)` builds the middleware state with
   instead of panicking inside `AppState::new`
 
 See [Configuration](configuration.md#keycloak-authentication).
+
+### 8. Refreshing Service Token for Citadel
+
+**Decision**: Barbican obtains its Citadel Bearer token with a Keycloak
+client-credentials grant (`BARBICAN_CITADEL_CLIENT_ID` + a secret from the
+`BARBICAN_CITADEL_CLIENT_SECRET` environment variable) through the shared
+`common::ServiceTokenProvider`, which caches the token, refreshes it 30 s
+before expiry (capped at half the lifetime) and is invalidated after a 401
+so the call is retried once. `main.rs` loads the source with
+`ServiceTokenSource::from_env("BARBICAN", "CITADEL", &auth_config)`; `serve`
+wraps it in an `Arc<ServiceTokenProvider>` passed to `CitadelClient::new`.
+
+**Rationale**:
+- The previous design read `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` once at
+  startup, so every trigger failed with 401 once that token expired.
+- The same mechanism serves Citadel → Barbican, so both directions behave
+  identically.
+- A secret in an environment variable maps directly to a Kubernetes Secret
+  (`env.valueFrom.secretKeyRef`); rotation is a pod restart.
+- The static token file remains for development only (re-read on every
+  refresh) and is rejected when `PRODUCTION=true`.
+
+See [Configuration](configuration.md#citadel-service-token).
+
+### 9. Strict Service Configuration
+
+**Decision**: `Config::default()` holds literal defaults and reads no
+environment; `Config::from_env()` overlays `BARBICAN_*` variables via
+`Config::from_lookup`, and a malformed `BARBICAN_CITADEL_API_TIMEOUT_SECS`,
+`BARBICAN_CITADEL_API_RETRY_MAX` or `BARBICAN_PROMETHEUS_PORT` is a startup
+error naming the variable (`main.rs` logs it and exits 1).
+
+**Rationale**: a typo previously fell back to the default silently; tests
+can build a `Config` without being affected by the process environment.
 
 ---
 
@@ -313,7 +352,7 @@ See [Configuration](configuration.md#keycloak-authentication).
 
 ### Failure Handling
 
-- **Retry Logic**: Citadel API calls use exponential backoff
+- **Retry Logic**: Citadel API calls retry transport failures with exponential backoff, and retry once with a fresh service token after a 401
 - **Optimistic Locking**: Handles concurrent modifications gracefully
 - **Health Endpoints**: `/health` (liveness, always 200) and `/ready` (MongoDB ping: 200 `ready` / 503 `not_ready`)
 - **Error Responses**: Structured JSON with appropriate HTTP status codes
@@ -325,10 +364,13 @@ See [Configuration](configuration.md#keycloak-authentication).
 ### Authentication Layers
 
 1. **External Clients**: JWT with user roles (read, write, admin)
-2. **Citadel Service**: Bearer JWT — **no role gate** (D9); trust is
-   delegated to Citadel, the only caller of the state-transition endpoints
-3. **MongoDB**: Native authentication and TLS
-4. **Inter-service**: Mutual TLS (recommended for production)
+2. **Citadel Service**: Bearer JWT (client-credentials service account) —
+   **no role gate** (D9); trust is delegated to Citadel, the only caller of
+   the state-transition endpoints
+3. **Barbican → Citadel**: Bearer JWT from Barbican's own service account
+   (`aud` contains `citadel`, role `write`), refreshed before expiry
+4. **MongoDB**: Native authentication and TLS
+5. **Inter-service**: Mutual TLS (recommended for production)
 
 ### Authorization Model
 

@@ -5,10 +5,7 @@
 //! - `citadel`: Long-running HTTP service
 //! - `citadel-job`: Job executor for file transfers (runs as K8s Job or local process)
 
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use axum::{Router, routing::get};
 use futures::FutureExt;
 use futures::future::Shared;
 use std::sync::Arc;
@@ -16,13 +13,11 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use citadel::config::CitadelConfig;
-use citadel::handlers;
 use citadel::integrations::barbican::{BarbicanClient, InboxTransitioner};
 use citadel::integrations::catalog::{CatalogNotifier, NoOpCatalogNotifier};
 use citadel::integrations::lta::{LtaNotifier, NoOpLtaNotifier};
 use citadel::jobs::executor::{JobExecutor, KubernetesExecutor, MockExecutor};
 use citadel::metrics::CitadelMetrics;
-use citadel::middleware::auth::auth_middleware;
 use citadel::polling::job_status::JobStatusPoller;
 use citadel::secret_reloader::{load_callback_secret, start_secret_watcher};
 use citadel::storage::manager::StorageManager;
@@ -82,8 +77,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?);
 
     // Set up Barbican client (wired with metrics for P4.4 metering)
-    let barbican_client: Arc<dyn InboxTransitioner> =
-        Arc::new(BarbicanClient::new(config.clone()).with_metrics(metrics.clone()));
+    // Service token for Barbican's internal routes (client-credentials grant,
+    // secret from CITADEL_BARBICAN_CLIENT_SECRET). None = no Authorization.
+    let barbican_token_source =
+        common::ServiceTokenSource::from_env("CITADEL", "BARBICAN", &auth_config).map_err(|e| {
+            error!("Invalid Barbican service-token configuration: {}", e);
+            e
+        })?;
+    let mut barbican = BarbicanClient::new(config.clone()).with_metrics(metrics.clone());
+    match barbican_token_source {
+        Some(source) => {
+            barbican =
+                barbican.with_token_provider(Arc::new(common::ServiceTokenProvider::new(source)));
+        }
+        None => tracing::warn!(
+            "No CITADEL_BARBICAN_CLIENT_ID/SECRET configured: calls to Barbican carry no \
+             Authorization header and will be rejected by a JWT-protected Barbican"
+        ),
+    }
+    let barbican_client: Arc<dyn InboxTransitioner> = Arc::new(barbican);
     let executor: Arc<dyn JobExecutor> = match config.job_executor {
         citadel::config::JobExecutorType::Kubernetes => {
             Arc::new(KubernetesExecutor::new(config.clone()).await?)
@@ -114,41 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         callback_secret: callback_secret.clone(),
     };
 
-    // Build router
-    let api_routes = Router::new()
-        .route(
-            "/inbox/{id}/create",
-            post(handlers::create_inbox::create_inbox),
-        )
-        .route(
-            "/inbox/{id}/publish",
-            post(handlers::publish_inbox::publish_inbox),
-        )
-        .route(
-            "/inbox/{id}/delete",
-            post(handlers::delete_inbox::delete_inbox),
-        )
-        .route("/job/{job_id}", get(handlers::get_job::get_job))
-        .route("/jobs", get(handlers::list_jobs::list_jobs))
-        .route(
-            "/job/{job_id}/cancel",
-            post(handlers::cancel_job::cancel_job),
-        )
-        .route("/job/callback", post(handlers::job_callback::job_callback))
-        .route("/job/progress", post(handlers::job_progress::job_progress))
-        .layer(axum::middleware::from_fn_with_state(
-            app_state.auth_state.clone(),
-            auth_middleware,
-        ));
-
-    // Combine routes
-    let app = Router::new()
-        // Health and readiness endpoints (no auth required)
-        .route("/health", get(handlers::health::health))
-        .route("/ready", get(handlers::ready::ready_with_client))
-        // All API routes require authentication
-        .nest("/api/v1", api_routes)
-        .with_state(app_state.clone());
+    // Build router (route layout and auth per route group: citadel::create_app)
+    let app = citadel::create_app(app_state.clone());
 
     // P1.6: Apply common logging layer (TraceLayer + TimeoutLayer)
     let app = common::router_logging_layer(app);

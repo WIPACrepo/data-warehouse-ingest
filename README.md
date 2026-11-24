@@ -68,24 +68,39 @@ cargo test-integration --workspace   # runs all crates with the integration-test
 # Equivalent explicit form
 cargo test -p citadel --features integration-tests
 cargo test -p common --features integration-tests   # implies test-utils (needed for the InboxBuilder fixtures)
+
+# Citadel compensation integration test only (MongoDB)
+cargo test -p citadel --test compensation --features integration-tests
+
+# common on its own (CI runs both)
+cargo check -p common --no-default-features
+cargo test -p common                       # auth tests skipped: no feature enabled
+cargo test -p common --features test-utils # + auth and signed-token tests
 ```
 
-> The `common` auth unit tests pass under `cargo test -p common --features auth`.
 > Auth-config tests use `AuthConfig::from_lookup` with an in-memory map, so they
-> never mutate the process environment.
+> never mutate the process environment. Signed-token tests generate a 2048-bit
+> RSA key at runtime (no key is stored in the repo), adding a few seconds per
+> test binary.
 
 ### Feature Flags
 
 - `common`:
-  - `auth` (enables JWT authentication: `jsonwebtoken`, `prometheus`, `once_cell`)
+  - `auth` (enables JWT authentication, service-to-service tokens and auth
+    metrics: `jsonwebtoken`, `prometheus`, `once_cell`)
+  - no feature (default): models, storage trait, errors, DB, logging and
+    HTTP metrics; builds with `--no-default-features`
   - `test-utils` (enables `auth` plus the `test_utils` module: builders,
-    fixtures, RSA key generation / signed test tokens, and `MockInboxStore`;
-    turns on the optional `mockall`, `rsa` and `rand` dependencies)
+    fixtures, runtime RSA signing key / signed test tokens / mock Keycloak,
+    and `MockInboxStore`; turns on the optional `mockall`, `rsa` and `base64`
+    dependencies)
   - `integration-tests` (implies `test-utils`; gates the MongoDB tests in
     `common/tests/` via `#![cfg(feature = "integration-tests")]`)
 - `citadel`:
   - `integration-tests` (bare **marker** feature — gates `#[cfg(feature =
     "integration-tests")]` tests in `tests/`; it does not enable anything else)
+  - Like Barbican, also declares `common` as a dev-dependency with
+    `test-utils` (signed test JWTs, mock Keycloak in unit tests).
 - `barbican`:
   - `integration-tests` (bare marker feature, so `cargo test-integration
     --workspace` resolves for every crate).
@@ -95,7 +110,7 @@ cargo test -p common --features integration-tests   # implies test-utils (needed
     (which use `common::test_utils` builders + `common::MockInboxStore`)
     **without needing an explicit `--features test-utils`** — per AGENTS.md,
     tests run under plain `cargo test`.
-  - The normal dependency (`auth` only) keeps `mockall`, `rsa` and `rand`
+  - The normal dependency (`auth` only) keeps `mockall`, `rsa` and `base64`
     **out of the Barbican production graph**: `MockInboxStore` is generated
     only under `cfg(any(test, feature = "test-utils"))` and `mockall` is an
     optional dependency of `common`. Check with
@@ -233,6 +248,19 @@ Issuer is `{URL}/realms/{realm}`; JWKS is
 startup with an error naming the variable. Full details:
 [Authentication](common/src/docs/auth.md).
 
+Service-to-service Bearer tokens (`common::ServiceTokenSource`, caller `{P}`,
+peer `{Q}`; Citadel uses `CITADEL_BARBICAN_*`, Barbican `BARBICAN_CITADEL_*`):
+
+| Variable | Notes |
+|----------|-------|
+| `{P}_{Q}_CLIENT_ID` | Caller's Keycloak client; client-credentials grant at the caller's realm |
+| `{P}_{Q}_CLIENT_SECRET` | From the environment (Kubernetes: `env.valueFrom.secretKeyRef`); never logged |
+| `{P}_{Q}_SERVICE_TOKEN_FILE` | Development only; rejected with `PRODUCTION=true` |
+
+Set ID and secret together, or the file, not both. With `PRODUCTION=true`
+client credentials are required. See
+[Service-to-service tokens](common/src/docs/auth.md#service-to-service-tokens).
+
 ### Upgrading
 
 Breaking configuration changes in this release:
@@ -256,10 +284,41 @@ Breaking configuration changes in this release:
   is unset.
 - **New variable:** `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` (default `30`,
   must be ≥ 1) sets how often Citadel polls Kubernetes job status.
+- **Service-to-service credentials (new).** Set `CITADEL_BARBICAN_CLIENT_ID` /
+  `CITADEL_BARBICAN_CLIENT_SECRET` (Citadel → Barbican) and
+  `BARBICAN_CITADEL_CLIENT_ID` / `BARBICAN_CITADEL_CLIENT_SECRET`
+  (Barbican → Citadel). Secrets are read from environment variables; in
+  Kubernetes, inject them from Secrets. With `PRODUCTION=true` they are
+  required, and both services fail startup if they are missing.
+- **`BARBICAN_CITADEL_SERVICE_TOKEN_FILE` is now development-only** and is
+  rejected at startup when `PRODUCTION=true`.
+- **Keycloak setup.** Add audience mappers so each caller's token contains the
+  peer's client ID in `aud` (`citadel` client → `barbican`, `barbican` client
+  → `citadel`), and grant the `barbican` service account a Citadel client role
+  from `CITADEL_REQUIRED_ROLES` (`write`).
+- **Job routes.** `POST /api/v1/job/callback` and `/api/v1/job/progress` now
+  accept either a Bearer JWT with Citadel `admin` or (with no
+  `Authorization` header) the callback secret + timestamp + nonce used by
+  `citadel-job`. Previously the JWT layer rejected `citadel-job` callbacks.
+- **Malformed numbers fail startup.** Barbican
+  (`BARBICAN_CITADEL_API_TIMEOUT_SECS`, `BARBICAN_CITADEL_API_RETRY_MAX`,
+  `BARBICAN_PROMETHEUS_PORT`) and the `citadel-job` pod
+  (`CITADEL_TRANSFER_PARALLELISM`, `CITADEL_TRANSFER_CHUNK_SIZE_MB`,
+  `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS`,
+  `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS`) now exit with an error naming the
+  variable instead of silently using the default.
+- **Compensation.** When a create/publish/delete fails after Barbican's
+  `*/start` transition (storage error, executor submission failure, Barbican
+  rejecting the completing transition), Citadel calls Barbican's
+  `*/failure` so the inbox becomes `failed` instead of staying
+  `creating`/`publishing`/`deleting`; for publish/delete it also marks the
+  job `failed` so it leaves the in-flight quota. Compensation is best-effort
+  and the original error is still returned.
 
 ## Testing
 
 - Unit tests: `cargo test`
+- `common` alone: `cargo test -p common` (add `--features test-utils` for the auth tests)
 - Integration tests: `cargo test-integration` (alias defined in `.cargo/config.toml`; requires MongoDB)
 - Integration tests for one crate: `cargo test -p common --features integration-tests`
   (`integration-tests` implies `test-utils` in `common`)
@@ -273,6 +332,7 @@ See [Testing Guide](common/src/docs/testing.md).
 The CI pipeline (`.github/workflows/ci.yaml`) runs:
 `cargo machete`, `cargo fmt -- --check`, `cargo clippy -- --deny warnings`,
 `cargo verify-project`, `cargo doc --no-deps`, `cargo build`,
+`cargo check -p common --no-default-features`, `cargo test -p common`,
 `cargo test-integration`, and `cargo tarpaulin`
 (with a `mongo:8.0` service container for tests).
 

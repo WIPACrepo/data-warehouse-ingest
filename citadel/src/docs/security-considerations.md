@@ -158,7 +158,7 @@ untouched); an existing *empty* directory is removed and replaced.
 
 ## Job Callback Replay Protection
 
-The transfer result reaches Citadel via `citadel-job` → `POST /api/v1/job/callback` (terminal result) and `POST /api/v1/job/progress` (periodic counts). Both are protected against replay by the same checks in [`handlers/job_callback.rs`](../handlers/job_callback.rs):
+The transfer result reaches Citadel via `citadel-job` → `POST /api/v1/job/callback` (terminal result) and `POST /api/v1/job/progress` (periodic counts). Both routes accept two credentials (D11, [`middleware/job_auth.rs`](../middleware/job_auth.rs)): a Bearer JWT with Citadel `admin` (manual operator action; the JWT signature and `exp` are its replay protection, and the caller's `sub` is logged), or — with **no** `Authorization` header — the worker credentials below. A present `Authorization` header is authoritative: an invalid (`401`) or non-admin (`403`) token is rejected even if a valid `X-Callback-Secret` accompanies it, so a leaked low-privilege JWT cannot be combined with the secret. On the worker path, both routes are protected against replay by the same checks in [`handlers/job_callback.rs`](../handlers/job_callback.rs) (`timestamp` and `nonce` are mandatory there; missing → `401 auth_error`):
 
 | Check | Rule |
 |-------|------|
@@ -170,7 +170,7 @@ The transfer result reaches Citadel via `citadel-job` → `POST /api/v1/job/call
 
 > **Fixed defect**: previously the worker captured one timestamp and nonce when it started (`JobConfig::from_env`) and reused them for the completion callback and its retries. Any job running longer than 5 minutes therefore had its callback rejected as `callback_timestamp_expired`, and a retry reused an already-stored nonce. The Kubernetes executor also injected `CITADEL_CALLBACK_TIMESTAMP` / `CITADEL_CALLBACK_NONCE`, which the worker never read. The executor no longer sets these variables ([`jobs/executor/kubernetes.rs`](../jobs/executor/kubernetes.rs)).
 
-**Residual risk:** a captured request cannot be replayed verbatim: while its nonce row is live it is rejected as reused, and the row is stored at receipt (≥ the request timestamp) with a 300 s expiry, so by the time it expires the timestamp is outside the window. An attacker who holds the shared secret can of course mint new requests. Confidentiality of the request (TLS / in-cluster network policy) is still required to protect the shared secret.
+**Residual risk:** a captured request cannot be replayed verbatim: while its nonce row is live it is rejected as reused, and the row is stored at receipt (≥ the request timestamp) with a 300 s expiry, so by the time it expires the timestamp is outside the window. An attacker who holds the shared secret can of course mint new requests. Confidentiality of the request (TLS / in-cluster network policy) is still required to protect the shared secret. Any holder of a Citadel `admin` JWT can also report job results; protect that role accordingly.
 
 ## Accepted Risks
 

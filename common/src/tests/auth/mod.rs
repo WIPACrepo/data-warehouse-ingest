@@ -8,3 +8,5 @@ pub mod config_tests;
 pub mod jwt_validator_tests;
 #[cfg(test)]
 pub mod middleware_tests;
+mod service_token_tests;
+mod signed_token_tests;

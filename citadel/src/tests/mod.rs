@@ -2,6 +2,13 @@
 
 pub mod test_utils;
 
+#[cfg(test)]
+mod barbican_client_tests;
+#[cfg(test)]
+mod compensate_tests;
+#[cfg(test)]
+mod job_auth_tests;
+
 /// Test the transfer module end-to-end
 #[cfg(test)]
 mod transfer_tests {

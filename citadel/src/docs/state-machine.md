@@ -28,7 +28,7 @@ This document focuses on the job lifecycle (fully owned by Citadel) and describe
 
 ## Job Statuses
 
-Defined in [`jobs/types.rs`](../src/jobs/types.rs):
+Defined in [`jobs/types.rs`](../jobs/types.rs):
 
 ```rust
 pub enum JobStatus {
@@ -49,7 +49,7 @@ pub enum JobStatus {
 | `Queued` | Record inserted into `jobs`; not yet handed to an executor | No |
 | `Running` | Executor accepted the job (`executor_id` set) | No |
 | `Completed` | Callback with `status=completed` and `result.success=true` | Yes |
-| `Failed` | Callback failure, failed submission, or rejected completion | Yes |
+| `Failed` | Callback failure, failed submission (compensation), or rejected completion | Yes |
 | `Cancelling` | `POST /job/{id}/cancel`; not yet finished | No |
 | `Cancelled` | Cancellation completed | Yes |
 | `TimedOut` | Callback with `status=timed_out`, or the job-status poller (`detect_timed_out_jobs`) finding a `queued`/`running` job older than `CITADEL_JOB_MAX_DURATION_SECS` | Yes |
@@ -100,21 +100,21 @@ For a visual of the *inbox* state machine (owned by Barbican), see [Barbican Sta
 
 ### Queued → Running
 
-Where: [`handlers/publish_inbox.rs`](../src/handlers/publish_inbox.rs) and [`handlers/delete_inbox.rs`](../src/handlers/delete_inbox.rs).
+Where: [`handlers/publish_inbox.rs`](../handlers/publish_inbox.rs) and [`handlers/delete_inbox.rs`](../handlers/delete_inbox.rs).
 
 1. `JobDB::new` creates the record with `status = Queued`
 2. `jobs_collection.insert_one(&job)`
 3. Quota check: `count_documents` over `[queued, running, cancelling]` jobs of the same type; at/above `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` (10) / `CITADEL_QUEUE_DELETE_RATE_LIMIT` (20) → roll back the JobDB and return `429 Too Many Requests` (D8)
 4. Barbican inbox transition to `publishing` / `deleting`
-5. `app_state.executor.submit(&job)` returns an `executor_id`
+5. `app_state.executor.submit(&job)` returns an `executor_id` — on failure the job goes **Queued → Failed** via compensation (see [Job Submission Failures](#job-submission-failures))
 6. `job.executor.executor_id = Some(executor_id)`; `job.status = Running`
-7. `jobs_collection.replace_one(...)`
+7. `jobs_collection.replace_one(...)` — a failure here is only logged; the request still returns `202` because the job is already running
 
 > **Note**: Queue admission is enforced by a **MongoDB-backed in-flight count** (no semaphore): the `JobQueue`/`JobProcessor` modules were removed (they had no callers). The counter is the source of truth for both submit paths.
 
 ### Running → Completed
 
-Where: [`handlers/job_callback.rs`](../src/handlers/job_callback.rs).
+Where: [`handlers/job_callback.rs`](../handlers/job_callback.rs).
 
 - Callback received with `status = "completed"` and `result.success == true`
 - `job.status = Completed`
@@ -140,7 +140,7 @@ Where: [`handlers/job_callback.rs`](../src/handlers/job_callback.rs).
 
 ### Running → Cancelling → Cancelled
 
-Where: [`handlers/cancel_job.rs`](../src/handlers/cancel_job.rs).
+Where: [`handlers/cancel_job.rs`](../handlers/cancel_job.rs).
 
 1. Validate the job isn't in a terminal state (`completed`, `cancelled`, `failed`, `timed_out`) and isn't already `cancelling`
 2. `job.status = Cancelling`; persist
@@ -151,7 +151,7 @@ Where: [`handlers/cancel_job.rs`](../src/handlers/cancel_job.rs).
 
 ## Job Type Checklist
 
-Jobs are tagged with a type in `JobType` (from [`jobs/types.rs`](../src/jobs/types.rs)):
+Jobs are tagged with a type in `JobType` (from [`jobs/types.rs`](../jobs/types.rs)):
 
 | Job Type | Flags | Purpose |
 |----------|-------|---------|
@@ -179,9 +179,9 @@ Citadel calls `InboxTransitioner` methods ([`integrations/barbican.rs`](../integ
 
 | Caller | `InboxTransitioner` call(s) | Inbox state (Barbican) |
 |--------|-----------------------------|------------------------|
-| `create_inbox` | `create_start`, then `create_complete` after mkdir | `Active` → `Creating` → `Ready` |
-| `publish_inbox` | `publish_start` | `Ready` → `Publishing` |
-| `delete_inbox` | `delete_start` | `Ready`/`Failed` → `Deleting` |
+| `create_inbox` | `create_start`, then `create_complete` after mkdir; `create_failure` on mkdir/`create_complete` failure | `Active` → `Creating` → `Ready` (or `Failed`) |
+| `publish_inbox` | `publish_start`; `publish_failure` if submission fails | `Ready` → `Publishing` (or `Failed`) |
+| `delete_inbox` | `delete_start`; `delete_failure` if submission fails | `Ready`/`Failed` → `Deleting` (or `Failed`) |
 | `job_progress` | `publish_progress` / `delete_progress` | unchanged |
 | `job_callback` | `publish_complete`/`publish_failure`, `delete_complete`/`delete_failure` | `Published` / `Deleted` / `Failed` |
 
@@ -221,21 +221,27 @@ producer and all copy workers; any threshold-reaching error cancels it and
 all in-flight work exits gracefully. `Cancelled` is never reported as a
 failure cause — only the underlying errors are.
 
-### Job Submission Failures
+### Job Submission Failures (compensation)
 
-- If `executor.submit()` fails, handlers return the error; the job record may remain at `queued`/`running` (caller/operator intervention or a future poller reconciles).
+[`handlers/compensate.rs`](../handlers/compensate.rs) undoes a `*/start` transition when the operation cannot proceed:
+
+- **Publish / delete**: if `executor.submit()` fails, Citadel calls Barbican `publish_failure` / `delete_failure` with `executor_error` (inbox → `Failed`) **and** sets the job document to `failed` with an error entry, so it no longer counts toward the in-flight quota.
+- **Create**: if the directory cannot be created (`storage_error`) or `create_complete` fails (`barbican_error`), Citadel calls `create_failure` (inbox → `Failed`). The directory is kept; creation is idempotent, so a retry reuses it.
+- Compensation is **best-effort**: its own failures are logged, never raised, and the handler returns the original error.
+- It never runs once the job may be running: after a successful `submit`, a failure to record the executor info is only logged (the callback and the job-status poller reconcile the job).
 
 ### Barbican Coordination Failures
 
 - Every `InboxTransitioner` call retries with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` retries (default 5), backoff doubling from `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS`, capped at 30 s
 - A **409 conflict** fails immediately (no retry)
 - After `RETRY_MAX` consecutive failed calls the client's circuit breaker opens and calls fail fast with `503 service_unavailable` for 30 s (see [Barbican Integration](barbican-integration.md#circuit-breaker))
-- The `jobs` record is inserted before the Barbican `publish_start`/`delete_start` call; if that call fails the handler returns the error and the job row is left at `queued` (the target behavior is to "fail job immediately" — not yet implemented)
+- The `jobs` record is inserted before the Barbican `publish_start`/`delete_start` call; if that call fails the handler deletes the job row (`rollback_job`, the same path as a quota rejection) and returns the error. The inbox never left its state, so no `*_failure` is sent, and the row cannot leak into the in-flight quota (tested in `citadel/tests/compensation.rs`)
 
 ### Callback Handling
 
 - Timestamp must be less than 300 s old and no more than 60 s in the future; `citadel-job` mints a fresh timestamp + nonce for every send attempt, so job duration does not matter
 - Nonces must be unique; duplicates are rejected as `CallbackNonceReused`
+- These checks apply to the `citadel-job` worker (no `Authorization` header). A caller with a Citadel `admin` JWT skips them (D11; see [Job Route Security](authentication.md#job-route-security))
 - Callbacks for already-terminal jobs are acknowledged but ignored
 - Unknown callback `status` values are rejected
 

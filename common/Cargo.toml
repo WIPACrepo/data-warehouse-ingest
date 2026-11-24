@@ -7,6 +7,7 @@ edition = "2024"
 async-trait = { workspace = true }
 axum = { workspace = true }
 axum-prometheus = { workspace = true }
+base64 = { workspace = true, optional = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 jsonwebtoken = { workspace = true, optional = true }
@@ -14,9 +15,9 @@ mockall = { workspace = true, optional = true }
 mongodb = { workspace = true }
 once_cell = { workspace = true, optional = true }
 prometheus = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
 reqwest = { workspace = true }
-rsa = { workspace = true, optional = true }
+# `getrandom` gives rsa its own OsRng (rand_core 0.6) for test-key generation.
+rsa = { workspace = true, optional = true, features = ["getrandom"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -30,7 +31,7 @@ default = []
 auth = ["dep:jsonwebtoken", "dep:prometheus", "dep:once_cell"]
 # Integration tests use the test_utils builders, so they imply test-utils.
 integration-tests = ["test-utils"]
-test-utils = ["auth", "dep:rsa", "dep:rand", "dep:mockall"]
+test-utils = ["auth", "dep:rsa", "dep:base64", "dep:mockall"]
 
 [dev-dependencies]
 # For `cfg(test)` automock of InboxStore in common's own unit tests.
@@ -38,6 +39,7 @@ mockall = { workspace = true }
 tower = { workspace = true }
 
 [package.metadata.cargo-machete]
-# rsa/rand/mockall are used only under the `test-utils` feature (auth_mock.rs,
-# RSA keygen, MockInboxStore); cargo-machete cannot see feature-gated usage.
-ignored = ["rsa", "rand", "mockall"]
+# rsa/base64/mockall are used only under the `test-utils` feature (runtime RSA
+# test-key generation + JWK encoding, MockInboxStore); cargo-machete cannot see
+# feature-gated usage.
+ignored = ["rsa", "base64", "mockall"]

@@ -299,25 +299,52 @@ BARBICAN_REQUIRED_ROLES=read,write
 
 ## Service Accounts
 
-### Citadel Service Account
+Both directions between Barbican and Citadel use Keycloak service accounts.
+Tokens are obtained and refreshed by the shared `common::ServiceTokenProvider`
+(`common/src/auth/service_token.rs`; see
+[`common/src/docs/auth.md`](../../../common/src/docs/auth.md)).
 
-Citadel authenticates to Barbican using a service account (any valid Bearer
-token — no role requirement, D9):
+### Citadel → Barbican
 
-**Setup:**
-1. Create service account in Keycloak
-2. Generate JWT token (or use client credentials grant)
-3. Store token in file referenced by `BARBICAN_CITADEL_SERVICE_TOKEN_FILE`
+Citadel sends a Bearer token to Barbican's internal
+`*/{start,progress,complete,failure}` routes (configured on Citadel's side
+with `CITADEL_BARBICAN_CLIENT_ID`/`CITADEL_BARBICAN_CLIENT_SECRET`). Barbican
+requires only a valid JWT — no role (D9) — whose `aud` contains
+`BARBICAN_KEYCLOAK_CLIENT_ID` (default `barbican`).
 
-**Token File:**
+### Barbican → Citadel
+
+Barbican calls Citadel's role-gated inbox routes (`POST
+/api/v1/inbox/{id}/{create,publish,delete}`), so it needs its own service
+token:
+
+**Setup (Keycloak):**
+1. Enable *Service accounts* (client-credentials) on the `barbican` client.
+2. Add an audience mapper so the token's `aud` contains `citadel`.
+3. Grant the `barbican` service account Citadel's `write` role (one of
+   `CITADEL_REQUIRED_ROLES`).
+
+**Configuration:**
 ```bash
-BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/etc/barbican/citadel-token.jwt
+BARBICAN_CITADEL_CLIENT_ID=barbican
+BARBICAN_CITADEL_CLIENT_SECRET=...  # env var; in Kubernetes via env.valueFrom.secretKeyRef
 ```
 
-**Token Refresh:**
-- Citadel is responsible for refreshing its token
-- Barbican validates token on each request
-- Expired tokens return 401 Unauthorized
+- Barbican POSTs `grant_type=client_credentials` to
+  `{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/token`.
+- The token is cached and refreshed 30 s before expiry (margin capped at half
+  the lifetime).
+- On a 401 from Citadel, Barbican drops the cached token and retries once.
+- Rotating the secret requires a pod restart.
+- `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` (a pre-issued JWT, re-read on every
+  refresh) is a development-only alternative; it is rejected when
+  `PRODUCTION=true`, as is configuring neither mode. Setting both modes, or
+  an ID without a secret (or vice versa), is a startup error.
+
+> **Changed:** previously `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` was read once
+> at startup, so every Citadel call failed with 401 once that token expired.
+
+See [Configuration → Citadel service token](configuration.md#citadel-service-token).
 
 ### External Client Service Accounts
 
@@ -412,7 +439,8 @@ Barbican has no auth code of its own: everything lives in `common::auth`
 let auth_config = AuthConfig::from_env_prefixed("BARBICAN")?; // BARBICAN_KEYCLOAK_*, ...
 // lib.rs::serve
 let auth_state = common::build_auth_state(&auth_config, "barbican");
-let state = Arc::new(AppState::new(store, config, auth_state));
+let citadel_token = citadel_token.map(|s| Arc::new(ServiceTokenProvider::new(s)));
+let state = Arc::new(AppState::new(store, config, auth_state, citadel_token));
 ```
 
 `create_app` derives a second `AuthMiddlewareState` for the internal
@@ -472,8 +500,9 @@ state with `common::build_auth_state(&auth_config, "barbican")`.
 | `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms; `HS*` and `none` rejected |
 | `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval (minimum 60) |
 | `BARBICAN_TOKEN_LEEWAY_MS` | `5000` | Clock-skew leeway for `exp`/`nbf` (maximum 60000) |
-| `PRODUCTION` *(global)* | unset | `true` rejects the localhost default `BARBICAN_KEYCLOAK_URL` |
-| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to the Citadel service token used for Barbican → Citadel triggers (read by `Config`, not `AuthConfig`) |
+| `PRODUCTION` *(global)* | unset | `true` rejects the localhost default `BARBICAN_KEYCLOAK_URL` and requires `BARBICAN_CITADEL_CLIENT_ID`/`_CLIENT_SECRET` |
+| `BARBICAN_CITADEL_CLIENT_ID` / `BARBICAN_CITADEL_CLIENT_SECRET` | *(unset)* | Barbican → Citadel service-account credentials (read by `ServiceTokenSource::from_env`, not `AuthConfig`); required when `PRODUCTION=true` |
+| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(unset)* | Development-only static Citadel token, re-read on every refresh |
 
 Malformed numbers are a startup error naming the variable. Derived values:
 issuer `{URL}/realms/{realm}`, JWKS `{URL}/realms/{realm}/protocol/openid-connect/certs`.
@@ -505,8 +534,9 @@ export BARBICAN_TOKEN_LEEWAY_MS="5000"
 # Roles
 export BARBICAN_REQUIRED_ROLES="read,write"
 
-# Citadel Integration
-export BARBICAN_CITADEL_SERVICE_TOKEN_FILE="/etc/barbican/citadel.jwt"
+# Citadel Integration (secret injected from a Kubernetes Secret)
+export BARBICAN_CITADEL_CLIENT_ID="barbican"
+export BARBICAN_CITADEL_CLIENT_SECRET="..."
 ```
 
 ---

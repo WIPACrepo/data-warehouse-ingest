@@ -8,17 +8,17 @@ This directory contains comprehensive documentation for the Citadel crate, organ
 
 | File | Size | Purpose |
 |------|------|---------|
-| [`README.md`](README.md) | ~8.9 KB | Main index with quick start guide and overview |
-| [`architecture.md`](architecture.md) | ~25.4 KB | System architecture, component diagram, module structure |
-| [`api-reference.md`](api-reference.md) | ~15.0 KB | Complete HTTP API endpoint documentation |
-| [`state-machine.md`](state-machine.md) | ~12.3 KB | Job lifecycle, statuses, and inbox state coordination |
-| [`authentication.md`](authentication.md) | ~14.8 KB | JWT validation, roles, and callback security |
-| [`barbican-integration.md`](barbican-integration.md) | ~10.3 KB | Frontend service coordination |
-| [`configuration.md`](configuration.md) | ~18.5 KB | Environment variables and settings |
-| [`development.md`](development.md) | ~13.7 KB | Building, testing, and extending Citadel |
-| [`recursive-transfer.md`](recursive-transfer.md) | ~21.0 KB | Recursive transfer engine, symlink safety, atomic commit, error collection |
-| [`symlink-limitations.md`](symlink-limitations.md) | ~9.2 KB | Symlink edge cases, bind mounts, TOCTOU, accepted risks |
-| [`security-considerations.md`](security-considerations.md) | ~15.4 KB | Threat model, hardening guide, incident response, compliance |
+| [`README.md`](README.md) | ~9.3 KB | Main index with quick start guide and overview |
+| [`architecture.md`](architecture.md) | ~30.5 KB | System architecture, component diagram, module structure |
+| [`api-reference.md`](api-reference.md) | ~20.8 KB | Complete HTTP API endpoint documentation |
+| [`state-machine.md`](state-machine.md) | ~16.0 KB | Job lifecycle, statuses, and inbox state coordination |
+| [`authentication.md`](authentication.md) | ~23.2 KB | JWT validation, roles, job-route security, Barbican service token |
+| [`barbican-integration.md`](barbican-integration.md) | ~18.4 KB | Frontend service coordination |
+| [`configuration.md`](configuration.md) | ~26.1 KB | Environment variables and settings |
+| [`development.md`](development.md) | ~16.1 KB | Building, testing, and extending Citadel |
+| [`recursive-transfer.md`](recursive-transfer.md) | ~22.4 KB | Recursive transfer engine, symlink safety, atomic commit, error collection |
+| [`symlink-limitations.md`](symlink-limitations.md) | ~9.5 KB | Symlink edge cases, bind mounts, TOCTOU, accepted risks |
+| [`security-considerations.md`](security-considerations.md) | ~18.7 KB | Threat model, hardening guide, incident response, compliance |
 
 ### Module Files
 
@@ -65,14 +65,16 @@ citadel/src/docs/
 │   ├── Token Validation
 │   ├── JWKS Management
 │   ├── Role-Based Access Control
-│   ├── Callback Security
+│   ├── Job Route Security (admin JWT or callback secret, D11)
+│   ├── Outbound: Citadel → Barbican Service Token
 │   └── Security Considerations
 │
 ├── barbican-integration.md      # Frontend coordination
 │   ├── Coordination Model
 │   ├── Barbican API Client
+│   ├── Authentication to Barbican
 │   ├── Retry Strategy
-│   ├── Inbox State Ownership
+│   ├── Inbox State Ownership (incl. Compensation)
 │   └── Error Handling
 │
 ├── configuration.md             # Settings
@@ -192,6 +194,8 @@ citadel/src/docs/
 - Adding features → Update [`development.md`](development.md) and relevant docs
 - Changing architecture → Update [`architecture.md`](architecture.md)
 - Changing the transfer engine or symlink handling → Update [`recursive-transfer.md`](recursive-transfer.md), [`symlink-limitations.md`](symlink-limitations.md), and [`security-considerations.md`](security-considerations.md)
+- Changing route authentication (`create_app`, `middleware/job_auth.rs`) or the Barbican service token → Update [`authentication.md`](authentication.md), [`api-reference.md`](api-reference.md), and [`configuration.md`](configuration.md)
+- Changing compensation (`handlers/compensate.rs`) → Update [`barbican-integration.md`](barbican-integration.md#compensation) and [`state-machine.md`](state-machine.md)
 - Changing security posture / hardening defaults → Update [`security-considerations.md`](security-considerations.md) and [`configuration.md`](configuration.md)
 
 ### Review Process
