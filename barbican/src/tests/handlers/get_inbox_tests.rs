@@ -39,7 +39,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -72,7 +72,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -113,7 +113,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -170,7 +170,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )

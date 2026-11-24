@@ -30,10 +30,8 @@ mod tests {
             leeway_ms: 5000,
         };
 
+        // Construction must succeed (no panic) with an RS256-only allow-list.
         let _validator = JwtValidator::new(jwks_cache, config);
-
-        // Verify validator was created successfully
-        assert!(true);
     }
 
     #[test]
@@ -53,11 +51,9 @@ mod tests {
             leeway_ms: 5000,
         };
 
+        // Construction must succeed (no panic). Actual validation is covered
+        // by the test-utils RSA token tests.
         let _validator = JwtValidator::new(jwks_cache.clone(), config);
-
-        // Verify validator has the expected fields
-        // (We can't easily test actual validation without generating real JWTs)
-        assert!(true);
     }
 
     #[tokio::test]

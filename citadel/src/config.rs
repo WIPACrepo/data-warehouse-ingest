@@ -73,14 +73,9 @@ pub struct CitadelConfig {
     pub mongodb_uri: String,
     pub mongodb_database: String,
 
-    // Keycloak / JWT
-    pub keycloak_url: String,
-    pub keycloak_realm: String,
-    pub keycloak_client_id: String,
-    pub keycloak_client_secret: String,
-    pub required_roles: Vec<String>,
-    pub allowed_algorithms: Vec<String>,
-    pub jwks_refresh_secs: u64,
+    // Keycloak / JWT settings are *not* parsed here: they are loaded by
+    // `common::AuthConfig::from_env_prefixed("CITADEL")` (decision D10), which
+    // reads `CITADEL_KEYCLOAK_*`, `CITADEL_REQUIRED_ROLES`, etc.
 
     // Job execution
     pub job_executor: JobExecutorType,
@@ -110,7 +105,12 @@ pub struct CitadelConfig {
     pub barbican_api_timeout_secs: u64,
 
     // Polling intervals
+    /// Worker-side: how often `citadel-job` re-reads the inbox document to
+    /// bail out of a cancelled/deleted inbox (passed to the job pod).
     pub job_metadata_poll_interval_secs: u64,
+    /// Service-side: cadence of the background K8s job-status poller
+    /// (`polling/job_status.rs`). `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS`.
+    pub job_status_poll_interval_secs: u64,
     pub progress_update_interval_secs: u64,
 
     // Queue rate limits
@@ -139,13 +139,6 @@ impl Default for CitadelConfig {
             protected_base_path: PathBuf::from("./data/protected"),
             mongodb_uri: "mongodb://localhost:27017".to_string(),
             mongodb_database: "data_warehouse".to_string(),
-            keycloak_url: "http://localhost:8080".to_string(),
-            keycloak_realm: "data-warehouse".to_string(),
-            keycloak_client_id: "citadel".to_string(),
-            keycloak_client_secret: String::new(),
-            required_roles: vec!["read".to_string(), "write".to_string()],
-            allowed_algorithms: vec!["RS256".to_string()],
-            jwks_refresh_secs: 60,
             job_executor: JobExecutorType::Kubernetes,
             kube_config_path: None,
             kube_namespace: "citadel-jobs".to_string(),
@@ -161,6 +154,7 @@ impl Default for CitadelConfig {
             barbican_api_retry_backoff_ms: 1000,
             barbican_api_timeout_secs: 10,
             job_metadata_poll_interval_secs: 15,
+            job_status_poll_interval_secs: 30,
             progress_update_interval_secs: 30,
             queue_publish_rate_limit: 10,
             queue_delete_rate_limit: 20,
@@ -203,29 +197,6 @@ impl CitadelConfig {
         }
         if let Ok(val) = std::env::var("CITADEL_MONGODB_DATABASE") {
             config.mongodb_database = val;
-        }
-        if let Ok(val) = std::env::var("CITADEL_KEYCLOAK_URL") {
-            config.keycloak_url = val;
-        }
-        if let Ok(val) = std::env::var("CITADEL_KEYCLOAK_REALM") {
-            config.keycloak_realm = val;
-        }
-        if let Ok(val) = std::env::var("CITADEL_KEYCLOAK_CLIENT_ID") {
-            config.keycloak_client_id = val;
-        }
-        if let Ok(val) = std::env::var("CITADEL_KEYCLOAK_CLIENT_SECRET") {
-            config.keycloak_client_secret = val;
-        }
-        if let Ok(val) = std::env::var("CITADEL_REQUIRED_ROLES") {
-            config.required_roles = val.split(',').map(|s| s.trim().to_string()).collect();
-        }
-        if let Ok(val) = std::env::var("CITADEL_ALLOWED_ALGORITHMS") {
-            config.allowed_algorithms = val.split(',').map(|s| s.trim().to_string()).collect();
-        }
-        if let Ok(val) = std::env::var("CITADEL_JWKS_REFRESH_SECS") {
-            config.jwks_refresh_secs = val.parse().map_err(|_| {
-                ConfigError::InvalidValue("CITADEL_JWKS_REFRESH_SECS".to_string(), val)
-            })?;
         }
         if let Ok(val) = std::env::var("CITADEL_JOB_EXECUTOR") {
             config.job_executor = match val.to_lowercase().as_str() {
@@ -288,6 +259,9 @@ impl CitadelConfig {
                     val,
                 )
             })?;
+        }
+        if let Ok(val) = std::env::var("CITADEL_JOB_STATUS_POLL_INTERVAL_SECS") {
+            config.job_status_poll_interval_secs = parse_job_status_poll_interval(&val)?;
         }
         if let Ok(val) = std::env::var("CITADEL_PROGRESS_UPDATE_INTERVAL_SECS") {
             config.progress_update_interval_secs = val.parse().map_err(|_| {
@@ -404,19 +378,6 @@ impl CitadelConfig {
         Ok(config)
     }
 
-    /// Get the JWKS endpoint URL
-    pub fn jwks_url(&self) -> String {
-        format!(
-            "{}/auth/realms/{}/protocol/openid-connect/certs",
-            self.keycloak_url, self.keycloak_realm
-        )
-    }
-
-    /// Get the issuer for JWT validation
-    pub fn jwt_issuer(&self) -> String {
-        format!("{}/auth/realms/{}", self.keycloak_url, self.keycloak_realm)
-    }
-
     /// Environment variables that carry the warehouse base path and inbox
     /// security settings to job executors (citadel-job).
     ///
@@ -495,6 +456,18 @@ fn parse_bool(val: &str) -> Result<bool, ConfigError> {
         "false" | "0" | "no" | "off" => Ok(false),
         _ => Err(ConfigError::InvalidValue(
             "boolean".to_string(),
+            val.to_string(),
+        )),
+    }
+}
+
+/// Parse `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS`: a positive integer (a zero
+/// interval would make `tokio::time::interval` panic).
+pub(crate) fn parse_job_status_poll_interval(val: &str) -> Result<u64, ConfigError> {
+    match val.trim().parse::<u64>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(ConfigError::InvalidValue(
+            "CITADEL_JOB_STATUS_POLL_INTERVAL_SECS".to_string(),
             val.to_string(),
         )),
     }

@@ -53,6 +53,7 @@ barbican/src/docs/
 │   ├── External Endpoints
 │   ├── Internal Endpoints
 │   ├── Authentication
+│   ├── Health Endpoints (/health, /ready)
 │   ├── Error Responses
 │   └── Rate Limiting
 │
@@ -77,7 +78,7 @@ barbican/src/docs/
 │
 ├── configuration.md             # Settings
 │   ├── Required Configuration
-│   ├── Environment Variables
+│   ├── Environment Variables (service: Config; auth: AuthConfig, D10)
 │   ├── Example Configurations
 │   └── Validation Rules
 │

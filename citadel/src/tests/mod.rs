@@ -1693,3 +1693,47 @@ mod progress_wiring_tests {
         }
     }
 }
+
+/// Config parsing (REVIEW #1/#3): auth settings live in common, the
+/// job-status poller interval is its own knob.
+#[cfg(test)]
+mod config_tests {
+    use crate::config::{CitadelConfig, parse_job_status_poll_interval};
+
+    #[test]
+    fn test_job_status_poll_interval_default_is_30() {
+        assert_eq!(CitadelConfig::default().job_status_poll_interval_secs, 30);
+    }
+
+    #[test]
+    fn test_job_status_poll_interval_is_distinct_from_metadata_interval() {
+        let c = CitadelConfig::default();
+        assert_eq!(c.job_metadata_poll_interval_secs, 15);
+        assert_ne!(
+            c.job_status_poll_interval_secs,
+            c.job_metadata_poll_interval_secs
+        );
+    }
+
+    #[test]
+    fn test_parse_job_status_poll_interval() {
+        assert_eq!(parse_job_status_poll_interval("45").unwrap(), 45);
+        assert_eq!(parse_job_status_poll_interval(" 5 ").unwrap(), 5);
+        assert!(parse_job_status_poll_interval("0").is_err());
+        assert!(parse_job_status_poll_interval("-1").is_err());
+        assert!(parse_job_status_poll_interval("soon").is_err());
+    }
+
+    /// Citadel's auth settings are read with the CITADEL prefix by common.
+    #[test]
+    fn test_citadel_auth_prefix() {
+        let cfg = common::AuthConfig::from_lookup("CITADEL", |name| match name {
+            "CITADEL_KEYCLOAK_URL" => Some("https://kc.example.com".into()),
+            "CITADEL_KEYCLOAK_REALM" => Some("r".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.issuer(), "https://kc.example.com/realms/r");
+        assert_eq!(cfg.audience(), "citadel");
+    }
+}

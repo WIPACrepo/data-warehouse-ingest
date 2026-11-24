@@ -35,7 +35,7 @@ pub fn from_env() -> Result<Self, ConfigError> {
 }
 ```
 
-> **Note**: Unlike Barbican, Citadel's `from_env` does not validate required values in code; missing `CITADEL_KEYCLOAK_CLIENT_SECRET` simply leaves the default empty string. Set it in production.
+> **Note**: `CitadelConfig::from_env` holds only non-auth settings; a malformed numeric value (e.g. `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS=0`) is a startup error naming the variable. Authentication settings are parsed separately by `common::AuthConfig::from_env_prefixed("CITADEL")` in `main.rs` (decision D10) — see [Keycloak Authentication](#keycloak-authentication).
 
 ---
 
@@ -96,34 +96,41 @@ CITADEL_MONGODB_DATABASE=data_warehouse
 
 ## Keycloak Authentication
 
+Auth parsing lives in `common` ([`common/src/auth/config.rs`](../../../common/src/auth/config.rs), decision D10) so Barbican and Citadel validate JWTs identically, but each service owns its variable prefix. `main.rs` calls `AuthConfig::from_env_prefixed("CITADEL")` and then `common::build_auth_state(&cfg, "citadel")`. `CitadelConfig` has **no** auth fields.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server URL |
+| `CITADEL_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak base URL **including any path prefix** (legacy Keycloak < 17: `https://host/auth`). Trailing `/` is trimmed. Rejected when `PRODUCTION=true` and left at the default |
 | `CITADEL_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
-| `CITADEL_KEYCLOAK_CLIENT_ID` | `citadel` | Client ID for audience validation |
-| `CITADEL_KEYCLOAK_CLIENT_SECRET` | *(empty)* | Client secret |
-| `CITADEL_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated) |
-| `CITADEL_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms (comma-separated) |
-| `CITADEL_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval |
+| `CITADEL_KEYCLOAK_CLIENT_ID` | `citadel` | Expected `aud` claim. Keycloak only includes it when the client has an **audience mapper** |
+| `CITADEL_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated; any one passes). Must be non-empty |
+| `CITADEL_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms (comma-separated). `HS*` and `none` are rejected at startup |
+| `CITADEL_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval; minimum `60` |
+| `CITADEL_TOKEN_LEEWAY_MS` | `5000` | Clock-skew leeway for `exp`/`nbf`; maximum `60000` |
+| `PRODUCTION` | *(unset)* | Global (unprefixed) flag; `true` enables the production checks above |
 
-**Derived URLs** (constructed in `config.rs`):
+Any validation failure, or a non-integer numeric value, aborts startup with an error naming the variable.
+
+> **Units**: `jsonwebtoken` takes leeway in seconds, so `AuthConfig::leeway_secs()` converts the millisecond value, rounding up (5000 ms → 5 s). Before this fix the value was passed through unconverted (≈ 83 minutes of leeway).
+
+**Removed variables**: `CITADEL_KEYCLOAK_CLIENT_SECRET` (never used for validation) and the unprefixed `KEYCLOAK_URL` / `KEYCLOAK_REALM` / `REQUIRED_ROLES` / ... names. Before D10 Citadel's JWT validator actually read the *unprefixed* `KEYCLOAK_URL` / `KEYCLOAK_REALM` / `KEYCLOAK_CLIENT_ID` / `ALLOWED_ALGORITHMS` / `JWKS_REFRESH_SECS` / `TOKEN_LEEWAY_MS`, so the documented `CITADEL_KEYCLOAK_*` settings were silently ignored (only `CITADEL_REQUIRED_ROLES` was honoured); deployments must now set the `CITADEL_` names.
+
+**Derived URLs** (`AuthConfig::jwks_url()` / `issuer()`; `/auth` is no longer hard-coded):
 
 ```
-JWKS:    {CITADEL_KEYCLOAK_URL}/auth/realms/{CITADEL_KEYCLOAK_REALM}/protocol/openid-connect/certs
-Issuer:  {CITADEL_KEYCLOAK_URL}/auth/realms/{CITADEL_KEYCLOAK_REALM}
+JWKS:    {CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}/protocol/openid-connect/certs
+Issuer:  {CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}
 ```
 
 ```bash
-CITADEL_KEYCLOAK_URL=http://localhost:8080
+CITADEL_KEYCLOAK_URL=http://localhost:8080          # legacy Keycloak: http://localhost:8080/auth
 CITADEL_KEYCLOAK_REALM=data-warehouse
 CITADEL_KEYCLOAK_CLIENT_ID=citadel
-CITADEL_KEYCLOAK_CLIENT_SECRET=dev-secret
 CITADEL_REQUIRED_ROLES=read,write
 CITADEL_ALLOWED_ALGORITHMS=RS256
 CITADEL_JWKS_REFRESH_SECS=60
+CITADEL_TOKEN_LEEWAY_MS=5000
 ```
-
-> **Security**: never set `CITADEL_ALLOWED_ALGORITHMS=none`; only asymmetric algorithms (RS256, RS384, RS512, ES256, ES384, EdDSA) are supported by the validator.
 
 ---
 
@@ -251,15 +258,21 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=10
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | cadence for Citadel's background job-status poller (`polling/job_status.rs`) |
-| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | cadence at which `citadel-job` POSTs progress to `POST /api/v1/job/progress`, which forwards it to Barbican's `publish/progress`/`delete/progress`. Also the metadata bail-out poll uses `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` (two distinct knobs — P4.1) |
+Three distinct knobs — one service-side, two passed to the job pod:
+
+| Variable | Default | Where it runs | Description |
+|----------|---------|---------------|-------------|
+| `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` | `30` | Citadel service | Cadence of the background job-status poller (`polling/job_status.rs`): K8s job status, timeouts, missed-callback reconciliation. Must be `>= 1` (startup error otherwise) |
+| `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` | `citadel-job` (pod env) | Worker's bail-out poll of the `inboxes` collection during a publish |
+| `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` | `citadel-job` (pod env) | Cadence at which the worker POSTs `POST /api/v1/job/progress`, forwarded to Barbican's `publish/progress`/`delete/progress` (P4.1) |
 
 ```bash
+CITADEL_JOB_STATUS_POLL_INTERVAL_SECS=30
 CITADEL_JOB_METADATA_POLL_INTERVAL_SECS=15
 CITADEL_PROGRESS_UPDATE_INTERVAL_SECS=30
 ```
 
-> **Status**: the background job status poller (`polling/job_status.rs`) is active — it polls K8s job status, detects timeouts, reconciles missed callbacks (re-issuing terminal Barbican transitions), and cleans up completed jobs. `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` is forwarded to job executors (Kubernetes + mock) so in-cluster jobs report progress on the same cadence (P4.1).
+> **Status**: the background job status poller (`polling/job_status.rs`) is active — it polls K8s job status, detects timeouts, reconciles missed callbacks (re-issuing terminal Barbican transitions), and cleans up completed jobs. `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` and `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` are forwarded to job executors (Kubernetes + mock) so in-cluster jobs report progress on the same cadence (P4.1).
 
 ---
 
@@ -285,7 +298,7 @@ CITADEL_QUEUE_DELETE_RATE_LIMIT=20
 
 ## Integration Retries
 
-Configuration for the (planned) catalog and LTA notification retries.
+Retry settings used by the HTTP catalog and LTA notifiers (`integrations/catalog.rs`, `integrations/lta.rs`); `*_RETRY_MAX` is the total number of attempts. Note `main.rs` currently wires the `NoOp` notifiers, so these only take effect once the HTTP notifiers are enabled.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -328,7 +341,6 @@ CITADEL_MONGODB_DATABASE=data_warehouse
 CITADEL_KEYCLOAK_URL=http://localhost:8080
 CITADEL_KEYCLOAK_REALM=data-warehouse
 CITADEL_KEYCLOAK_CLIENT_ID=citadel
-CITADEL_KEYCLOAK_CLIENT_SECRET=dev-secret
 CITADEL_REQUIRED_ROLES=read,write
 CITADEL_ALLOWED_ALGORITHMS=RS256
 
@@ -370,10 +382,10 @@ CITADEL_MONGODB_URI=mongodb://mongo-0:27017,mongo-1:27017,mongo-2:27017/?replica
 CITADEL_MONGODB_DATABASE=data_warehouse
 
 # Keycloak
+PRODUCTION=true                     # rejects the localhost Keycloak default
 CITADEL_KEYCLOAK_URL=https://auth.example.com
 CITADEL_KEYCLOAK_REALM=data-warehouse-prod
 CITADEL_KEYCLOAK_CLIENT_ID=citadel-service
-CITADEL_KEYCLOAK_CLIENT_SECRET=${CITADEL_SECRET_FROM_VAULT}
 CITADEL_REQUIRED_ROLES=read,write
 CITADEL_ALLOWED_ALGORITHMS=RS256,RS384
 
@@ -421,10 +433,10 @@ RUST_LOG=info,citadel=info
 | `CITADEL_KEYCLOAK_URL` | `http://localhost:8080` |
 | `CITADEL_KEYCLOAK_REALM` | `data-warehouse` |
 | `CITADEL_KEYCLOAK_CLIENT_ID` | `citadel` |
-| `CITADEL_KEYCLOAK_CLIENT_SECRET` | *(empty)* |
 | `CITADEL_REQUIRED_ROLES` | `read,write` |
 | `CITADEL_ALLOWED_ALGORITHMS` | `RS256` |
 | `CITADEL_JWKS_REFRESH_SECS` | `60` |
+| `CITADEL_TOKEN_LEEWAY_MS` | `5000` |
 | `CITADEL_JOB_EXECUTOR` | `kubernetes` |
 | `CITADEL_KUBE_CONFIG_PATH` | *(unset)* |
 | `CITADEL_KUBE_NAMESPACE` | `citadel-jobs` |
@@ -448,6 +460,7 @@ RUST_LOG=info,citadel=info
 | `CITADEL_BARBICAN_API_RETRY_MAX` | `5` |
 | `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS` | `1000` |
 | `CITADEL_BARBICAN_API_TIMEOUT_SECS` | `10` |
+| `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` | `30` |
 | `CITADEL_JOB_METADATA_POLL_INTERVAL_SECS` | `15` |
 | `CITADEL_PROGRESS_UPDATE_INTERVAL_SECS` | `30` |
 | `CITADEL_QUEUE_PUBLISH_RATE_LIMIT` | `10` |

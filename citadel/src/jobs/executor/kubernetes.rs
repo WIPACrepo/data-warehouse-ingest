@@ -19,7 +19,6 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 pub struct KubernetesExecutor {
     config: CitadelConfig,
@@ -63,8 +62,8 @@ impl KubernetesExecutor {
     }
 
     /// Create the Kubernetes Job spec for a given Citadel job
-    fn create_job_spec(&self, job: &JobDB, nonce: &str, timestamp: &str) -> Result<K8sJob> {
-        Self::create_job_spec_static(&self.config, &self.namespace, job, nonce, timestamp)
+    fn create_job_spec(&self, job: &JobDB, submitted_at: &str) -> Result<K8sJob> {
+        Self::create_job_spec_static(&self.config, &self.namespace, job, submitted_at)
     }
 
     /// Static version for testing without a real K8s client
@@ -72,8 +71,7 @@ impl KubernetesExecutor {
         config: &CitadelConfig,
         namespace: &str,
         job: &JobDB,
-        nonce: &str,
-        timestamp: &str,
+        submitted_at: &str,
     ) -> Result<K8sJob> {
         let job_name = format!("citadel-job-{}", job.job_id);
 
@@ -145,16 +143,9 @@ impl KubernetesExecutor {
                 value: Some("/etc/citadel/secrets/callback-secret".to_string()),
                 value_from: None,
             },
-            EnvVar {
-                name: "CITADEL_CALLBACK_TIMESTAMP".to_string(),
-                value: Some(timestamp.to_string()),
-                value_from: None,
-            },
-            EnvVar {
-                name: "CITADEL_CALLBACK_NONCE".to_string(),
-                value: Some(nonce.to_string()),
-                value_from: None,
-            },
+            // No callback timestamp/nonce is passed: `citadel-job` mints a
+            // fresh pair for every callback/progress send (see job_main.rs
+            // `build_callback_request`).
             EnvVar {
                 name: "CITADEL_TRANSFER_PARALLELISM".to_string(),
                 value: Some(config.transfer_parallelism.to_string()),
@@ -285,7 +276,7 @@ impl KubernetesExecutor {
         );
         annotations.insert(
             "citadel/job-submitted-at".to_string(),
-            timestamp.to_string(),
+            submitted_at.to_string(),
         );
 
         let k8s_job = K8sJob {
@@ -314,10 +305,9 @@ impl JobExecutor for KubernetesExecutor {
     async fn submit(&self, job: &JobDB) -> Result<String> {
         let jobs_api = kube::api::Api::<K8sJob>::namespaced(self.client.clone(), &self.namespace);
 
-        let nonce = Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let submitted_at = chrono::Utc::now().to_rfc3339();
 
-        let k8s_job = self.create_job_spec(job, &nonce, &timestamp)?;
+        let k8s_job = self.create_job_spec(job, &submitted_at)?;
 
         match jobs_api
             .create(&kube::api::PostParams::default(), &k8s_job)
@@ -458,7 +448,6 @@ mod tests {
             &config,
             "test",
             &job,
-            "nonce-123",
             "2024-01-01T00:00:00Z",
         );
         assert!(result.is_ok());
@@ -552,10 +541,37 @@ mod namespace_tests {
             &config,
             &config.kube_namespace,
             &job,
-            "nonce",
             "2024-01-01T00:00:00Z",
         )
         .unwrap();
         assert_eq!(k8s_job.metadata.namespace.as_deref(), Some("my-jobs-ns"));
+    }
+
+    /// REVIEW #4: the worker owns callback replay-protection values; the job
+    /// spec must not pre-provision a (soon stale) timestamp or nonce.
+    #[test]
+    fn test_job_spec_has_no_callback_timestamp_or_nonce() {
+        let config = CitadelConfig::default();
+        let job = JobDB::new(
+            "test-job-env".to_string(),
+            ObjectId::new(),
+            crate::jobs::types::JobType::PublishInbox {
+                inbox_id: ObjectId::new(),
+                notify_catalog: false,
+                notify_lta: false,
+            },
+            "kubernetes",
+        );
+        let k8s_job =
+            KubernetesExecutor::create_job_spec_static(&config, "ns", &job, "2024-01-01T00:00:00Z")
+                .unwrap();
+        let env = k8s_job.spec.unwrap().template.spec.unwrap().containers[0]
+            .env
+            .clone()
+            .unwrap_or_default();
+        let names: Vec<&str> = env.iter().map(|e| e.name.as_str()).collect();
+        assert!(!names.contains(&"CITADEL_CALLBACK_TIMESTAMP"), "{names:?}");
+        assert!(!names.contains(&"CITADEL_CALLBACK_NONCE"), "{names:?}");
+        assert!(names.contains(&"CITADEL_CALLBACK_URL"), "{names:?}");
     }
 }

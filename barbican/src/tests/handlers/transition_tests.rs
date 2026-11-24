@@ -106,7 +106,7 @@ mod tests {
             json
         );
         assert!(
-            json["message"].as_str().map_or(false, |m| !m.is_empty()),
+            json["message"].as_str().is_some_and(|m| !m.is_empty()),
             "conflict body must include a non-empty message: {:?}",
             json
         );

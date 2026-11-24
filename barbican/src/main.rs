@@ -1,4 +1,4 @@
-use barbican::{Config, serve};
+use barbican::{AuthConfig, Config, serve};
 use common::{db_setup_with_shutdown, logging_setup, shutdown_signal};
 use futures::FutureExt;
 use futures::future::Shared;
@@ -14,6 +14,15 @@ async fn main() {
 
     // Load configuration early so we can use it for metrics and database
     let config = Config::from_env().expect("Failed to load configuration");
+    // Auth settings come from BARBICAN_KEYCLOAK_*, BARBICAN_REQUIRED_ROLES, ...
+    // (decision D10). Fail fast, before connecting to MongoDB.
+    let auth_config = match AuthConfig::from_env_prefixed("BARBICAN") {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load auth configuration: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Connect to database with shutdown support
     let shutdown_for_db = shutdown_shared.clone();
@@ -34,5 +43,5 @@ async fn main() {
     // Barbican metrics registry and the inbox-count refresh loop) and starts
     // the metrics server on the configured port via
     // start_metrics_server_with_router so the Barbican registry is rendered.
-    serve(client, config).await
+    serve(client, config, auth_config).await
 }

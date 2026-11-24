@@ -26,7 +26,7 @@ use citadel::middleware::auth::auth_middleware;
 use citadel::polling::job_status::JobStatusPoller;
 use citadel::secret_reloader::{load_callback_secret, start_secret_watcher};
 use citadel::storage::manager::StorageManager;
-use citadel::{AppState, AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
+use citadel::{AppState, AuthConfig, build_auth_state};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,20 +65,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     citadel::db::ensure_citadel_indexes(&db_client, &config).await;
 
     // Set up JWKS cache and auth components
-    let auth_config = AuthConfig::from_env().map_err(|e| {
+    // Reads CITADEL_KEYCLOAK_*, CITADEL_REQUIRED_ROLES, ... (decision D10).
+    let auth_config = AuthConfig::from_env_prefixed("CITADEL").map_err(|e| {
         error!("Failed to load auth config: {}", e);
         e
     })?;
-    let jwks_cache = Arc::new(JwksCache::new(
-        auth_config.jwks_url(),
-        auth_config.jwks_refresh_secs,
-    ));
-    let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config.clone()));
-    let auth_state = Arc::new(AuthMiddlewareState {
-        validator,
-        required_roles: config.required_roles.clone(),
-        service_name: "citadel".to_string(),
-    });
+    let auth_state = build_auth_state(&auth_config, "citadel");
 
     // Set up storage manager
     let storage_manager = StorageManager::new(&config);

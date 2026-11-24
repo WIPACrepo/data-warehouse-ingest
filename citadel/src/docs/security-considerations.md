@@ -11,6 +11,7 @@ response for the recursive transfer engine
 - [Threat Model](#threat-model)
 - [Symlink Attack Vectors](#symlink-attack-vectors)
 - [Mitigations](#mitigations)
+- [Job Callback Replay Protection](#job-callback-replay-protection)
 - [Accepted Risks](#accepted-risks)
 - [Configuration Hardening Guide](#configuration-hardening-guide)
 - [Observability & Audit Logging](#observability--audit-logging)
@@ -154,6 +155,22 @@ untouched); an existing *empty* directory is removed and replaced.
 | Bounded error collection + coordinated cancellation | `TransferContext`, `CancellationToken` |
 | Security audit events (every violation, incl. on failure) | `SecurityAuditEvent`, `TransferError::TransferFailed` |
 | Metrics without paths (privacy) | `CitadelMetrics` |
+
+## Job Callback Replay Protection
+
+The transfer result reaches Citadel via `citadel-job` → `POST /api/v1/job/callback` (terminal result) and `POST /api/v1/job/progress` (periodic counts). Both are protected against replay by the same checks in [`handlers/job_callback.rs`](../handlers/job_callback.rs):
+
+| Check | Rule |
+|-------|------|
+| `X-Callback-Secret` | Constant-time compare against the hot-reloaded secret file (when configured) |
+| `timestamp` | `now - timestamp < 300 s` (`NONCE_TTL_SECS`) and `> -60 s` (`TIMESTAMP_SKEW_SECS`) |
+| `nonce` | Rejected if a *live* row exists in `callback_nonces`; stored with a 300 s expiry (TTL index garbage-collects) |
+
+**Fresh credentials per send.** `citadel-job` mints a new `timestamp` (`Utc::now()`) and UUID v4 `nonce` for **every** send attempt — each callback attempt (initial + 2 retries) and each progress attempt (up to 3) — via `build_callback_request` / `build_progress_request` in [`job_main.rs`](../job_main.rs). A retry therefore never looks like a replay, and the 300 s window bounds only in-flight delay, not job duration.
+
+> **Fixed defect**: previously the worker captured one timestamp and nonce when it started (`JobConfig::from_env`) and reused them for the completion callback and its retries. Any job running longer than 5 minutes therefore had its callback rejected as `callback_timestamp_expired`, and a retry reused an already-stored nonce. The Kubernetes executor also injected `CITADEL_CALLBACK_TIMESTAMP` / `CITADEL_CALLBACK_NONCE`, which the worker never read. The executor no longer sets these variables ([`jobs/executor/kubernetes.rs`](../jobs/executor/kubernetes.rs)).
+
+**Residual risk:** a captured request cannot be replayed verbatim: while its nonce row is live it is rejected as reused, and the row is stored at receipt (≥ the request timestamp) with a 300 s expiry, so by the time it expires the timestamp is outside the window. An attacker who holds the shared secret can of course mint new requests. Confidentiality of the request (TLS / in-cluster network policy) is still required to protect the shared secret.
 
 ## Accepted Risks
 

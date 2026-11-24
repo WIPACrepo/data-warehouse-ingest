@@ -88,8 +88,6 @@ pub struct JobConfig {
     pub warehouse_path: PathBuf,
     pub callback_url: String,
     pub callback_secret_file: PathBuf,
-    pub callback_timestamp: DateTime<Utc>,
-    pub callback_nonce: String,
     pub transfer_parallelism: usize,
     pub transfer_chunk_size_mb: usize,
     pub metadata_poll_interval_secs: u64,
@@ -143,8 +141,6 @@ impl JobConfig {
             callback_secret_file: env::var("CITADEL_CALLBACK_SECRET_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/etc/citadel/secrets/callback-secret")),
-            callback_timestamp: Utc::now(),
-            callback_nonce: uuid::Uuid::new_v4().to_string(),
             transfer_parallelism,
             transfer_chunk_size_mb,
             metadata_poll_interval_secs,
@@ -178,8 +174,6 @@ mod tests {
             warehouse_path: PathBuf::from("/tmp/warehouse"),
             callback_url: url.to_string(),
             callback_secret_file: PathBuf::from("/tmp/secret"),
-            callback_timestamp: Utc::now(),
-            callback_nonce: "nonce".to_string(),
             transfer_parallelism: 4,
             transfer_chunk_size_mb: 16,
             metadata_poll_interval_secs: 15,
@@ -187,6 +181,41 @@ mod tests {
             mongodb_uri: "mongodb://localhost:27017".to_string(),
             mongodb_database: "data_warehouse".to_string(),
         }
+    }
+
+    fn sample_result() -> TransferResult {
+        TransferResult {
+            success: true,
+            files_transferred: 1,
+            total_bytes: 10,
+        }
+    }
+
+    /// Regression (REVIEW #4): the callback timestamp must be the send time,
+    /// not the job start time, or callbacks of jobs > 5 min are rejected.
+    #[test]
+    fn test_callback_request_uses_send_time_and_given_nonce() {
+        let sent_at = Utc::now() + chrono::Duration::hours(2);
+        let req = build_callback_request(
+            "job-1",
+            "completed",
+            &sample_result(),
+            sent_at,
+            "n-1".into(),
+        );
+        assert_eq!(req.timestamp, sent_at);
+        assert_eq!(req.nonce, "n-1");
+        assert_eq!(req.job_id, "job-1");
+        assert_eq!(req.status, "completed");
+    }
+
+    #[test]
+    fn test_progress_request_uses_send_time_and_given_nonce() {
+        let progress = citadel::jobs::types::JobProgress::default();
+        let sent_at = Utc::now();
+        let req = build_progress_request("job-1", &progress, sent_at, "n-2".into());
+        assert_eq!(req.timestamp, sent_at);
+        assert_eq!(req.nonce, "n-2");
     }
 
     #[test]
@@ -221,15 +250,40 @@ pub struct CallbackRequest {
     pub result: Option<TransferResult>,
 }
 
-/// Send callback to Citadel API with job result
-async fn send_callback(config: &JobConfig, status: &str, result: &TransferResult) -> Result<()> {
-    let callback_request = CallbackRequest {
-        job_id: config.job_id.clone(),
+/// Build a callback request stamped with `now` and `nonce`.
+///
+/// The worker owns replay-protection values (decision recorded in
+/// `citadel/src/docs/security-considerations.md`): every send attempt gets a
+/// fresh timestamp and nonce. Citadel rejects timestamps older than
+/// `NONCE_TTL_SECS` (300 s), so a timestamp captured at job start would make
+/// the completion callback of any job longer than 5 minutes fail, and a
+/// reused nonce would make a retry look like a replay.
+fn build_callback_request(
+    job_id: &str,
+    status: &str,
+    result: &TransferResult,
+    now: DateTime<Utc>,
+    nonce: String,
+) -> CallbackRequest {
+    CallbackRequest {
+        job_id: job_id.to_string(),
         status: status.to_string(),
-        timestamp: config.callback_timestamp,
-        nonce: config.callback_nonce.clone(),
+        timestamp: now,
+        nonce,
         result: Some(result.clone()),
-    };
+    }
+}
+
+/// Send callback to Citadel API with job result (one attempt; fresh
+/// timestamp + nonce per call).
+async fn send_callback(config: &JobConfig, status: &str, result: &TransferResult) -> Result<()> {
+    let callback_request = build_callback_request(
+        &config.job_id,
+        status,
+        result,
+        Utc::now(),
+        uuid::Uuid::new_v4().to_string(),
+    );
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -283,26 +337,31 @@ struct ProgressRequest {
     phase: String,
 }
 
-/// POST a progress snapshot to Citadel with bounded retry + backoff.
-/// Never fails the transfer: after the final attempt the error is logged and
-/// the function returns.
-async fn send_progress(
-    config: &JobConfig,
+/// Build a progress report stamped with `now` and `nonce` (fresh per send
+/// attempt, like [`build_callback_request`]).
+fn build_progress_request(
+    job_id: &str,
     progress: &citadel::jobs::types::JobProgress,
-    nonce: &str,
-) {
-    let url = format!("{}/api/v1/job/progress", config.citadel_base_url());
-
-    let body = ProgressRequest {
-        job_id: config.job_id.clone(),
-        timestamp: Utc::now(),
-        nonce: nonce.to_string(),
+    now: DateTime<Utc>,
+    nonce: String,
+) -> ProgressRequest {
+    ProgressRequest {
+        job_id: job_id.to_string(),
+        timestamp: now,
+        nonce,
         total_files: progress.total_files as u64,
         processed_files: progress.processed_files as u64,
         total_bytes: progress.total_bytes,
         transferred_bytes: progress.processed_bytes,
         phase: progress.phase.clone(),
-    };
+    }
+}
+
+/// POST a progress snapshot to Citadel with bounded retry + backoff.
+/// Never fails the transfer: after the final attempt the error is logged and
+/// the function returns. Each attempt carries a fresh timestamp and nonce.
+async fn send_progress(config: &JobConfig, progress: &citadel::jobs::types::JobProgress) {
+    let url = format!("{}/api/v1/job/progress", config.citadel_base_url());
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -320,6 +379,12 @@ async fn send_progress(
     // Bounded retry with exponential backoff (1s, 2s).
     let mut attempt = 0;
     loop {
+        let body = build_progress_request(
+            &config.job_id,
+            progress,
+            Utc::now(),
+            uuid::Uuid::new_v4().to_string(),
+        );
         let result = client
             .post(&url)
             .header("X-Callback-Secret", &secret)
@@ -443,7 +508,7 @@ fn spawn_progress_monitor(config: &JobConfig) -> ProgressMonitor {
                 }
                 _ = report_interval.tick() => {
                     let p = tracker_for_loop.get_progress().await;
-                    send_progress(&cfg, &p, &uuid::Uuid::new_v4().to_string()).await;
+                    send_progress(&cfg, &p).await;
                 }
             }
         }

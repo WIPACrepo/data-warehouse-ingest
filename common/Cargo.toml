@@ -10,7 +10,7 @@ axum-prometheus = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 jsonwebtoken = { workspace = true, optional = true }
-mockall = { workspace = true }
+mockall = { workspace = true, optional = true }
 mongodb = { workspace = true }
 once_cell = { workspace = true, optional = true }
 prometheus = { workspace = true, optional = true }
@@ -28,13 +28,16 @@ tracing-subscriber = { workspace = true }
 [features]
 default = []
 auth = ["dep:jsonwebtoken", "dep:prometheus", "dep:once_cell"]
-integration-tests = []
-test-utils = ["auth", "dep:rsa", "dep:rand"]
+# Integration tests use the test_utils builders, so they imply test-utils.
+integration-tests = ["test-utils"]
+test-utils = ["auth", "dep:rsa", "dep:rand", "dep:mockall"]
 
 [dev-dependencies]
+# For `cfg(test)` automock of InboxStore in common's own unit tests.
+mockall = { workspace = true }
 tower = { workspace = true }
 
 [package.metadata.cargo-machete]
-# rsa/rand are used only under the `test-utils` feature (auth_mock.rs +
-# RSA keygen); cargo-machete cannot see feature-gated usage.
-ignored = ["rsa", "rand"]
+# rsa/rand/mockall are used only under the `test-utils` feature (auth_mock.rs,
+# RSA keygen, MockInboxStore); cargo-machete cannot see feature-gated usage.
+ignored = ["rsa", "rand", "mockall"]

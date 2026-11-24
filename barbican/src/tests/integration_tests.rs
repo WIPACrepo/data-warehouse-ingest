@@ -12,32 +12,13 @@ use tower::ServiceExt;
 
 use crate::handlers::{create_inbox, delete_inbox, get_inbox, publish_inbox};
 use crate::{AppState, Config, CreateInbox, InboxDB, InboxStatus};
-use common::{AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator, MockInboxStore};
+use common::MockInboxStore;
 
 /// Helper to create test AppState
 fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
     let config = Config::default();
 
-    // Initialize common auth components for testing
-    let auth_config = AuthConfig {
-        keycloak_url: "http://localhost:8080".to_string(),
-        keycloak_realm: "test".to_string(),
-        keycloak_client_id: "test-client".to_string(),
-        required_roles: vec!["read".to_string()],
-        allowed_algorithms: vec!["RS256".to_string()].into_iter().collect(),
-        jwks_refresh_secs: 60,
-        leeway_ms: 5000,
-    };
-    let jwks_cache = Arc::new(JwksCache::new(
-        auth_config.jwks_url(),
-        auth_config.jwks_refresh_secs,
-    ));
-    let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config));
-    let auth_state = Arc::new(AuthMiddlewareState {
-        validator,
-        required_roles: config.required_roles.clone(),
-        service_name: "barbican".to_string(),
-    });
+    let auth_state = crate::test_utils::test_auth_state();
 
     let metrics = Arc::new(crate::metrics::BarbicanMetrics::new().unwrap());
 
@@ -137,7 +118,7 @@ async fn test_full_inbox_lifecycle() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -209,7 +190,7 @@ async fn test_delete_inbox() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -272,7 +253,7 @@ async fn test_publish_inbox() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                 .header("Content-Type", "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),

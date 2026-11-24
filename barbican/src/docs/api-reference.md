@@ -17,7 +17,7 @@ Complete documentation for all Barbican HTTP API endpoints.
   - [Publish Operation](#publish-operation)
   - [Delete Operation](#delete-operation)
 - [Health Endpoints](#health-endpoints)
-- [Error Responses](#error-response)
+- [Error Responses](#error-responses)
 
 ---
 
@@ -58,15 +58,15 @@ Authorization: Bearer <jwt_token>
 Barbican validates JWT tokens with the following checks:
 
 1. **Signature**: Verified against Keycloak JWKS
-2. **Expiration**: Token must not be expired (5-second leeway)
-3. **Issuer**: Must match Keycloak realm URL
-4. **Audience**: Must match Barbican client ID
+2. **Expiration**: Token must not be expired (leeway `BARBICAN_TOKEN_LEEWAY_MS`, default 5000 ms)
+3. **Issuer**: Must equal `{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}`
+4. **Audience**: `aud` must contain `BARBICAN_KEYCLOAK_CLIENT_ID` (default `barbican`)
 5. **Roles**: Must contain required role for the endpoint
 
 ### JWKS Caching
 
 - JWKS fetched from Keycloak and cached
-- Refresh interval: 60 seconds (configurable)
+- Refresh interval: `BARBICAN_JWKS_REFRESH_SECS` (default and minimum 60 seconds)
 - Immediate refresh on unknown key ID (rate-limited)
 
 ---
@@ -415,6 +415,14 @@ Request Body:
 }
 ```
 
+Optional `total_files`/`processed_files` (default 0) are also accepted.
+Stored as the inbox's `progress` (`InboxProgress`) with `transferred_bytes`
+set to 0.
+Citadel's `/jobs/{id}/progress` forwarder maps the worker's generic
+bytes-processed counter (`transferred_bytes`) to `deleted_bytes`. The
+`citadel-job` worker's delete path does **not** currently report progress,
+so in practice this endpoint is not called yet.
+
 #### Delete Complete
 ```http
 POST /api/v1/inbox/{id}/delete/complete
@@ -446,6 +454,41 @@ Request Body:
 ```
 
 ---
+
+## Health Endpoints
+
+Both are public (no `Authorization` header).
+
+### Health
+```http
+GET /health
+```
+
+Liveness only — always `200 OK` while the process is serving:
+```json
+{ "status": "healthy" }
+```
+
+### Ready
+```http
+GET /ready
+```
+
+Readiness — pings MongoDB (`InboxStore::ping()`, a `{ping: 1}` command
+against the `admin` database).
+
+`200 OK`:
+```json
+{ "status": "ready", "mongodb": "connected" }
+```
+
+`503 Service Unavailable` (ping failed; logged at `warn`):
+```json
+{ "status": "not_ready", "mongodb": "disconnected" }
+```
+
+---
+
 ## Error Responses
 
 All errors follow a consistent JSON format:

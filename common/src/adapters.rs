@@ -20,6 +20,16 @@ impl MongoInboxStore {
 
 #[async_trait]
 impl InboxStore for MongoInboxStore {
+    /// `{ping: 1}` against the `admin` database of the collection's client.
+    async fn ping(&self) -> Result<(), mongodb::error::Error> {
+        self.collection
+            .client()
+            .database("admin")
+            .run_command(mongodb::bson::doc! { "ping": 1 })
+            .await
+            .map(|_| ())
+    }
+
     async fn insert_one(&self, inbox: InboxDB) -> Result<InsertOneResult, mongodb::error::Error> {
         self.collection.insert_one(inbox).await
     }

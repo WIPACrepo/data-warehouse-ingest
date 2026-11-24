@@ -111,7 +111,11 @@ pub struct BarbicanClient {
     /// Consecutive `post_action` failures while closed.
     breaker_failures: std::sync::atomic::AtomicU32,
     /// When the breaker was tripped (used to auto half-open).
-    breaker_opened_at: tokio::sync::Mutex<Option<std::time::Instant>>,
+    ///
+    /// A `std::sync::Mutex`, not tokio's: the critical sections are tiny and
+    /// never `.await`, and these helpers are called from async code, where
+    /// `tokio::sync::Mutex::blocking_lock` panics.
+    breaker_opened_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +418,7 @@ impl BarbicanClient {
             metrics: None,
             breaker_open: std::sync::atomic::AtomicU8::new(0),
             breaker_failures: std::sync::atomic::AtomicU32::new(0),
-            breaker_opened_at: tokio::sync::Mutex::new(None),
+            breaker_opened_at: std::sync::Mutex::new(None),
         }
     }
 
@@ -428,12 +432,20 @@ impl BarbicanClient {
     /// How long the breaker stays open before auto half-opening (seconds).
     const HALF_OPEN_AFTER_SECS: u64 = 30;
 
+    /// Lock the trip timestamp, recovering from poisoning (the value is a
+    /// plain `Option<Instant>`, so a panicked holder cannot leave it invalid).
+    fn lock_opened_at(&self) -> std::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        self.breaker_opened_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn is_breaker_open(&self) -> bool {
         if self.breaker_open.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             return false;
         }
         // Auto half-open after the cooldown window.
-        let opened = self.breaker_opened_at.blocking_lock();
+        let opened = self.lock_opened_at();
         if let Some(opened_at) = *opened
             && opened_at.elapsed().as_secs() >= Self::HALF_OPEN_AFTER_SECS
         {
@@ -445,7 +457,7 @@ impl BarbicanClient {
     fn trip_breaker(&self) {
         self.breaker_open
             .store(1, std::sync::atomic::Ordering::SeqCst);
-        *self.breaker_opened_at.blocking_lock() = Some(std::time::Instant::now());
+        *self.lock_opened_at() = Some(std::time::Instant::now());
         if let Some(m) = self.metrics.as_ref() {
             m.circuit_breaker_state.set(1);
         }
@@ -457,7 +469,7 @@ impl BarbicanClient {
             .store(0, std::sync::atomic::Ordering::SeqCst);
         self.breaker_open
             .store(0, std::sync::atomic::Ordering::SeqCst);
-        *self.breaker_opened_at.blocking_lock() = None;
+        *self.lock_opened_at() = None;
         if let Some(m) = self.metrics.as_ref() {
             m.circuit_breaker_state.set(0);
         }
@@ -849,5 +861,23 @@ impl BarbicanClient {
             "delete_failure",
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod breaker_tests {
+    use super::*;
+
+    /// Regression: the breaker helpers run inside async request handlers.
+    /// With `tokio::sync::Mutex::blocking_lock` they panicked ("Cannot block
+    /// the current thread from within a runtime") on every successful call.
+    #[tokio::test]
+    async fn test_breaker_helpers_do_not_panic_in_async_context() {
+        let client = BarbicanClient::new(CitadelConfig::default());
+        assert!(!client.is_breaker_open());
+        client.trip_breaker();
+        assert!(client.is_breaker_open());
+        client.close_breaker();
+        assert!(!client.is_breaker_open());
     }
 }

@@ -193,7 +193,7 @@ Citadel periodically reports progress to Barbican during long-running operations
 POST /api/v1/inbox/{id}/{operation}/progress
 ```
 
-**Request Body:**
+**Request Body** (`create/progress`, `publish/progress`):
 ```json
 {
   "job_id": "uuid-string",
@@ -205,30 +205,61 @@ POST /api/v1/inbox/{id}/{operation}/progress
 }
 ```
 
-**Response:**
+**Request Body** (`delete/progress`):
 ```json
 {
-  "inbox_id": "507f1f77bcf86cd799439011",
+  "job_id": "uuid-string",
+  "phase": "deleting",
+  "total_bytes": 1048576,
+  "deleted_bytes": 524288
+}
+```
+
+**Response:** `200 OK` with the updated inbox document (`InboxDB`), whose
+`progress` field is the stored `InboxProgress`:
+```json
+{
   "status": "publishing",
+  "current_job_id": "uuid-string",
   "progress": {
     "phase": "copying",
-    "percent_complete": 45
+    "total_files": 100,
+    "processed_files": 45,
+    "total_bytes": 1073741824,
+    "transferred_bytes": 483183820,
+    "deleted_bytes": 0,
+    "updated_at": "2024-01-01T00:00:00Z"
   }
 }
 ```
+(abridged — other inbox fields omitted)
 
-### Progress Calculation
+### Stored Progress (`InboxProgress`)
 
-Barbican calculates percentage complete:
+`common/src/models.rs` defines exactly these fields; Barbican stores the
+raw counters and computes **no** derived values (there is no
+percent-complete field — clients derive it from the counters if needed):
 
-```rust
-fn calculate_percent_complete(progress: &InboxProgress) -> u8 {
-    if progress.total_bytes == 0 {
-        return 0;
-    }
-    ((progress.transferred_bytes as f64 / progress.total_bytes as f64) * 100.0) as u8
-}
-```
+| Field | Set by |
+|-------|--------|
+| `phase` | All progress endpoints |
+| `total_files`, `processed_files` | All progress endpoints (optional, default 0) |
+| `total_bytes` | All progress endpoints |
+| `transferred_bytes` | create/publish progress (0 for delete) |
+| `deleted_bytes` | delete progress (0 for create/publish) |
+| `updated_at` | Server time of the update |
+
+`progress` is cleared (`null`) on `*/complete` and `*/failure`.
+
+### Delete Progress
+
+`delete/progress` (documented in
+[API Reference](api-reference.md#delete-progress)) takes `total_bytes` and
+`deleted_bytes` (plus optional `total_files`/`processed_files`). Citadel's job-progress forwarder
+(`citadel/src/handlers/job_progress.rs`) maps the worker's generic
+bytes-processed counter (`transferred_bytes`) to `deleted_bytes`. The
+`citadel-job` worker's delete path does **not** currently report progress,
+so this endpoint is exercised only by tests today.
 
 ### Recommended Update Frequency
 
@@ -364,17 +395,11 @@ Content-Type: application/json
 - Clean up partial work
 
 **Barbican Responsibility:**
-- Track operation start time
-- Detect stale progress updates
-- Alert on operations exceeding SLA
+- Record `progress.updated_at` on every progress update
 
-```rust
-// Detect stale progress (no update in 5 minutes)
-fn is_progress_stale(progress: &InboxProgress) -> bool {
-    let age = Utc::now() - progress.updated_at;
-    age > chrono::Duration::minutes(5)
-}
-```
+Barbican does **not** implement stale-progress detection or SLA alerting;
+staleness can be derived externally from `progress.updated_at` (e.g. no
+update in 5 minutes while the inbox is `creating`/`publishing`/`deleting`).
 
 ---
 
@@ -453,22 +478,13 @@ BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-jwt
 
 ### Health Checks
 
-**Barbican `/ready` endpoint should verify:**
-- MongoDB connectivity
-- Citadel API reachability
-- JWT validation working
+**Barbican `/ready`** pings MongoDB only (`InboxStore::ping()`); it does
+**not** check Citadel reachability or JWKS availability:
 
-**Example:**
-```json
-{
-  "status": "ready",
-  "checks": {
-    "mongodb": "ok",
-    "citadel_api": "ok",
-    "jwt_validation": "ok"
-  }
-}
-```
+- `200 OK` — `{"status":"ready","mongodb":"connected"}`
+- `503 Service Unavailable` — `{"status":"not_ready","mongodb":"disconnected"}`
+
+See [API Reference](api-reference.md#ready).
 
 ### Logging
 

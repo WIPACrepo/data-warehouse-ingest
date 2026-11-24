@@ -36,7 +36,10 @@ pub struct JobProgressRequest {
     /// Total bytes to transfer (0 when unknown).
     #[serde(default)]
     pub total_bytes: u64,
-    /// Bytes copied so far.
+    /// Bytes processed so far by the job's operation: bytes **copied** for a
+    /// publish job, bytes **removed** for a delete job. Forwarded to Barbican
+    /// as `transferred_bytes` (publish) or `deleted_bytes` (delete). The wire
+    /// name is kept for compatibility with existing workers.
     #[serde(default)]
     pub transferred_bytes: u64,
     /// Phase string reported by the worker (e.g. "transferring").
@@ -128,7 +131,12 @@ async fn forward_publish(
         .map(|_| ())
 }
 
-/// Forward delete-style progress to Barbican's `delete/progress`.
+/// Forward delete-job progress to Barbican's `delete/progress`.
+///
+/// The worker's generic "bytes processed" counter (`transferred_bytes`) is
+/// Barbican's `deleted_bytes` for a delete job. `citadel-job`'s
+/// `execute_delete` does not currently report progress, so this path is
+/// exercised only by tests until it does.
 async fn forward_delete(
     app_state: &AppState,
     inbox_id: &ObjectId,

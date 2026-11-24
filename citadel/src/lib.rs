@@ -41,7 +41,7 @@ pub mod tests;
 
 pub use common::{
     AuthConfig, AuthMiddlewareState, Claims, ClaimsExtractor, JwksCache, JwtValidator,
-    auth_middleware,
+    auth_middleware, build_auth_state,
 };
 pub use config::CitadelConfig;
 pub use error::{AppError, Result};

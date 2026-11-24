@@ -4,7 +4,6 @@ pub use common::test_utils::*;
 pub use common::MockInboxStore;
 
 use crate::{AppState, Config};
-use common::{AuthConfig, AuthMiddlewareState, JwksCache, JwtValidator};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -12,26 +11,7 @@ use std::sync::Arc;
 pub fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
     let config = Config::default();
 
-    // Initialize common auth components for testing
-    let auth_config = AuthConfig {
-        keycloak_url: "http://localhost:8080".to_string(),
-        keycloak_realm: "test".to_string(),
-        keycloak_client_id: "test-client".to_string(),
-        required_roles: vec!["read".to_string()],
-        allowed_algorithms: vec!["RS256".to_string()].into_iter().collect(),
-        jwks_refresh_secs: 60,
-        leeway_ms: 5000,
-    };
-    let jwks_cache = Arc::new(JwksCache::new(
-        auth_config.jwks_url(),
-        auth_config.jwks_refresh_secs,
-    ));
-    let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config));
-    let auth_state = Arc::new(AuthMiddlewareState {
-        validator,
-        required_roles: config.required_roles.clone(),
-        service_name: "barbican".to_string(),
-    });
+    let auth_state = crate::test_utils::test_auth_state();
 
     let metrics = Arc::new(crate::metrics::BarbicanMetrics::new().unwrap());
 
@@ -42,4 +22,20 @@ pub fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
         auth_state,
         metrics,
     })
+}
+
+/// Auth middleware state for tests: a validator pointed at an unreachable
+/// localhost Keycloak and the default external roles (`read`, `write`).
+#[cfg(test)]
+pub fn test_auth_state() -> Arc<common::AuthMiddlewareState> {
+    let auth_config = common::AuthConfig {
+        keycloak_url: "http://localhost:8080".to_string(),
+        keycloak_realm: "test".to_string(),
+        keycloak_client_id: "test-client".to_string(),
+        required_roles: vec!["read".to_string(), "write".to_string()],
+        allowed_algorithms: vec!["RS256".to_string()].into_iter().collect(),
+        jwks_refresh_secs: 60,
+        leeway_ms: 5000,
+    };
+    common::build_auth_state(&auth_config, "barbican")
 }

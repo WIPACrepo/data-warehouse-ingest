@@ -121,7 +121,6 @@ export CITADEL_MONGODB_DATABASE=data_warehouse
 export CITADEL_KEYCLOAK_URL=http://localhost:8080
 export CITADEL_KEYCLOAK_REALM=data-warehouse
 export CITADEL_KEYCLOAK_CLIENT_ID=citadel
-export CITADEL_KEYCLOAK_CLIENT_SECRET=dev-secret
 export CITADEL_JOB_EXECUTOR=mock
 export CITADEL_BARBICAN_API_URL=http://localhost:8080
 export CITADEL_JOB_CALLBACK_SECRET_FILE=./dev/callback-secret
@@ -332,7 +331,7 @@ pub enum JobType {
 }
 ```
 
-**2. Wire a queue permit** in [`src/jobs/queue.rs`](../src/jobs/queue.rs) if it needs its own rate limit.
+**2. Enforce the in-flight quota** in the new handler: call `count_in_flight_jobs(&app_state, "<job_type>")` from [`src/handlers/publish_inbox.rs`](../src/handlers/publish_inbox.rs) after inserting the `JobDB` and before the Barbican `*_start` call, and reject with `quota_exceeded` + `rollback_job` + `429` (as `publish_inbox`/`delete_inbox` do — D8). Add a `CITADEL_QUEUE_<TYPE>_RATE_LIMIT` setting if it needs its own limit.
 
 **3. Add a handler** in [`src/handlers/`](../src/handlers/) and register the route in [`src/main.rs`](../src/main.rs).
 
@@ -392,8 +391,8 @@ pub async fn create_inbox(
 **Problem**: "Invalid JWT" (401)
 **Solutions**:
 1. Verify Keycloak is running and reachable
-2. Check `CITADEL_KEYCLOAK_URL`, `_REALM`, `_CLIENT_ID`
-3. Ensure JWKS URL is: `{url}/auth/realms/{realm}/protocol/openid-connect/certs`
+2. Check `CITADEL_KEYCLOAK_URL`, `_REALM`, `_CLIENT_ID` (the unprefixed `KEYCLOAK_*` names are not read)
+3. Ensure JWKS URL is: `{CITADEL_KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/certs` — for Keycloak < 17 set `CITADEL_KEYCLOAK_URL` to include `/auth`
 4. Verify the token isn't expired and has `aud` == `CITADEL_KEYCLOAK_CLIENT_ID`
 
 ### MongoDB Connection Errors

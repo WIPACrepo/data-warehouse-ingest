@@ -67,7 +67,7 @@ Citadel expects JWT tokens with the following structure:
 ```json
 {
   "sub": "citadel-service",
-  "iss": "http://keycloak:8080/auth/realms/data-warehouse",
+  "iss": "http://keycloak:8080/realms/data-warehouse",
   "aud": "citadel",
   "exp": 1640000000,
   "iat": 1639996400,
@@ -100,17 +100,17 @@ pub struct ResourceAccess {
 }
 ```
 
-Roles are read from `resource_access.citadel.roles` via `Claims::get_roles()`.
+Roles are read from `resource_access.citadel.roles` via `Claims::get_roles("citadel")`.
 
 ### Token Requirements
 
 | Claim | Requirement | Description |
 |-------|-------------|-------------|
 | `alg` | In `CITADEL_ALLOWED_ALGORITHMS`; `none` rejected | Algorithm whitelist |
-| `iss` | Matches Keycloak realm issuer | Issuer validation |
-| `aud` | Matches `CITADEL_KEYCLOAK_CLIENT_ID` | Audience validation |
-| `exp` | Must be in the future (leeway applied) | Expiration check |
-| `resource_access.citadel.roles` | Contains a role from `CITADEL_REQUIRED_ROLES` | Authorization gate |
+| `iss` | Equals `{CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}` | Issuer validation |
+| `aud` | Matches `CITADEL_KEYCLOAK_CLIENT_ID` (requires a Keycloak audience mapper on the client) | Audience validation |
+| `exp` | Must be in the future (`CITADEL_TOKEN_LEEWAY_MS` leeway applied) | Expiration check |
+| `resource_access.citadel.roles` | Contains a role from `CITADEL_REQUIRED_ROLES`, or `admin` | Authorization gate |
 
 ---
 
@@ -187,18 +187,10 @@ JWT validation failures map to the redacted reason:
 Citadel fetches the JSON Web Key Set from Keycloak:
 
 ```
-GET {CITADEL_KEYCLOAK_URL}/auth/realms/{realm}/protocol/openid-connect/certs
+GET {CITADEL_KEYCLOAK_URL}/realms/{CITADEL_KEYCLOAK_REALM}/protocol/openid-connect/certs
 ```
 
-Derived in `config.rs`:
-```rust
-pub fn jwks_url(&self) -> String {
-    format!(
-        "{}/auth/realms/{}/protocol/openid-connect/certs",
-        self.keycloak_url, self.keycloak_realm
-    )
-}
-```
+Derived by `AuthConfig::jwks_url()` in [`common/src/auth/config.rs`](../../../common/src/auth/config.rs) (D10). `/auth` is **not** hard-coded: for legacy Keycloak (< 17) include it in the base URL, e.g. `CITADEL_KEYCLOAK_URL=https://host/auth`.
 
 ### Caching Strategy (`JwksCache`)
 
@@ -256,22 +248,25 @@ CITADEL_JWKS_REFRESH_SECS=60
 
 ### Role Helpers (`Claims`)
 
+Defined in [`common/src/auth/claims.rs`](../../../common/src/auth/claims.rs); every helper takes the service name (`"citadel"`) whose `resource_access` entry to inspect:
+
 ```rust
 impl Claims {
-    pub fn get_roles(&self) -> Vec<String>;         // resource_access.citadel.roles
-    pub fn has_role(&self, role: &str) -> bool;
-    pub fn is_admin(&self) -> bool;                 // has_role("admin")
-    pub fn can_write(&self) -> bool;                // admin || write
-    pub fn can_read(&self) -> bool;                 // admin || read || write
+    pub fn get_roles(&self, service: &str) -> Vec<String>;       // resource_access.{service}.roles
+    pub fn has_role(&self, service: &str, role: &str) -> bool;
+    pub fn is_admin(&self, service: &str) -> bool;               // has_role(service, "admin")
+    pub fn can_write(&self, service: &str) -> bool;              // admin || write
+    pub fn can_read(&self, service: &str) -> bool;               // admin || read  (write alone does NOT imply read)
+    pub fn is_internal(&self, service: &str) -> bool;            // admin || internal — exists, unused (D9)
 }
 ```
 
-`req.middleware` (`auth_middleware`) validates the JWT, requires at least one role from `CITADEL_REQUIRED_ROLES`, and inserts a `Claims` into request extensions for handlers. (The common `Claims::is_internal` utility method still exists but is **not used** by either service — Barbican coordination is not role-gated, see [Barbican trust model](../../../barbican/src/docs/authentication.md).)
+`common::auth_middleware` (re-exported by `middleware/auth.rs`) validates the JWT, requires at least one role from `CITADEL_REQUIRED_ROLES` (or `admin`), and inserts a `Claims` into request extensions for handlers. (The common `Claims::is_internal` utility method still exists but is **not used** by either service — Barbican coordination is not role-gated, see [Barbican trust model](../../../barbican/src/docs/authentication.md).)
 
 ### Configuration
 
 ```bash
-# Comma-separated list of accepted roles (middleware gate)
+# Comma-separated list of accepted roles (middleware gate); must be non-empty
 CITADEL_REQUIRED_ROLES=read,write
 ```
 
@@ -284,7 +279,7 @@ The job callback endpoint (`POST /api/v1/job/callback`) authenticates job worker
 ### Flow (from [`handlers/job_callback.rs`](../src/handlers/job_callback.rs))
 
 1. **Callback secret validation** (when a secret is configured): the `X-Callback-Secret` header is compared in constant time; missing/mismatch → `401 invalid_callback_secret` (see [Callback Secret Validation](#callback-secret-validation-implemented))
-2. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew)
+2. **Timestamp validation**: `now - timestamp` must be `< 300s` and `> -60s` (5-minute window, 1-minute clock skew). `citadel-job` stamps a fresh timestamp and UUID nonce on **every** send attempt (`build_callback_request` / `build_progress_request` in `job_main.rs`), so the window bounds network delay only, not job duration
 3. **Nonce validation & storage**: look up `{ nonce }` in the `callback_nonces`
    collection:
    - A nonce that is still **live** (expires at a future time) → reject
@@ -397,34 +392,22 @@ Security-relevant events are logged with `tracing` (`info`/`warn`/`error`), incl
 
 ## Implementation Details
 
-### Auth Middleware (`middleware/auth.rs`)
+### Auth Middleware (`common/src/auth/middleware.rs`)
+
+`citadel/src/middleware/auth.rs` re-exports `common::auth_middleware`. Its state is the `Arc<AuthMiddlewareState>` built at startup:
 
 ```rust
-pub async fn auth_middleware(
-    State(state): State<AppState>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    // 1. Extract "Bearer <token>" from Authorization header
-    let token = extract_token(&req).ok_or(StatusCode::UNAUTHORIZED)?;
-
-    // 2. Validate JWT and get Claims
-    let claims = crate::auth::validate_jwt(&token, &state.jwks_cache, &state.config)
-        .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-
-    // 3. Require at least one role from CITADEL_REQUIRED_ROLES
-    let has_required_role = state.config.required_roles.iter()
-        .any(|role| claims.has_role(role));
-    if !has_required_role {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    // 4. Insert AuthState for handlers
-    req.extensions_mut().insert(AuthState::new(claims));
-    Ok(next.run(req).await)
-}
+// main.rs (D10)
+let auth_config = AuthConfig::from_env_prefixed("CITADEL")?;
+let auth_state = build_auth_state(&auth_config, "citadel"); // JwksCache -> JwtValidator -> state
 ```
+
+Per request the middleware:
+
+1. Extracts `Bearer <token>` from `Authorization` (missing → `401 auth_error`)
+2. Validates the JWT with `JwtValidator` (JWKS unavailable → `503 service_unavailable`; other failures → `401 auth_error`)
+3. Requires `has_role("citadel", r) || is_admin("citadel")` for some `r` in `required_roles` (else `403 forbidden`)
+4. Inserts the `Claims` into request extensions
 
 ### JWKS Cache Core (`auth/jwt_validator.rs`)
 
@@ -447,14 +430,16 @@ impl JwksCache {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CITADEL_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server URL |
+| `CITADEL_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak base URL incl. any path prefix (`/auth` for Keycloak < 17); trailing `/` trimmed; default rejected when `PRODUCTION=true` |
 | `CITADEL_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
-| `CITADEL_KEYCLOAK_CLIENT_ID` | `citadel` | Client ID for audience validation |
-| `CITADEL_KEYCLOAK_CLIENT_SECRET` | *(optional in code)* | Client secret |
-| `CITADEL_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated) |
-| `CITADEL_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms |
-| `CITADEL_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval |
+| `CITADEL_KEYCLOAK_CLIENT_ID` | `citadel` | Expected `aud` (needs a Keycloak audience mapper) |
+| `CITADEL_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated, non-empty) |
+| `CITADEL_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms; `HS*`/`none` rejected at startup |
+| `CITADEL_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval (minimum 60) |
+| `CITADEL_TOKEN_LEEWAY_MS` | `5000` | `exp`/`nbf` clock-skew leeway (maximum 60000) |
 | `CITADEL_JOB_CALLBACK_SECRET_FILE` | `/etc/citadel/secrets/callback-secret` | Path to shared callback secret |
+
+Auth variables are parsed by `common::AuthConfig::from_env_prefixed("CITADEL")` (D10); malformed numbers abort startup naming the variable. `CITADEL_KEYCLOAK_CLIENT_SECRET` and the unprefixed `KEYCLOAK_*` names are no longer read. See [Configuration](configuration.md#keycloak-authentication).
 
 ### Example Configuration
 
@@ -463,12 +448,12 @@ impl JwksCache {
 export CITADEL_KEYCLOAK_URL="http://localhost:8080"
 export CITADEL_KEYCLOAK_REALM="data-warehouse"
 export CITADEL_KEYCLOAK_CLIENT_ID="citadel"
-export CITADEL_KEYCLOAK_CLIENT_SECRET="super-secret"
 
 # JWT validation
 export CITADEL_ALLOWED_ALGORITHMS="RS256"
 export CITADEL_REQUIRED_ROLES="read,write"
 export CITADEL_JWKS_REFRESH_SECS="60"
+export CITADEL_TOKEN_LEEWAY_MS="5000"
 
 # Callback secret
 export CITADEL_JOB_CALLBACK_SECRET_FILE="/etc/citadel/secrets/callback-secret"

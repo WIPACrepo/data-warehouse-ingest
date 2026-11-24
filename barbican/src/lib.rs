@@ -58,22 +58,27 @@
 //!
 //! # Configuration
 //!
-//! Configuration is loaded from environment variables. See [`config::Config`] for details.
+//! Configuration is loaded from environment variables. See [`config::Config`]
+//! for service settings and [`AuthConfig::from_env_prefixed`] (with prefix
+//! `BARBICAN`) for Keycloak/JWT settings.
 //!
 //! # Example
 //!
 //! ```rust,no_run
-//! use barbican::{Config, serve};
+//! use barbican::{AuthConfig, Config, serve};
 //! use mongodb::Client;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let config = Config::from_env().expect("Failed to load configuration");
+//!     // Reads BARBICAN_KEYCLOAK_URL, BARBICAN_REQUIRED_ROLES, ... (D10)
+//!     let auth_config = AuthConfig::from_env_prefixed("BARBICAN")
+//!         .expect("Failed to load auth configuration");
 //!     let client = Client::with_uri_str(&config.mongodb_uri)
 //!         .await
 //!         .expect("Failed to connect to MongoDB");
-//!     
-//!     serve(client, config).await;
+//!
+//!     serve(client, config, auth_config).await;
 //! }
 //! ```
 
@@ -118,22 +123,18 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(store: Arc<dyn InboxStore>, config: Config) -> Self {
+    /// Build the application state.
+    ///
+    /// `auth_state` is built by the caller (see [`serve`]) from
+    /// `AuthConfig::from_env_prefixed("BARBICAN")` via
+    /// [`common::build_auth_state`], so configuration errors surface at
+    /// startup as a `Result` instead of a panic here.
+    pub fn new(
+        store: Arc<dyn InboxStore>,
+        config: Config,
+        auth_state: Arc<AuthMiddlewareState>,
+    ) -> Self {
         let citadel_client = CitadelClient::new(&config).ok();
-
-        // Initialize common auth components
-        let auth_config =
-            AuthConfig::from_env().expect("Failed to load auth config from environment");
-        let jwks_cache = Arc::new(JwksCache::new(
-            auth_config.jwks_url(),
-            auth_config.jwks_refresh_secs,
-        ));
-        let validator = Arc::new(JwtValidator::new(jwks_cache, auth_config.clone()));
-        let auth_state = Arc::new(AuthMiddlewareState {
-            validator,
-            required_roles: config.required_roles.clone(),
-            service_name: "barbican".to_string(),
-        });
 
         let metrics = Arc::new(
             metrics::BarbicanMetrics::new().expect("Failed to initialize Barbican metrics"),
@@ -264,7 +265,10 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 }
 
 /// Serve the application on the given address
-pub async fn serve(client: mongodb::Client, config: Config) {
+///
+/// `auth_config` is loaded by the caller with
+/// `AuthConfig::from_env_prefixed("BARBICAN")` (decision D10).
+pub async fn serve(client: mongodb::Client, config: Config, auth_config: AuthConfig) {
     let listener = tokio::net::TcpListener::bind(&config.bind_address)
         .await
         .unwrap();
@@ -283,7 +287,8 @@ pub async fn serve(client: mongodb::Client, config: Config) {
 
     let store = Arc::new(MongoInboxStore::new(collection));
 
-    let state = Arc::new(AppState::new(store, config));
+    let auth_state = common::build_auth_state(&auth_config, "barbican");
+    let state = Arc::new(AppState::new(store, config, auth_state));
     let app = create_app(state.clone());
 
     // Serve Barbican's own prometheus registry on the metrics port (P4.3).

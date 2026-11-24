@@ -21,9 +21,10 @@ This document covers the non-model utilities in `common` that both services reus
 Defined in `common/src/traits.rs`. `InboxStore` is the async storage interface that handlers depend on. It lets service code (and tests) program against an abstraction instead of MongoDB directly:
 
 ```rust
-#[automock]
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait InboxStore: Send + Sync {
+    async fn ping(&self) -> Result<(), mongodb::error::Error>;
     async fn insert_one(&self, inbox: InboxDB) -> Result<InsertOneResult, mongodb::error::Error>;
     async fn find_one(&self, filter: Document) -> Result<Option<InboxDB>, mongodb::error::Error>;
     async fn find_many(&self, filter: Document, options: FindOptions)
@@ -36,6 +37,8 @@ pub trait InboxStore: Send + Sync {
 ```
 
 `count` backs Barbican's paginated `GET /api/v1/inbox` envelope (`total` + `has_more` via `count_documents`).
+
+`ping` is a liveness check of the backing database, used by Barbican's `GET /ready` probe (`200` when it succeeds, `503` otherwise). `MongoInboxStore` implements it as a `{ping: 1}` command against the `admin` database of the collection's client, so readiness reflects the same client the handlers use.
 
 ### The MongoDB adapter
 
@@ -50,7 +53,7 @@ Then handlers receive `Arc<dyn InboxStore>` (Barbican stores it in `AppState.sto
 
 ### The mock
 
-Because of `#[automock]`, `mockall` generates `MockInboxStore` with the same interface. It is re-exported and used everywhere unit tests need a store without MongoDB. See [testing.md](testing.md).
+`mockall` generates `MockInboxStore` with the same interface, but **only** when `common` is compiled for its own tests (`cfg(test)`) or with the `test-utils` feature (`#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]`). `mockall` is an optional dependency enabled by `test-utils` (plus a dev-dependency for `common`'s own tests), so it is not part of either service's production dependency graph. Under those same conditions `MockInboxStore` is re-exported as `common::MockInboxStore`. See [testing.md](testing.md).
 
 ### Why it matters
 
@@ -217,5 +220,6 @@ Applied via `common::router_logging_layer(router)` in Barbican's `create_app`.
 - [README.md](README.md) - Main index
 - [models.md](models.md) - The data types persisted through the storage abstraction
 - [testing.md](testing.md) - `MockInboxStore` and test conventions
+- [auth.md](auth.md) - JWT/Keycloak configuration and middleware (`auth` feature)
 - [barbican/src/docs/architecture.md](../../barbican/src/docs/architecture.md) - How Barbican wires these utilities together
 - [citadel/src/docs/architecture.md](../../citadel/src/docs/architecture.md) - How Citadel wires these utilities together

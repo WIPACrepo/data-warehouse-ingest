@@ -12,6 +12,7 @@ This directory contains comprehensive documentation for the `common` crate, orga
 | [`overview.md`](overview.md) | ~9 KB | How `common` fits into the Barbican/Citadel architecture |
 | [`models.md`](models.md) | ~8 KB | Shared data model: inboxes, statuses, progress, errors |
 | [`infrastructure.md`](infrastructure.md) | ~10 KB | Shared utilities: config, DB, error, metrics, middleware |
+| [`auth.md`](auth.md) | ~9 KB | JWT/Keycloak auth: prefixed `AuthConfig`, `build_auth_state`, decision D10 |
 | [`testing.md`](testing.md) | ~8 KB | Test utilities and conventions |
 
 ### Module Files
@@ -55,6 +56,13 @@ common/src/docs/
 │   ├── Metrics
 │   └── HTTP Middleware
 │
+├── auth.md                      # Authentication (feature `auth`)
+│   ├── Loading Configuration (from_env_prefixed / from_lookup)
+│   ├── Environment Variables ({PREFIX}_KEYCLOAK_*, ...)
+│   ├── Derived URLs, Validation Rules
+│   ├── build_auth_state, Role Checks
+│   └── Design Decision D10
+│
 ├── testing.md                   # Test utilities
 │   ├── Builders
 │   ├── Fixtures & Helpers
@@ -94,6 +102,7 @@ common/src/docs/
 - **Inbox Lifecycle** → See [`models.md`](models.md#inboxstatus) and [`barbican/src/docs/state-machine.md`](../../barbican/src/docs/state-machine.md)
 - **Storage Abstraction** → See [`infrastructure.md`](infrastructure.md#storage-abstraction) and [`overview.md`](overview.md#how-the-services-consume-common)
 - **Error Handling** → See [`infrastructure.md`](infrastructure.md#error-handling)
+- **Authentication / Keycloak env vars** → See [`auth.md`](auth.md)
 - **Testing** → See [`testing.md`](testing.md) and the per-module `src/tests/` files
 
 ### Related Service Documentation
@@ -131,6 +140,7 @@ common/src/docs/
 
 - **Adding/changing a shared type** → Update [`models.md`](models.md)
 - **Adding/changing a shared utility** → Update [`infrastructure.md`](infrastructure.md)
+- **Changing auth config, JWT validation or auth middleware** → Update [`auth.md`](auth.md)
 - **Changing the module layout** → Update [`overview.md`](overview.md) and [`README.md`](README.md)
 - **Changing test utilities** → Update [`testing.md`](testing.md)
 - **Adding a new file** → Update this file, `README.md`, and `mod.rs`
@@ -165,7 +175,7 @@ The markdown files in this directory can be:
 ## Version Information
 
 - **Documentation Version**: 1.0
-- **Last Updated**: 2026-08-18
+- **Last Updated**: 2026-11-24
 - **Common Version**: 0.0.0
 - **Rust Edition**: 2024
 

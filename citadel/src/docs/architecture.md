@@ -165,7 +165,7 @@ Both binaries are built from the same `citadel` crate (see [`Cargo.toml`](../Car
 - One-shot command-line worker (`src/job_main.rs`)
 - Reads job parameters from environment variables (`JOB_ID`, `JOB_TYPE`, `INBOX_ID`, `INBOX_PATH`, `WAREHOUSE_PATH`, etc.)
 - Executes the file transfer via the shared `storage::transfer` module
-- Sends a completion callback to the Citadel API (`CITADEL_CALLBACK_URL`)
+- Sends progress reports and a completion callback to the Citadel API (`CITADEL_CALLBACK_URL`), minting a fresh timestamp + nonce for every send attempt
 - Exits `0` on success, `1` on failure
 - In production runs as a Kubernetes Job; in development it can be run directly or by the mock executor
 
@@ -393,13 +393,13 @@ Update job: Completed / Failed / TimedOut
 
 ### 5. Fail-Fast Barbican Coordination
 
-**Decision**: Barbican API calls retry with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` (default 5); a 409 conflict fails immediately.
+**Decision**: Barbican API calls retry with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` (default 5); a 409 conflict fails immediately; after `RETRY_MAX` consecutive failed calls a circuit breaker fails calls fast for 30 s.
 
 **Rationale**: Infinite retry on a conflicted state transition risks hanging jobs and inconsistent inbox state.
 
 ### 6. Replay-Protected Callback Authentication
 
-**Decision**: Job callbacks carry a timestamp (validated within 5 minutes, allowing 1 minute clock skew) and a per-call nonce stored in MongoDB to prevent replay. When a callback secret is configured, the `X-Callback-Secret` header is verified with a **constant-time comparison** (`ct_eq`); the secret is hot-reloaded from file via the `notify` watcher.
+**Decision**: Job callbacks and progress reports carry a timestamp (validated: under 300 s old, at most 60 s in the future) and a UUID nonce stored in MongoDB (300 s TTL) to prevent replay. `citadel-job` mints a fresh pair for **every** send attempt, including retries, so jobs of any duration can report. When a callback secret is configured, the `X-Callback-Secret` header is verified with a **constant-time comparison** (`ct_eq`); the secret is hot-reloaded from file via the `notify` watcher.
 
 **Rationale**: The callback endpoint is the trust boundary for job results; replay protection prevents forged/duplicated completions, and the shared secret authenticates the job caller (constant-time compare avoids timing side channels).
 
@@ -408,6 +408,12 @@ Update job: Completed / Failed / TimedOut
 **Decision**: Directory tree traversal with active-chain `(dev, ino)` loop detection, multi-layer external symlink validation (canonical prefix + `st_dev`), TOCTOU mitigation via non-following `read_link`/`lstat` chain resolution, streaming collection over a bounded channel with backpressure, and the atomic transfer pattern (temp dir + rename, rollback on failure).
 
 **Rationale**: Inboxes are an untrusted-content boundary; symlinks are the primary attack vector (loops, exfiltration, farms, races). Security-hardened defaults deny external links and bound all resources. See [Recursive Transfer](recursive-transfer.md), [Symlink Limitations](symlink-limitations.md), and [Security Considerations](security-considerations.md).
+
+### 8. Shared Auth Parsing, Service-Owned Prefixes (D10)
+
+**Decision**: JWT/Keycloak configuration is parsed once in `common` (`AuthConfig::from_env_prefixed(prefix)` + `build_auth_state`), while each service owns its variable namespace (`CITADEL_KEYCLOAK_URL`, `CITADEL_REQUIRED_ROLES`, ...). `CITADEL_KEYCLOAK_URL` includes any path prefix (e.g. `/auth` for Keycloak < 17) instead of `/auth/` being hard-coded. See [Configuration](configuration.md#keycloak-authentication).
+
+**Rationale**: Both services validate tokens identically, misconfigurations fail at startup with the variable named, and two services in one environment cannot accidentally share (or shadow) each other's settings — previously Citadel read unprefixed `KEYCLOAK_*` names, so its documented `CITADEL_KEYCLOAK_*` variables were ignored.
 
 The full decision ledger lives in [Implementation Status](#implementation-status) and the per-topic documents above.
 
@@ -423,10 +429,11 @@ today.
 
 - HTTP server with routing, `/health`, `/ready` (axum 0.8)
 - JWT validation with JWKS caching, algorithm whitelist, `alg: none` rejection
-- Role-based authorization (`admin` / `write` / `read` / `internal`)
+- Role-based authorization (`admin` / `write` / `read`; there is no `internal` role — D9)
+- Auth config parsed by `common::AuthConfig::from_env_prefixed("CITADEL")` (D10)
 - MongoDB connectivity and `jobs` / `callback_nonces` collection helpers
-- Job model (`JobDB`), per-type queue semaphores, processor
-- Barbican client with exponential-backoff retry and 409 conflict handling
+- Job model (`JobDB`); per-type in-flight quota (`count_in_flight_jobs`, 429 when saturated — D8)
+- Barbican client (`InboxTransitioner`) with exponential-backoff retry, 409 conflict handling, and a circuit breaker (30 s half-open)
 - Storage manager with path traversal validation
 - **Recursive file transfer engine**: chmod-555 lock, recursive tree walk with
   symlink loop detection (active-chain `(dev, ino)`), multi-layer external
@@ -462,10 +469,8 @@ today.
 - **Catalog / LTA notifiers** are `NoOp` in the running service by default
   (`main.rs` constructs `NoOpCatalogNotifier` / `NoOpLtaNotifier`); the HTTP
   implementations exist but are not enabled without configuration.
-- **TTL index** on `callback_nonces.expires_at`: collection helper exists;
-  index creation is not wired.
-- **Metadata polling during transfer**: not present in the transfer path
-  (the background poller reconciles after the fact instead).
+- **Delete progress**: `execute_delete` in `citadel-job` does not send
+  progress reports (the forwarding path to Barbican `delete/progress` exists).
 
 The list above is the authoritative implementation-status log; keep it in
 sync with the code.

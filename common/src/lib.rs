@@ -18,6 +18,7 @@
 //! - [`README.md`](docs/README.md) - Main index with quick start and overview
 //! - [`overview.md`](docs/overview.md) - How `common` fits into the architecture
 //! - [`models.md`](docs/models.md) - Shared data model (inboxes, statuses, progress)
+//! - [`auth.md`](docs/auth.md) - JWT/Keycloak auth: prefixed env config, validation, middleware
 //! - [`infrastructure.md`](docs/infrastructure.md) - Shared utilities (config, db, error, metrics, middleware)
 //! - [`testing.md`](docs/testing.md) - Test utilities and conventions
 //!
@@ -47,7 +48,7 @@ pub use adapters::MongoInboxStore;
 #[cfg(feature = "auth")]
 pub use auth::{
     AuthConfig, AuthError, AuthMiddlewareState, Claims, ClaimsExtractor, ConfigError, Jwk, Jwks,
-    JwksCache, JwtValidator, auth_middleware,
+    JwksCache, JwtValidator, auth_middleware, build_auth_state,
 };
 pub use config::{logging_setup, shutdown_signal};
 pub use db::{db_collection, db_database, db_setup, db_setup_with_shutdown};

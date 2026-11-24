@@ -82,7 +82,7 @@ See [Architecture](architecture.md) for detailed component breakdown.
 barbican/src/
 ├── main.rs              # Application entry point
 ├── lib.rs               # Library exports, AppState, create_app, serve
-├── config.rs            # Environment configuration loading
+├── config.rs            # Service env config (auth is common::AuthConfig::from_env_prefixed("BARBICAN"), D10)
 ├── db.rs                # ensure_inbox_indexes (unique warehouse_path, P1.5)
 ├── metrics.rs           # BarbicanMetrics: inboxes_total gauge + api_requests_total counter (P4.3)
 ├── clients/
@@ -94,7 +94,7 @@ barbican/src/
 │   ├── delete_inbox.rs  # DELETE /api/v1/inbox/{id} (202 envelope)
 │   ├── publish_inbox.rs # POST /api/v1/inbox/{id}/publish (202, no body)
 │   ├── health.rs        # GET /health
-│   ├── ready.rs         # GET /ready
+│   ├── ready.rs         # GET /ready (MongoDB ping; 200 ready / 503 not_ready)
 │   └── transition/      # Internal action endpoints (called only by Citadel)
 │       ├── create.rs    # /create/start, /progress, /complete, /failure
 │       ├── publish.rs   # /publish/start, /progress, /complete, /failure
@@ -102,7 +102,7 @@ barbican/src/
 ├── middleware/
 │   └── mod.rs           # Re-exports common::auth_middleware (auth lives in common::auth)
 ├── test_utils/          # Test utilities (cfg(test))
-│   └── fixtures.rs      # create_test_inbox*, create_test_store, create_test_request, create_test_state
+│   └── mod.rs           # create_test_state, test_auth_state; re-exports common::test_utils + MockInboxStore
 ├── tests/               # Unit tests (mirroring src/)
 └── docs/                # This documentation directory
 ```
@@ -140,8 +140,8 @@ See [State Machine](state-machine.md) for all valid transitions.
 
 - [Design Plan](01-design-plan.md) - Historical design (pre-review)
 - [Completion Report](02-completion-report.md) - Historical completion report (pre-review)
-- [Common Crate Documentation](../../common/src/docs/README.md) - Shared types and utilities
-- [Citadel Documentation](../../citadel/src/docs/README.md) - Backend service specification
+- [Common Crate Documentation](../../../common/src/docs/README.md) - Shared types and utilities
+- [Citadel Documentation](../../../citadel/src/docs/README.md) - Backend service specification
 
 ---
 

@@ -247,6 +247,10 @@ When a conflict occurs (version mismatch):
 
 ### Invalid State Transitions
 
+All errors use the common `{error, message}` body (snake_case `error` code,
+no `details` field) produced by `common::AppError` — see
+[API Reference](api-reference.md#error-responses).
+
 Attempting an invalid transition returns `422 Unprocessable Entity`:
 
 **Example:** Publishing an inbox that's still being created
@@ -259,44 +263,34 @@ Authorization: Bearer <token>
 **Response (422):**
 ```json
 {
-  "error": "INVALID_STATE_TRANSITION",
-  "message": "Cannot publish inbox in state 'creating', expected 'ready'",
-  "details": {
-    "current_state": "creating",
-    "required_state": "ready"
-  }
+  "error": "invalid_state_transition",
+  "message": "Cannot publish inbox in state Creating; must be Ready"
 }
 ```
 
 ### Concurrent Modification
 
-When optimistic locking detects a conflict:
+When the version-conditional update (`apply_versioned_update`) matches no
+document:
 
 **Response (409):**
 ```json
 {
-  "error": "OPTIMISTIC_LOCK_FAILURE",
-  "message": "Inbox was modified concurrently, please retry",
-  "details": {
-    "expected_version": 5,
-    "current_version": 6
-  }
+  "error": "conflict",
+  "message": "Inbox state was modified concurrently"
 }
 ```
 
 ### Job ID Mismatch
 
-When Citadel reports progress for the wrong job:
+When Citadel reports progress/completion with a `job_id` that differs from
+the inbox's `current_job_id`:
 
 **Response (400):**
 ```json
 {
-  "error": "JOB_ID_MISMATCH",
-  "message": "Job ID does not match current operation",
-  "details": {
-    "expected_job_id": "abc-123",
-    "received_job_id": "xyz-789"
-  }
+  "error": "validation_error",
+  "message": "Job ID does not match current operation"
 }
 ```
 

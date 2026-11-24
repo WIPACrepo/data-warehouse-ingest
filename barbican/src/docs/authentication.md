@@ -86,9 +86,9 @@ Barbican expects JWT tokens with the following structure:
 | Claim | Requirement | Description |
 |-------|-------------|-------------|
 | `alg` | Must be `RS256` | Algorithm whitelist enforced |
-| `iss` | Must match Keycloak realm URL | Issuer validation |
-| `aud` | Must match `barbican` | Audience validation |
-| `exp` | Must be in future (5s leeway) | Expiration check |
+| `iss` | Must equal `{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}` | Issuer validation |
+| `aud` | Must contain `BARBICAN_KEYCLOAK_CLIENT_ID` (default `barbican`; needs a Keycloak audience mapper) | Audience validation |
+| `exp` | Must be in future (leeway `BARBICAN_TOKEN_LEEWAY_MS`, default 5000 ms) | Expiration check |
 | `resource_access.barbican.roles` | Must contain required role | Authorization check |
 
 ---
@@ -102,7 +102,7 @@ Barbican performs the following validation checks in order:
 1. **Token Format**: Verify JWT structure (header.payload.signature)
 2. **Algorithm Check**: Ensure `alg` is in allowed list (default: `RS256`)
 3. **Signature Verification**: Validate signature against JWKS public key
-4. **Expiration Check**: Verify token not expired (5-second leeway)
+4. **Expiration Check**: Verify token not expired (leeway `BARBICAN_TOKEN_LEEWAY_MS`, default 5 s, max 60 s)
 5. **Issuer Validation**: Check `iss` claim matches Keycloak realm
 6. **Audience Validation**: Check `aud` claim matches client ID
 7. **Role Verification**: Ensure token has required role for endpoint
@@ -167,9 +167,11 @@ D7) — never bare status codes.
 Barbican fetches the JSON Web Key Set (JWKS) from Keycloak:
 
 ```
-GET /realms/{realm}/protocol/openid-connect/certs
-Host: keycloak:8080
+GET {BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/certs
 ```
+
+`BARBICAN_KEYCLOAK_URL` includes any path prefix; no `/auth/` segment is
+added automatically (legacy Keycloak < 17: set it to `https://host/auth`).
 
 Response:
 ```json
@@ -190,7 +192,7 @@ Response:
 
 To reduce load on Keycloak and improve performance:
 
-- **Cache Duration**: JWKS cached for 60 seconds (configurable)
+- **Cache Duration**: JWKS cached for `BARBICAN_JWKS_REFRESH_SECS` (default and minimum 60 seconds)
 - **Lazy Refresh**: Fetch new JWKS only when cache expires
 - **Kid Rotation**: Immediately refresh if unknown `kid` encountered
 - **Rate Limiting**: Max 1 JWKS refresh per minute
@@ -284,14 +286,14 @@ write ⊃ {read}
 ### Configuration
 
 ```bash
-# Comma-separated list of accepted roles (external routes only)
+# Comma-separated list of accepted roles (external routes only).
+# Must name at least one role; an empty value is a startup error.
 BARBICAN_REQUIRED_ROLES=read,write
-
-# Admin role (has all permissions)
-BARBICAN_ADMIN_ROLE=admin
 ```
 
-(`BARBICAN_INTERNAL_ROLES` does **not** exist.)
+`admin` always passes the role check (hard-coded in
+`common::auth_middleware`; there is no `BARBICAN_ADMIN_ROLE` variable).
+`BARBICAN_INTERNAL_ROLES` does **not** exist.
 
 ---
 
@@ -400,122 +402,53 @@ All authentication events should be logged:
 
 ## Implementation Details
 
-### Claims Structure
+Barbican has no auth code of its own: everything lives in `common::auth`
+(see [`common/src/docs/auth.md`](../../../common/src/docs/auth.md)).
+
+### Startup wiring (`barbican/src/main.rs`, `barbican/src/lib.rs`)
 
 ```rust
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Claims {
-    pub sub: String,
-    pub iss: String,
-    pub aud: String,
-    pub exp: usize,
-    pub iat: usize,
-    pub resource_access: Option<HashMap<String, ResourceAccess>>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResourceAccess {
-    pub roles: Vec<String>,
-}
-
-impl Claims {
-    pub fn get_roles(&self) -> Vec<String> {
-        self.resource_access
-            .as_ref()
-            .and_then(|ra| ra.get("barbican"))
-            .map(|ra| ra.roles.clone())
-            .unwrap_or_default()
-    }
-    
-    pub fn has_role(&self, role: &str) -> bool {
-        self.get_roles().contains(&role.to_string())
-    }
-    
-    pub fn is_admin(&self) -> bool {
-        self.has_role("admin")
-    }
-    
-    pub fn can_write(&self) -> bool {
-        self.is_admin() || self.has_role("write")
-    }
-
-}
+// main.rs — fail fast, before connecting to MongoDB
+let auth_config = AuthConfig::from_env_prefixed("BARBICAN")?; // BARBICAN_KEYCLOAK_*, ...
+// lib.rs::serve
+let auth_state = common::build_auth_state(&auth_config, "barbican");
+let state = Arc::new(AppState::new(store, config, auth_state));
 ```
 
-### JWT Validation
+`create_app` derives a second `AuthMiddlewareState` for the internal
+`*/{start,progress,complete,failure}` routes with the same validator and an
+empty `required_roles` (Bearer-only, D9).
 
-```rust
-use jsonwebtoken::{decode, jwk::JwkSet, Algorithm, DecodingKey, Validation};
+### Claims (`common/src/auth/claims.rs`)
 
-pub async fn validate(&self, token: &str) -> Result<Claims, JwtError> {
-    // Fetch JWKS (cached)
-    let jwks = self.get_jwks().await?;
-    
-    // Decode header to get kid
-    let header = jsonwebtoken::decode_header(token)?;
-    
-    // Find matching JWK
-    let jwk = jwks.keys.iter()
-        .find(|k| k.common.key_id == header.kid)
-        .ok_or(JwtError::UnknownKeyId)?;
-    
-    // Extract public key from x509 chain
-    let public_key = extract_public_key(jwk)?;
-    
-    // Set up validation
-    let mut validation = Validation::new(Algorithm::RS256);
-    validation.leeway = 5000; // 5 seconds
-    validation.iss = Some(self.config.keycloak_issuer.clone());
-    validation.aud = Some(self.config.keycloak_audience.clone());
-    
-    // Decode and validate token
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_rsa_pem(public_key.as_bytes())?,
-        &validation,
-    )?;
-    
-    Ok(token_data.claims)
-}
-```
+Role helpers take the service name, which selects
+`resource_access.<service>.roles`:
 
-### Auth Middleware
+| Method | Meaning |
+|--------|---------|
+| `get_roles(service)` | roles listed for `service` |
+| `has_role(service, role)` | `role` is listed |
+| `is_admin(service)` | has `admin` |
+| `can_write(service)` | `admin` or `write` |
+| `can_read(service)` | `admin` or `read` |
+| `is_internal(service)` | `admin` or `internal` — exists but unused (no internal role, D9) |
 
-```rust
-use axum::{
-    extract::State,
-    http::{Request, StatusCode},
-    middleware::Next,
-    response::Response,
-};
+### JWT validation (`common/src/auth/jwt_validator.rs`)
 
-pub async fn validate_auth<B>(
-    State(state): State<Arc<AppState>>,
-    mut request: Request<B>,
-    next: Next<B>,
-) -> Result<Response, StatusCode> {
-    // Extract token from Authorization header
-    let token = extract_token(&request)?;
-    
-    // Validate token
-    let claims = state.jwt_validator.validate.validate(token)
-        .\n        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    
-    // Check required role
-    let required_role = get_required_role(&request);
-    if !claims.has_role(required_role) && !claims.is_admin() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    
-    // Insert claims into request extensions
-    request.extensions_mut().insert(claims);
-    
-    Ok(next.run(request).await)
-}
-```
+1. Decode the header; reject algorithms not in `BARBICAN_ALLOWED_ALGORITHMS`.
+2. Look up the `kid` in the cached JWKS (`JwksCache`, refreshed every
+   `BARBICAN_JWKS_REFRESH_SECS`).
+3. Validate signature, `exp`, `iss` (`AuthConfig::issuer()`) and `aud`
+   (`BARBICAN_KEYCLOAK_CLIENT_ID`). Leeway is `AuthConfig::leeway_secs()` —
+   `BARBICAN_TOKEN_LEEWAY_MS` converted to whole seconds (rounded up), because
+   `jsonwebtoken` expects seconds.
+
+### Auth middleware (`common::auth_middleware`)
+
+`auth_middleware(State<Arc<AuthMiddlewareState>>, Request, Next) -> Result<Response, AppError>`:
+missing/invalid Bearer → 401 `auth_error`; JWKS unavailable → 503
+`service_unavailable`; none of `required_roles` (and not `admin`) → 403
+`forbidden`; otherwise `Claims` are inserted into request extensions.
 
 ---
 
@@ -523,16 +456,33 @@ pub async fn validate_auth<B>(
 
 ### Environment Variables
 
+Auth settings are parsed by the shared
+`common::AuthConfig::from_env_prefixed("BARBICAN")`
+(`common/src/auth/config.rs`, decision **D10**) — not by Barbican's `Config`.
+`barbican/src/main.rs` loads them before connecting to MongoDB and exits with
+status 1 on any error; the resulting `AuthConfig` is turned into middleware
+state with `common::build_auth_state(&auth_config, "barbican")`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server URL |
+| `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak base URL including any path prefix (e.g. `.../auth` for Keycloak < 17); trailing `/` trimmed |
 | `BARBICAN_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
-| `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Client ID for audience validation |
-| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(optional)* | Only checked for non-emptiness at startup (JWT validation is JWKS-based) |
-| `BARBICAN_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated, external routes) |
-| `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms |
-| `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval |
-| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to the Citadel service token used for Barbican → Citadel triggers |
+| `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Expected `aud` (requires an audience mapper on the Keycloak client) |
+| `BARBICAN_REQUIRED_ROLES` | `read,write` | Accepted roles (comma-separated, external routes); must be non-empty |
+| `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Allowed JWT algorithms; `HS*` and `none` rejected |
+| `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval (minimum 60) |
+| `BARBICAN_TOKEN_LEEWAY_MS` | `5000` | Clock-skew leeway for `exp`/`nbf` (maximum 60000) |
+| `PRODUCTION` *(global)* | unset | `true` rejects the localhost default `BARBICAN_KEYCLOAK_URL` |
+| `BARBICAN_CITADEL_SERVICE_TOKEN_FILE` | *(optional)* | Path to the Citadel service token used for Barbican → Citadel triggers (read by `Config`, not `AuthConfig`) |
+
+Malformed numbers are a startup error naming the variable. Derived values:
+issuer `{URL}/realms/{realm}`, JWKS `{URL}/realms/{realm}/protocol/openid-connect/certs`.
+
+> **Removed:** `BARBICAN_KEYCLOAK_CLIENT_SECRET` (required at startup but never
+> used) and the unprefixed `KEYCLOAK_URL`, `KEYCLOAK_REALM`,
+> `KEYCLOAK_CLIENT_ID`, `REQUIRED_ROLES`, `ALLOWED_ALGORITHMS`,
+> `JWKS_REFRESH_SECS`, `TOKEN_LEEWAY_MS` (previously what the auth layer
+> actually read). See [Configuration](configuration.md#keycloak-authentication).
 
 > `BARBICAN_INTERNAL_ROLES` does not exist (D9); the state-transition
 > endpoints require only a valid Bearer JWT. See
@@ -545,11 +495,12 @@ pub async fn validate_auth<B>(
 export BARBICAN_KEYCLOAK_URL="https://auth.example.com"
 export BARBICAN_KEYCLOAK_REALM="data-warehouse"
 export BARBICAN_KEYCLOAK_CLIENT_ID="barbican-service"
-export BARBICAN_KEYCLOAK_CLIENT_SECRET="super-secret-value"
+export PRODUCTION="true"
 
 # JWT Validation
 export BARBICAN_ALLOWED_ALGORITHMS="RS256,RS384"
 export BARBICAN_JWKS_REFRESH_SECS="60"
+export BARBICAN_TOKEN_LEEWAY_MS="5000"
 
 # Roles
 export BARBICAN_REQUIRED_ROLES="read,write"

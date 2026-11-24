@@ -86,7 +86,7 @@ Citadel validates JWT tokens with the following checks (see [`auth/jwt_validator
 | Job callback | timestamp + nonce (see below) |
 | `/health`, `/ready` | none |
 
-Roles are read from the `resource_access.citadel.roles` claim. Helper methods on `Claims`: `can_read()`, `can_write()`, `is_admin()`, `is_internal()`.
+Roles are read from the `resource_access.citadel.roles` claim. Helper methods on `Claims` (`common/src/auth/claims.rs`) take the service name (`"citadel"`): `get_roles(service)`, `has_role(service, role)`, `is_admin(service)`, `can_write(service)` (`admin` or `write`), `can_read(service)` (`admin` or `read` — a `write`-only token is **not** `can_read`), and `is_internal(service)` (exists but unused — there is no `internal` role, D9).
 
 ---
 
@@ -345,7 +345,7 @@ Content-Type: application/json
 X-Callback-Secret: <shared-secret>
 ```
 
-**Authentication:** the route sits inside the same JWT auth layer as the other `/api/v1` routes; the callback itself is additionally authenticated via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)). In practice the job worker always presents a valid service token *and* the shared secret.
+**Authentication:** the route sits inside the same JWT auth layer as the other `/api/v1` routes; the callback itself is additionally authenticated via callback secret + timestamp + nonce (see [Callback Security](authentication.md#callback-security)). **Known gap:** `citadel-job` currently sends only `X-Callback-Secret` (no `Authorization` header), so it is rejected by the JWT layer unless the route is reached another way.
 
 **Request Body:**
 ```json
@@ -364,7 +364,7 @@ X-Callback-Secret: <shared-secret>
 
 **Behavior:**
 1. **Callback secret validation** (when configured): `X-Callback-Secret` must match the configured secret using a **constant-time comparison**; missing/mismatch → `401 invalid_callback_secret`. When no secret is configured, a warning is logged and validation falls back to timestamp + nonce only.
-2. **Timestamp validation**: `age < 5 minutes` with up to 1 minute clock skew allowed
+2. **Timestamp validation**: `age < 300 s` (`NONCE_TTL_SECS`) and no more than 60 s in the future (`TIMESTAMP_SKEW_SECS`). `citadel-job` stamps a fresh timestamp + UUID nonce on **every** send attempt (including retries), so long-running jobs are not rejected
 3. **Nonce validation**: a *live* (unexpired) nonce is rejected as replayed (`callback_nonce_reused`); an *expired-but-present* nonce is reused with a fresh 5-minute window (the TTL index on `callback_nonces.expires_at` garbage-collects old rows — P2.2)
 4. Loads the job; ignores callbacks for already-terminal jobs
 5. On `completed` + `success`: sets `Completed`, records `JobResult`; the **terminal JobDB write is optimistic-locked** (`{job_id, version}` + `$inc version`); then notifies catalog → LTA (only if catalog succeeded), recording failures on the JobDB `errors` array + `citadel_notify_errors_total{target}`
@@ -411,7 +411,9 @@ Authenticated exactly like the job callback (service JWT + secret + timestamp + 
 }
 ```
 
-**Behavior:** validates the callback credentials, loads the job, and forwards the counts to Barbican for the matching job type. Forwarding is **best-effort** — failures are logged (and metered by the Barbican client) but the handler still returns `200 {"acknowledged": true}` so a Barbican outage never disturbs the transfer.
+Field semantics: `transferred_bytes` is **bytes processed** by the job's operation — bytes copied for a publish job, bytes removed for a delete job (the wire name is kept for worker compatibility). Each send attempt (up to 3, backoff 1 s / 2 s) carries a fresh `timestamp` + `nonce`.
+
+**Behavior:** validates the callback credentials, loads the job, and forwards the counts to Barbican for the matching job type: publish → `publish/progress` (`transferred_bytes`); delete → `delete/progress` with `transferred_bytes` sent as **`deleted_bytes`** (plus `total_bytes`, `phase`). Note: `citadel-job`'s `execute_delete` does not currently report progress, so delete jobs only reach Barbican's `delete/start` and terminal transitions in practice. Forwarding is **best-effort** — failures are logged (and metered by the Barbican client) but the handler still returns `200 {"acknowledged": true}` so a Barbican outage never disturbs the transfer.
 
 ---
 
@@ -509,45 +511,34 @@ GET /ready
 
 ## Error Responses
 
-All errors follow a consistent JSON format:
+Citadel's `AppError` is a re-export of `common::AppError` ([`citadel/src/error.rs`](../error.rs), [`common/src/error.rs`](../../../common/src/error.rs)). Every error body has exactly two fields:
 
 ```json
 {
   "error": "error_code",
-  "message": "Human-readable message",
-  "details": {}
+  "message": "Human-readable message"
 }
 ```
 
-### HTTP Status Codes
+### Error Codes
 
-| Code | Meaning | Example |
-|------|---------|---------|
-| 400 | Bad Request | Invalid JSON, invalid request body |
-| 401 | Unauthorized | Missing/invalid JWT, invalid callback timestamp/nonce |
-| 403 | Forbidden | Insufficient role, path traversal attempt |
-| 404 | Not Found | Inbox/job not found, file not found |
-| 409 | Conflict | Invalid inbox state, job not cancellable, Barbican conflict |
-| 500 | Internal Server Error | Storage/database/notification errors |
-| 503 | Service Unavailable | K8s API down, Barbican API down |
-| 504 | Gateway Timeout | Job exceeded max duration |
+| Code | `error` | Source variant |
+|------|---------|----------------|
+| 400 | `invalid_json` (status from the axum rejection; usually 400/415/422) | `JsonRejection` |
+| 400 | `invalid_publish_parameters`, `validation_error` | `InvalidPublishParameters`, `ValidationError` |
+| 401 | `auth_error` | `AuthError` (missing/invalid JWT) |
+| 401 | `invalid_callback_secret`, `callback_timestamp_expired`, `callback_nonce_reused` | Callback/progress authentication |
+| 403 | `forbidden` | `Forbidden` (insufficient role, path traversal) |
+| 404 | `inbox_not_found`, `job_not_found`, `file_not_found` | Lookup failures |
+| 409 | `inbox_not_deletable`, `inbox_already_publishing`, `conflict` | State conflicts (incl. Barbican 409) |
+| 422 | `invalid_state_transition` | `InvalidStateTransition` |
+| 429 | `too_many_requests` | In-flight job quota exceeded |
+| 500 | `storage_error`, `file_transfer_failed`, `checksum_mismatch`, `database_error`, `internal_error` | Server-side failures |
+| 502 | `bad_gateway` | Barbican request failed / non-2xx |
+| 503 | `kubernetes_error`, `k8s_api_error`, `service_unavailable` | K8s API down; Barbican circuit breaker open |
+| 504 | `job_timeout` | Job exceeded max duration |
 
-### Error Code Categories
-
-| Category | Codes |
-|----------|-------|
-| Auth | `auth_error`, `invalid_jwt`, `missing_roles`, `forbidden` |
-| Inbox | `inbox_not_found`, `invalid_inbox_state`, `inbox_path_exists` |
-| Job | `job_not_found`, `job_completed`, `job_cancellation_failed`, `job_timeout` |
-| Storage | `storage_error`, `file_not_found`, `file_transfer_failed`, `checksum_mismatch`, `path_traversal_attempt`, `invalid_base_path` |
-| Database | `database_error` |
-| Orchestration | `kubernetes_error`, `k8s_api_error` |
-| Coordination | `barbican_api_error`, `barbican_conflict`, `barbican_unavailable` |
-| Notifications | `catalog_notify_failed`, `lta_notify_failed` |
-| Callback | `invalid_callback_secret`, `callback_timestamp_expired`, `callback_nonce_reused` |
-| Generic | `config_error`, `http_error`, `json_error`, `io_error`, `internal_error` |
-
-> **Security note**: Citadel logs full error detail server-side but maps responses to generic codes/messages for most errors (see [`error.rs`](../src/error.rs)) to avoid leaking internal paths, database structure, or stack traces.
+> **Security note**: the full error (`?self`) is logged server-side (`error` for 5xx, `warn` for 4xx). The response `message` is the variant's detail string (fixed strings for the three callback errors), so call sites must not put internal paths or driver errors into user-facing variants. Note that `From<mongodb::error::Error>` maps the raw driver message into `database_error`'s `message`.
 
 ---
 

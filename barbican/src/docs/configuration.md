@@ -10,7 +10,7 @@ Complete guide to configuring Barbican via environment variables.
 - [MongoDB](#mongodb)
 - [Keycloak Authentication](#keycloak-authentication)
 - [Citadel Integration](#citadel-integration)
-- [File System](#file-system)
+- [Warehouse-path containment](#warehouse-path-containment)
 - [Observability](#observability)
 - [Security Settings](#security-settings)
 - [Example Configurations](#example-configurations)
@@ -19,42 +19,48 @@ Complete guide to configuring Barbican via environment variables.
 
 ## Overview
 
-Barbican is configured entirely through environment variables. The configuration is loaded at startup and validated before the service begins accepting requests.
+Barbican is configured entirely through environment variables, loaded once at
+startup by two independent loaders (`barbican/src/main.rs`):
+
+| Loader | Source | Variables |
+|--------|--------|-----------|
+| `Config::from_env()` | `barbican/src/config.rs` | Service settings: bind address, MongoDB, Citadel client, Prometheus port |
+| `AuthConfig::from_env_prefixed("BARBICAN")` | `common/src/auth/config.rs` | Keycloak/JWT settings (`BARBICAN_KEYCLOAK_*`, `BARBICAN_REQUIRED_ROLES`, ...) — decision **D10** |
 
 ### Configuration Loading
 
 ```rust
-pub fn from_env() -> Result<Self, ConfigError> {
-    let config = Config::default();
-    config.validate()?;
-    Ok(config)
-}
+// barbican/src/main.rs (abridged)
+let config = Config::from_env().expect("Failed to load configuration");
+// Fail fast, before connecting to MongoDB.
+let auth_config = match AuthConfig::from_env_prefixed("BARBICAN") {
+    Ok(c) => c,
+    Err(e) => {
+        error!("Failed to load auth configuration: {e}");
+        std::process::exit(1);
+    }
+};
+// ... connect to MongoDB ...
+serve(client, config, auth_config).await
 ```
 
 ### Validation Rules
 
-- All required variables must be set
-- Numeric values must be parseable
-- URLs must be valid
-- Security settings must meet minimum requirements
+- `Config::from_env()` never fails: every service setting has a default, and
+  a malformed number in a `BARBICAN_*` service variable silently falls back
+  to its default.
+- `AuthConfig::from_env_prefixed` **does** validate; any violation is logged
+  and the process exits with status 1 before MongoDB is contacted. See
+  [Keycloak Authentication](#keycloak-authentication) for the rules.
 
 ---
 
 ## Required Configuration
 
-These variables **must** be set for Barbican to start:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | Keycloak client secret for JWT validation | `super-secret-value` |
-
-**Error on Missing Required:**
-```json
-{
-  "error": "CONFIG_VALIDATION_FAILED",
-  "message": "Missing required environment variable: BARBICAN_KEYCLOAK_CLIENT_SECRET"
-}
-```
+No variable is strictly required: every setting has a default suitable for
+local development. In production (`PRODUCTION=true`),
+`BARBICAN_KEYCLOAK_URL` **must** be set to a non-default value — the
+`http://localhost:8080` default is rejected at startup.
 
 ---
 
@@ -94,8 +100,6 @@ Configuration for MongoDB connectivity.
 | `BARBICAN_MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `BARBICAN_MONGODB_DATABASE` | `data_warehouse` | Database name |
 | `BARBICAN_MONGODB_INBOX_COLLECTION` | `inboxes` | Collection name for inbox metadata |
-| `BARBICAN_MONGODB_TIMEOUT_SECS` | `30` | **Reserved/unused** — parsed but not read by any code path |
-| `BARBICAN_MONGODB_RETRY_MAX` | `3` | **Reserved/unused** — parsed but not read by any code path |
 
 > The unique index on `warehouse_path` (`uniq_warehouse_path`, created
 > idempotently at startup — P1.5/D3) lives in this database's `inboxes`
@@ -134,17 +138,46 @@ BARBICAN_MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSe
 
 ## Keycloak Authentication
 
-Configuration for JWT authentication via Keycloak.
+Configuration for JWT authentication via Keycloak. Parsed by the shared
+`common::AuthConfig::from_env_prefixed("BARBICAN")` (decision **D10**), so
+Barbican and Citadel validate JWTs identically while each service keeps its
+own variable namespace. Barbican's `Config` has **no** auth fields.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak server base URL |
+| `BARBICAN_KEYCLOAK_URL` | `http://localhost:8080` | Keycloak base URL **including any path prefix** (legacy Keycloak < 17 needs `.../auth`). A trailing `/` is trimmed. Rejected when `PRODUCTION=true` and left at the default |
 | `BARBICAN_KEYCLOAK_REALM` | `data-warehouse` | Keycloak realm name |
-| `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Client ID for audience validation |
-| `BARBICAN_KEYCLOAK_CLIENT_SECRET` | *(optional)* | Only checked for **non-emptiness** at startup; JWT validation is JWKS-based, the secret and `token_url()` are not used by any code path |
-| `BARBICAN_REQUIRED_ROLES` | `read,write` | Comma-separated list of accepted roles (external routes) |
-| `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated list of allowed JWT algorithms |
-| `BARBICAN_JWKS_REFRESH_SECS` | `60` | Minimum seconds between JWKS refreshes |
+| `BARBICAN_KEYCLOAK_CLIENT_ID` | `barbican` | Expected `aud` claim. Keycloak only puts the client ID in `aud` when an **audience mapper** is configured on the client |
+| `BARBICAN_REQUIRED_ROLES` | `read,write` | Comma-separated roles accepted on external routes (any one grants access; `admin` always passes). Must name at least one role |
+| `BARBICAN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated JWT algorithm allow-list. `HS*` and `none` are rejected |
+| `BARBICAN_JWKS_REFRESH_SECS` | `60` | JWKS cache refresh interval in seconds (minimum `60`) |
+| `BARBICAN_TOKEN_LEEWAY_MS` | `5000` | Clock-skew leeway for `exp`/`nbf` in milliseconds (maximum `60000`) |
+| `PRODUCTION` *(global, unprefixed)* | unset | When `true`, the localhost default `BARBICAN_KEYCLOAK_URL` is rejected |
+
+> **Removed variables.** `BARBICAN_KEYCLOAK_CLIENT_SECRET` no longer exists
+> (it was required at startup but never used — validation is JWKS-based).
+> The unprefixed `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`,
+> `REQUIRED_ROLES`, `ALLOWED_ALGORITHMS`, `JWKS_REFRESH_SECS` and
+> `TOKEN_LEEWAY_MS` are **no longer read** by Barbican; previously these were
+> what the auth layer actually consumed, so the documented `BARBICAN_*`
+> names had no effect. Migrate any deployment that set the unprefixed names.
+
+> There is **no `BARBICAN_INTERNAL_ROLES`** (D9): with the removal of the
+> `internal` role, the state-transition endpoints are gated only by the
+> generic auth layer (valid Bearer JWT, no role requirement). Trust is
+> delegated to Citadel, the only caller of those endpoints.
+
+### Startup validation
+
+`AuthConfig::from_env_prefixed` returns an error (and Barbican exits with
+status 1) when:
+
+- a numeric variable (`BARBICAN_JWKS_REFRESH_SECS`, `BARBICAN_TOKEN_LEEWAY_MS`)
+  is not a non-negative integer — the message names the variable;
+- `BARBICAN_REQUIRED_ROLES` is empty;
+- `BARBICAN_ALLOWED_ALGORITHMS` is empty or contains `HS*` / `none`;
+- `BARBICAN_JWKS_REFRESH_SECS` < 60 or `BARBICAN_TOKEN_LEEWAY_MS` > 60000;
+- `PRODUCTION=true` and `BARBICAN_KEYCLOAK_URL` is the localhost default.
 
 > There is **no `BARBICAN_INTERNAL_ROLES`** (D9): with the removal of the
 > `internal` role, the state-transition endpoints are gated only by the
@@ -153,12 +186,20 @@ Configuration for JWT authentication via Keycloak.
 
 ### Derived URLs
 
-Barbican automatically constructs these URLs from the base configuration:
+Barbican constructs these from the base configuration (no `/auth/` segment
+is inserted — include it in `BARBICAN_KEYCLOAK_URL` if your Keycloak needs it):
+
+**Expected issuer (`iss`):**
+```
+{BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}
+```
 
 **JWKS URL:**
 ```
 {BARBICAN_KEYCLOAK_URL}/realms/{BARBICAN_KEYCLOAK_REALM}/protocol/openid-connect/certs
 ```
+
+Legacy Keycloak (< 17) example: `BARBICAN_KEYCLOAK_URL=https://kc.example.com/auth`.
 
 ### Example Configuration
 
@@ -167,18 +208,18 @@ Barbican automatically constructs these URLs from the base configuration:
 BARBICAN_KEYCLOAK_URL=http://localhost:8080
 BARBICAN_KEYCLOAK_REALM=data-warehouse
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-dev
-BARBICAN_KEYCLOAK_CLIENT_SECRET=dev-secret-123
 BARBICAN_REQUIRED_ROLES=read,write
 BARBICAN_ALLOWED_ALGORITHMS=RS256
 BARBICAN_JWKS_REFRESH_SECS=60
+BARBICAN_TOKEN_LEEWAY_MS=5000
 ```
 
 **Production:**
 ```bash
+PRODUCTION=true
 BARBICAN_KEYCLOAK_URL=https://auth.example.com
 BARBICAN_KEYCLOAK_REALM=data-warehouse-prod
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-service
-BARBICAN_KEYCLOAK_CLIENT_SECRET=${SECRET_FROM_VAULT}
 BARBICAN_REQUIRED_ROLES=read,write
 BARBICAN_ALLOWED_ALGORITHMS=RS256,RS384,RS512
 BARBICAN_JWKS_REFRESH_SECS=300
@@ -195,7 +236,8 @@ BARBICAN_JWKS_REFRESH_SECS=300
 - The state-transition endpoints are reachable by any valid Bearer token
   (no role gate) — keep them off the public network; Citadel is the only
   legitimate caller (see [Authentication](authentication.md))
-- Regularly rotate client secrets
+- Configure an audience mapper on the Keycloak client so `aud` contains
+  `BARBICAN_KEYCLOAK_CLIENT_ID`; otherwise every token fails audience validation
 
 ---
 
@@ -248,31 +290,16 @@ Attempt 4: After 4 seconds (if retry_max >= 4)
 
 ---
 
-## File System
+## Warehouse-path containment
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BARBICAN_INBOX_BASE_PATH` | `./data/inboxes` | **Reserved/unused** — parsed but not read by any code path. Barbican is a metadata-only service; the physical inbox/protected directories belong to Citadel. |
-
-### Warehouse-path containment
+Barbican is a metadata-only service and has no file-system configuration; the
+physical inbox/protected directories belong to Citadel.
 
 Barbican has **no** `validate_path` helper (there is no such function in the
 codebase). Containment of the physical warehouse path is enforced by
 **Citadel**: `CITADEL_PROTECTED_BASE_PATH` + `validate_warehouse_path`
 reject any target outside the protected base. Barbican's duplicate-path guard
 is the unique `warehouse_path` index (see [MongoDB](#mongodb)).
-
-### Example Configuration
-
-**Development:**
-```bash
-BARBICAN_INBOX_BASE_PATH=./data/inboxes
-```
-
-**Production:**
-```bash
-BARBICAN_INBOX_BASE_PATH=/var/data/inboxes
-```
 
 ---
 
@@ -369,16 +396,14 @@ do not set it.
 
 ### JWKS Cache Settings
 
-**Balance between security and performance:**
+`BARBICAN_JWKS_REFRESH_SECS` has a hard minimum of `60`; lower values are a
+startup error.
 ```bash
-# Development (faster refresh)
-BARBICAN_JWKS_REFRESH_SECS=30
-
-# Production (standard)
+# Default / minimum
 BARBICAN_JWKS_REFRESH_SECS=60
 
-# High security (frequent key rotation)
-BARBICAN_JWKS_REFRESH_SECS=30
+# Less frequent refresh
+BARBICAN_JWKS_REFRESH_SECS=300
 ```
 
 ---
@@ -400,19 +425,16 @@ BARBICAN_MONGODB_INBOX_COLLECTION=inboxes
 BARBICAN_KEYCLOAK_URL=http://localhost:8080
 BARBICAN_KEYCLOAK_REALM=data-warehouse
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-dev
-BARBICAN_KEYCLOAK_CLIENT_SECRET=dev-secret-change-me
 BARBICAN_REQUIRED_ROLES=read,write,admin
 BARBICAN_ALLOWED_ALGORITHMS=RS256
-BARBICAN_JWKS_REFRESH_SECS=30
+BARBICAN_JWKS_REFRESH_SECS=60
+BARBICAN_TOKEN_LEEWAY_MS=5000
 
 # Citadel
 BARBICAN_CITADEL_API_URL=http://localhost:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=60
 BARBICAN_CITADEL_API_RETRY_MAX=5
 BARBICAN_CITADEL_SERVICE_TOKEN_FILE=./dev/citadel.jwt
-
-# File System
-BARBICAN_INBOX_BASE_PATH=./data/inboxes
 
 # Observability
 BARBICAN_PROMETHEUS_PORT=9091
@@ -432,11 +454,11 @@ BARBICAN_MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSe
 BARBICAN_MONGODB_DATABASE=data_warehouse
 BARBICAN_MONGODB_INBOX_COLLECTION=inboxes
 
-# Keycloak
+# Keycloak (PRODUCTION=true rejects the localhost default URL)
+PRODUCTION=true
 BARBICAN_KEYCLOAK_URL=https://auth.example.com
 BARBICAN_KEYCLOAK_REALM=data-warehouse-prod
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-service
-BARBICAN_KEYCLOAK_CLIENT_SECRET=${SECRET_FROM_VAULT}
 BARBICAN_REQUIRED_ROLES=read,write
 BARBICAN_ALLOWED_ALGORITHMS=RS256,RS384,RS512
 BARBICAN_JWKS_REFRESH_SECS=300
@@ -446,9 +468,6 @@ BARBICAN_CITADEL_API_URL=http://citadel.data-warehouse.svc.cluster.local:8081
 BARBICAN_CITADEL_API_TIMEOUT_SECS=30
 BARBICAN_CITADEL_API_RETRY_MAX=3
 BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-service-jwt
-
-# File System
-BARBICAN_INBOX_BASE_PATH=/var/data/inboxes
 
 # Observability
 BARBICAN_PROMETHEUS_PORT=9091
@@ -471,13 +490,10 @@ services:
       - BARBICAN_KEYCLOAK_URL=http://keycloak:8080
       - BARBICAN_KEYCLOAK_REALM=data-warehouse
       - BARBICAN_KEYCLOAK_CLIENT_ID=barbican
-      - BARBICAN_KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_SECRET}
       - BARBICAN_CITADEL_API_URL=http://citadel:8081
       - BARBICAN_CITADEL_SERVICE_TOKEN_FILE=/run/secrets/citadel-jwt
-      - BARBICAN_INBOX_BASE_PATH=/data/inboxes
       - BARBICAN_PROMETHEUS_PORT=9091
     volumes:
-      - ./data/inboxes:/data/inboxes
       - ./secrets/citadel.jwt:/run/secrets/citadel-jwt:ro
     ports:
       - "8080:8080"
@@ -492,53 +508,18 @@ services:
 
 ## Configuration Validation
 
-Barbican validates configuration at startup:
+Only the auth settings are validated (see
+[Startup validation](#startup-validation)); the logic lives in
+`AuthConfig::validate_with` in `common/src/auth/config.rs`. A failure is
+logged and the process exits with status 1 — it is a log line, not an HTTP
+response:
 
-```rust
-pub fn validate(&self) -> Result<(), ConfigError> {
-    // Check required secrets
-    if self.keycloak_client_secret.is_empty() {
-        return Err(ConfigError::MissingRequired(
-            "BARBICAN_KEYCLOAK_CLIENT_SECRET".to_string(),
-        ));
-    }
-
-    // Security: reject weak algorithms
-    if self.allowed_algorithms.iter().any(|alg| alg == "none") {
-        return Err(ConfigError::InvalidValue(
-            "BARBICAN_ALLOWED_ALGORITHMS".to_string(),
-            "Algorithm 'none' is not allowed".to_string(),
-        ));
-    }
-
-    // Validate URLs
-    if !self.keycloak_url.starts_with("http") {
-        return Err(ConfigError::InvalidValue(
-            "BARBICAN_KEYCLOAK_URL".to_string(),
-            "Must be a valid HTTP/HTTPS URL".to_string(),
-        ));
-    }
-
-    Ok(())
-}
+```
+ERROR Failed to load auth configuration: Invalid configuration value: BARBICAN_ALLOWED_ALGORITHMS: symmetric algorithm 'HS256' not allowed
 ```
 
-### Validation Errors
-
-**Missing Required:**
-```json
-{
-  "error": "CONFIG_VALIDATION_FAILED",
-  "message": "Missing required environment variable: BARBICAN_KEYCLOAK_CLIENT_SECRET"
-}
 ```
-
-**Invalid Value:**
-```json
-{
-  "error": "CONFIG_VALIDATION_FAILED",
-  "message": "Invalid value for BARBICAN_ALLOWED_ALGORITHMS: Algorithm 'none' is not allowed"
-}
+ERROR Failed to load auth configuration: Invalid configuration value: BARBICAN_JWKS_REFRESH_SECS must be a non-negative integer, got 'abc'
 ```
 
 ---

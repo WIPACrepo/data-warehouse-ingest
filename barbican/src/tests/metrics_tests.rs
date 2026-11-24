@@ -108,7 +108,7 @@ mod tests {
                 .collect();
             if labels.get("method") == Some(&"GET")
                 && labels.get("status") == Some(&"200")
-                && labels.get("endpoint").is_some()
+                && labels.contains_key("endpoint")
             {
                 assert_eq!(
                     labels.get("endpoint"),

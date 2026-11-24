@@ -1,6 +1,5 @@
 use crate::models::{CreateInbox, InboxStatus};
 use crate::test_utils::{CreateInboxBuilder, InboxBuilder};
-use serde_json;
 
 #[test]
 fn test_inbox_db_serialization_roundtrip() {
@@ -81,7 +80,7 @@ fn test_create_inbox_with_archive_settings() {
         .build();
 
     assert_eq!(create_inbox.lifetime, Some(24));
-    assert_eq!(create_inbox.archive_enabled, true);
+    assert!(create_inbox.archive_enabled);
     assert_eq!(create_inbox.archive_sites.len(), 2);
 }
 

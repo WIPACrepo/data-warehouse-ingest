@@ -50,7 +50,8 @@ impl JobStatusPoller {
 
     /// Start background polling loop
     pub async fn run(self) -> Result<()> {
-        let poll_interval = Duration::from_secs(30);
+        // CITADEL_JOB_STATUS_POLL_INTERVAL_SECS (default 30; validated >= 1).
+        let poll_interval = Duration::from_secs(self.config.job_status_poll_interval_secs.max(1));
         let mut ticker = interval(poll_interval);
 
         info!(

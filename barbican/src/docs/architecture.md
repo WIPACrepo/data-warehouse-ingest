@@ -93,7 +93,7 @@ This document describes the system architecture, component relationships, and mo
 barbican/src/
 ├── main.rs                  # Application entry point, server startup, metrics server
 ├── lib.rs                   # Library exports, router configuration, AppState
-├── config.rs                # Environment configuration loading and validation
+├── config.rs                # Service env config (no auth fields; auth = common::AuthConfig, D10)
 ├── db.rs                    # ensure_inbox_indexes (unique warehouse_path, P1.5)
 ├── metrics.rs               # BarbicanMetrics (inboxes_total gauge, api_requests counter, P4.3)
 │
@@ -109,7 +109,7 @@ barbican/src/
 │   ├── delete_inbox.rs      # DELETE /api/v1/inbox/{id} (202 envelope)
 │   ├── publish_inbox.rs     # POST /api/v1/inbox/{id}/publish (202, no body)
 │   ├── health.rs            # GET /health
-│   ├── ready.rs             # GET /ready
+│   ├── ready.rs             # GET /ready (pings MongoDB via InboxStore::ping)
 │   └── transition/          # Internal action endpoints (called only by Citadel)
 │       ├── mod.rs           # Transition module exports + apply_versioned_update (P1.1)
 │       ├── create.rs        # /create/start, /progress, /complete, /failure
@@ -120,14 +120,14 @@ barbican/src/
 │   └── mod.rs               # Re-exports common::auth_middleware
 │
 ├── test_utils/              # Test utilities (cfg(test))
-│   └── fixtures.rs          # Test inbox fixtures (create_test_store/fixtures/state)
+│   └── mod.rs               # create_test_state, test_auth_state; re-exports common::test_utils
 │
 └── tests/                   # Unit/integration tests
     ├── mod.rs               # Test module exports
     ├── main_tests.rs        # Health endpoint tests
     ├── metrics_tests.rs     # Barbican metrics tests (P4.3)
     ├── integration_tests.rs # Handler tests
-    └── handlers/            # Per-handler tests
+    └── handlers/            # Per-handler tests (incl. ready_tests.rs: /ready ping 200/503)
 ```
 
 ### Shared Library (common crate)
@@ -274,6 +274,25 @@ External Request
 - Audit trail of Citadel operations
 - No special authentication paths needed
 
+### 7. Shared, Prefixed Auth Configuration (D10)
+
+**Decision**: Keycloak/JWT settings are parsed by
+`common::AuthConfig::from_env_prefixed("BARBICAN")`, not by Barbican's
+`Config`. `main.rs` loads them before connecting to MongoDB and exits on
+error; `serve(client, config, auth_config)` builds the middleware state with
+`common::build_auth_state(&auth_config, "barbican")` and passes it to
+`AppState::new(store, config, auth_state)`.
+
+**Rationale**:
+- Every service validates JWTs identically (one parser, one validator)
+- Each service keeps its own namespace (`BARBICAN_*`), fixing the earlier bug
+  where the documented `BARBICAN_*` names were ignored and the unprefixed
+  `KEYCLOAK_*` names were what was actually read
+- Misconfiguration fails at startup with a message naming the variable,
+  instead of panicking inside `AppState::new`
+
+See [Configuration](configuration.md#keycloak-authentication).
+
 ---
 
 ## Scalability Considerations
@@ -287,7 +306,7 @@ External Request
 
 ### Performance Optimizations
 
-- **JWKS Caching**: Reduces Keycloak load, 60-second refresh interval
+- **JWKS Caching**: Reduces Keycloak load; `BARBICAN_JWKS_REFRESH_SECS` (default/minimum 60 s)
 - **Async Citadel Calls**: Non-blocking HTTP requests
 - **MongoDB Indexes**: Optimized for common query patterns
 - **Connection Pooling**: MongoDB and HTTP client connection reuse
@@ -296,7 +315,7 @@ External Request
 
 - **Retry Logic**: Citadel API calls use exponential backoff
 - **Optimistic Locking**: Handles concurrent modifications gracefully
-- **Health Endpoints**: `/health` and `/ready` for load balancer checks
+- **Health Endpoints**: `/health` (liveness, always 200) and `/ready` (MongoDB ping: 200 `ready` / 503 `not_ready`)
 - **Error Responses**: Structured JSON with appropriate HTTP status codes
 
 ---
@@ -323,7 +342,7 @@ External Request
 
 ### Security Measures
 
-- **Algorithm Whitelist**: Only RS256 allowed, `alg: none` explicitly rejected
+- **Algorithm Whitelist**: `BARBICAN_ALLOWED_ALGORITHMS` (default `RS256`); `HS*` and `none` rejected at startup
 - **Token Validation**: Expiration, issuer, audience, signature
 - **Input Sanitization**: All string inputs validated
 - **Path Traversal Prevention**: warehouse-path containment is enforced by

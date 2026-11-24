@@ -51,7 +51,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -83,7 +83,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -117,7 +117,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -151,7 +151,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -187,7 +187,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -220,7 +220,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                    .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                     .body(Body::empty())
                     .unwrap(),
             )

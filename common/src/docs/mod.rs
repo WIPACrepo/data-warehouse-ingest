@@ -10,6 +10,7 @@
 //! - [`overview.md`](docs/overview.md) - How `common` fits into the architecture
 //! - [`models.md`](docs/models.md) - Shared data model (inboxes, statuses, progress)
 //! - [`infrastructure.md`](docs/infrastructure.md) - Shared utilities (config, db, error, metrics, middleware)
+//! - [`auth.md`](docs/auth.md) - JWT/Keycloak auth: prefixed `AuthConfig`, `build_auth_state` (D10)
 //! - [`testing.md`](docs/testing.md) - Test utilities and conventions
 //!
 //! # Related Documentation

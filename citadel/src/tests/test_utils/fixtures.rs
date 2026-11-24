@@ -15,6 +15,12 @@ pub struct TestFixture {
     pub secret_file: PathBuf,
 }
 
+impl Default for TestFixture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestFixture {
     /// Create a new test fixture with temporary directories
     pub fn new() -> Self {
@@ -38,10 +44,6 @@ impl TestFixture {
             job_executor: crate::config::JobExecutorType::Mock,
             mongodb_uri: "mongodb://localhost:27017".to_string(),
             mongodb_database: "citadel_test".to_string(),
-            keycloak_url: "http://localhost:8080".to_string(),
-            keycloak_realm: "test".to_string(),
-            keycloak_client_id: "test-client".to_string(),
-            keycloak_client_secret: "test-secret".to_string(),
             barbican_api_url: "http://localhost:9999".to_string(),
             ..CitadelConfig::default()
         };

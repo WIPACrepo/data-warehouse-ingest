@@ -79,7 +79,8 @@ impl JwtValidator {
         // 7. Set up validation
         let mut validation = Validation::new(alg);
         validation.validate_exp = true;
-        validation.leeway = self.config.leeway_ms;
+        // jsonwebtoken's leeway is in SECONDS; config is in milliseconds.
+        validation.leeway = self.config.leeway_secs();
         validation.iss = Some(HashSet::from_iter(vec![self.config.issuer()]));
         validation.aud = Some(HashSet::from_iter(vec![self.config.audience()]));
 

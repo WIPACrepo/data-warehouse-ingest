@@ -52,7 +52,7 @@ pub enum JobStatus {
 | `Failed` | Callback failure, failed submission, or rejected completion | Yes |
 | `Cancelling` | `POST /job/{id}/cancel`; not yet finished | No |
 | `Cancelled` | Cancellation completed | Yes |
-| `TimedOut` | Callback with `status=timed_out` (or poller detection, planned) | Yes |
+| `TimedOut` | Callback with `status=timed_out`, or the job-status poller (`detect_timed_out_jobs`) finding a `queued`/`running` job older than `CITADEL_JOB_MAX_DURATION_SECS` | Yes |
 
 ---
 
@@ -175,11 +175,15 @@ Citadel does **not** own inbox state. It coordinates through the Barbican API.
 
 ### Where Citadel Transitions Inbox State
 
-| Handler | Barbican call | State string sent |
-|---------|---------------|-------------------|
-| `create_inbox` | `transition_inbox_state(&id, "active")` | `active` |
-| `publish_inbox` | `transition_inbox_state(&id, "publishing")` | `publishing` |
-| `delete_inbox` | `transition_inbox_state(&id, "deleting")` | `deleting` |
+Citadel calls `InboxTransitioner` methods ([`integrations/barbican.rs`](../integrations/barbican.rs)), each mapping to `POST /api/v1/inbox/{id}/{create|publish|delete}/{start|progress|complete|failure}` on Barbican. See [Barbican Integration](barbican-integration.md#barbican-api-client) for the full table.
+
+| Caller | `InboxTransitioner` call(s) | Inbox state (Barbican) |
+|--------|-----------------------------|------------------------|
+| `create_inbox` | `create_start`, then `create_complete` after mkdir | `Active` → `Creating` → `Ready` |
+| `publish_inbox` | `publish_start` | `Ready` → `Publishing` |
+| `delete_inbox` | `delete_start` | `Ready`/`Failed` → `Deleting` |
+| `job_progress` | `publish_progress` / `delete_progress` | unchanged |
+| `job_callback` | `publish_complete`/`publish_failure`, `delete_complete`/`delete_failure` | `Published` / `Deleted` / `Failed` |
 
 ### Where Citadel Reads Inbox State
 
@@ -223,13 +227,14 @@ failure cause — only the underlying errors are.
 
 ### Barbican Coordination Failures
 
-- `barbican_client.transition_inbox_state` retries with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` (default 5), maximum backoff 30s
+- Every `InboxTransitioner` call retries with exponential backoff up to `CITADEL_BARBICAN_API_RETRY_MAX` retries (default 5), backoff doubling from `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS`, capped at 30 s
 - A **409 conflict** fails immediately (no retry)
-- The `jobs` record is updated before Ken Barbican transition in publish/delete; if coordination fails the job is left in a partial state (the target behavior is to "fail job immediately" — not yet implemented)
+- After `RETRY_MAX` consecutive failed calls the client's circuit breaker opens and calls fail fast with `503 service_unavailable` for 30 s (see [Barbican Integration](barbican-integration.md#circuit-breaker))
+- The `jobs` record is inserted before the Barbican `publish_start`/`delete_start` call; if that call fails the handler returns the error and the job row is left at `queued` (the target behavior is to "fail job immediately" — not yet implemented)
 
 ### Callback Handling
 
-- Timestamp must be within the 5-minute window (1-minute clock skew allowance)
+- Timestamp must be less than 300 s old and no more than 60 s in the future; `citadel-job` mints a fresh timestamp + nonce for every send attempt, so job duration does not matter
 - Nonces must be unique; duplicates are rejected as `CallbackNonceReused`
 - Callbacks for already-terminal jobs are acknowledged but ignored
 - Unknown callback `status` values are rejected
@@ -238,10 +243,10 @@ failure cause — only the underlying errors are.
 
 | Item | Policy | Env |
 |------|--------|-----|
-| Barbican API | Exponential backoff, max 5 retries, conflict fails immediately | `CITADEL_BARBICAN_API_RETRY_MAX`, `_RETRY_BACKOFF_MS`, `_TIMEOUT_SECS` |
-| Catalog notify | **Planned**: max 3 retries, catalog-before-LTA ordering | `CITADEL_CATALOG_NOTIFY_RETRY_MAX` |
-| LTA notify | **Planned**: max 3 retries, only after catalog succeeds | `CITADEL_LTA_NOTIFY_RETRY_MAX` |
-| Job max duration | `CITADEL_JOB_MAX_DURATION_SECS` (default 24h); **planned** poller/timeout enforcement | `CITADEL_JOB_MAX_DURATION_SECS` |
+| Barbican API | Exponential backoff, max 5 retries, conflict fails immediately; circuit breaker (30 s cooldown) | `CITADEL_BARBICAN_API_RETRY_MAX`, `_RETRY_BACKOFF_MS`, `_TIMEOUT_SECS` |
+| Catalog notify | Up to 3 attempts with exponential backoff; catalog-before-LTA ordering | `CITADEL_CATALOG_NOTIFY_RETRY_MAX`, `_RETRY_BACKOFF_MS` |
+| LTA notify | Up to 3 attempts with exponential backoff; only after catalog succeeds | `CITADEL_LTA_NOTIFY_RETRY_MAX`, `_RETRY_BACKOFF_MS` |
+| Job max duration | Enforced by the job-status poller every `CITADEL_JOB_STATUS_POLL_INTERVAL_SECS` (default 30 s): executor cancel + `TimedOut` (default 24 h) | `CITADEL_JOB_MAX_DURATION_SECS` |
 
 ---
 

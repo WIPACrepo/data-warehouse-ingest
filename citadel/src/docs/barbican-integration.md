@@ -41,7 +41,7 @@ Citadel and Barbican work together to manage the complete inbox lifecycle:
 | Concern | Owner | Citadel's behavior |
 |---------|-------|--------------------|
 | Inbox metadata | Barbican | Reads via API; never writes directly |
-| Inbox state transitions | Barbican | Requests via API (`/api/v1/inbox/{id}/transition`) |
+| Inbox state transitions | Barbican | Requests via API (`POST /api/v1/inbox/{id}/{create\|publish\|delete}/{start\|progress\|complete\|failure}`) |
 | Inbox physical directory | Citadel | Created under `CITADEL_INBOX_BASE_PATH/{inbox_id}` |
 | File transfers | Citadel | Executed by `citadel-job` |
 | Jobs (`jobs` collection) | Citadel | Owned entirely |
@@ -79,41 +79,46 @@ pub struct InboxDB {
 
 The client lives at [`integrations/barbican.rs`](../src/integrations/barbican.rs).
 
-### Methods
+### Methods (`InboxTransitioner` trait)
 
-| Method | API call | Purpose |
-|--------|----------|---------|
-| `transition_inbox_state(&id, new_state)` | `POST /api/v1/inbox/{id}/transition` | Request a state transition (retry + backoff) |
+Handlers and the poller depend on the `InboxTransitioner` trait (mockable via `MockInboxTransitioner`); `BarbicanClient` is the production implementation. Each method POSTs a JSON body (always including `job_id`) and returns the updated `InboxDB`.
+
+| Method | Barbican route | Barbican state change |
+|--------|----------------|-----------------------|
+| `create_start(id, job_id)` | `POST /api/v1/inbox/{id}/create/start` | `Active` → `Creating` |
+| `create_progress(...)` | `.../create/progress` | progress only (`Creating`) |
+| `create_complete(id, job_id, inbox_path)` | `.../create/complete` | `Creating` → `Ready` |
+| `create_failure(id, job_id, code, message)` | `.../create/failure` | `Creating` → `Failed` |
+| `publish_start(id, job_id)` | `POST /api/v1/inbox/{id}/publish/start` | `Ready` → `Publishing` |
+| `publish_progress(id, job_id, phase, total_files, processed_files, total_bytes, transferred_bytes)` | `.../publish/progress` | progress only (`Publishing`) |
+| `publish_complete(id, job_id, files_transferred, total_bytes, protected_path)` | `.../publish/complete` | `Publishing` → `Published` |
+| `publish_failure(id, job_id, code, message)` | `.../publish/failure` | `Publishing` → `Failed` |
+| `delete_start(id, job_id)` | `POST /api/v1/inbox/{id}/delete/start` | `Ready`/`Failed` → `Deleting` |
+| `delete_progress(id, job_id, phase, total_bytes, deleted_bytes)` | `.../delete/progress` | progress only (`Deleting`) |
+| `delete_complete(id, job_id)` | `.../delete/complete` | `Deleting` → `Deleted` |
+| `delete_failure(id, job_id, code, message)` | `.../delete/failure` | `Deleting` → `Failed` |
+
+Routes are registered in [`barbican/src/lib.rs`](../../../barbican/src/lib.rs) as Barbican's internal routes (Bearer-only, no role gate — D9). See the trait in [`integrations/barbican.rs`](../integrations/barbican.rs) for exact signatures.
 
 **Note:** Citadel reads inbox metadata directly from MongoDB using `inboxes_collection()` rather than calling the Barbican API. This is more efficient since both services share the same MongoDB database.
 
 ### Construction
 
 ```rust
-pub struct BarbicanClient {
-    config: CitadelConfig,
-    client: reqwest::Client,
-}
-
-impl BarbicanClient {
-    pub fn new(config: CitadelConfig) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            config,
-        }
-    }
-}
+// main.rs
+let barbican_client: Arc<dyn InboxTransitioner> =
+    Arc::new(BarbicanClient::new(config.clone()).with_metrics(metrics.clone()));
 ```
 
-The client is created in `main.rs` and shared through `AppState.barbican_client` (`Arc<BarbicanClient>`).
+`BarbicanClient::new` builds a `reqwest::Client` with `CITADEL_BARBICAN_API_TIMEOUT_SECS` as the per-request timeout. `with_metrics` attaches `CitadelMetrics` so the client can increment `citadel_barbican_api_errors_total` and drive the `citadel_circuit_breaker_state` gauge. The client is shared through `AppState.barbican_client`.
 
-### Transition Handling
+### Response Handling
 
-`do_transition` posts to the transition endpoint and interprets responses:
+All methods go through a private `post_action` → `do_post` helper:
 
-- **409 Conflict** → fails immediately, no retry (returns `AppError::Conflict`)
-- **Other non-success** → returns `AppError::BadGateway`
-- **Success** → parses and returns the updated `InboxDB`
+- **409 Conflict** → `AppError::Conflict` — fails immediately, no retry, does not trip the breaker
+- **Request error / other non-2xx / unparseable body** → `AppError::BadGateway` — retried
+- **2xx** → parses and returns the updated `InboxDB`
 
 ---
 
@@ -121,28 +126,37 @@ The client is created in `main.rs` and shared through `AppState.barbican_client`
 
 ### Exponential Backoff
 
-`transition_inbox_state` retries transient errors with exponential backoff:
+Every `InboxTransitioner` call retries `BadGateway` errors with exponential backoff:
 
 ```
 Attempt 1: immediate
-Attempt 2: +backoff_ms        (default 1000ms)
-Attempt 3: +2×backoff_ms
-...
-Attempt N: +... up to 30s max  (CITADEL_BARBICAN_API_RETRY_BACKOFF_MS, doubling, capped at 30s)
+Retry 1:   after CITADEL_BARBICAN_API_RETRY_BACKOFF_MS   (default 1000 ms)
+Retry 2:   after 2x
+...        doubling, capped at 30 000 ms
 ```
 
-- **Max attempts**: `CITADEL_BARBICAN_API_RETRY_MAX` (default 5)
-- **Timeouts**: `CITADEL_BARBICAN_API_TIMEOUT_SECS` (default 10s)
+- **Retries**: `CITADEL_BARBICAN_API_RETRY_MAX` (default 5) retries after the first attempt, i.e. up to 6 HTTP attempts per call
+- **Timeouts**: `CITADEL_BARBICAN_API_TIMEOUT_SECS` (default 10 s) per attempt
 
 ### Rules
 
 | Outcome | Behavior |
 |---------|----------|
-| Transient error | Retry with backoff |
-| Retries exhausted | Return error (job/operation fails) |
-| **409 Conflict** | Fail immediately — no retry |
+| `BadGateway` (network error, non-2xx except 409) | Retry with backoff |
+| Retries exhausted | Error returned to caller; counts as one breaker failure |
+| **409 Conflict** | Fail immediately — no retry, no breaker failure |
+| Breaker open | Fail fast with `ServiceUnavailable` (503), no HTTP request |
 
-> **Planned**: circuit breaker for the Barbican client (open after 10 consecutive failures, 5-minute cooldown). The `citadel_circuit_breaker_state` gauge exists in metrics but no breaker logic is wired in yet.
+### Circuit Breaker
+
+`BarbicanClient` has an in-process circuit breaker (`is_breaker_open` / `trip_breaker` / `close_breaker`):
+
+- **Failure counting**: a call whose retries are exhausted increments a failure counter. Any successful call resets the counter and closes the breaker.
+- **Trip threshold**: the breaker opens when the counter reaches `max(CITADEL_BARBICAN_API_RETRY_MAX, 1)` (default 5) consecutive failed calls. 409s never trip it.
+- **Open**: calls fail fast with `AppError::ServiceUnavailable("Barbican circuit breaker open")`; the `citadel_circuit_breaker_state` gauge is `1`.
+- **Cooldown / half-open**: after **30 s** (`HALF_OPEN_AFTER_SECS`, not configurable) calls are let through again. A success closes the breaker (gauge `0`); a failure leaves the counter above the threshold, so the breaker re-trips immediately.
+
+The breaker state is per-process (not shared across Citadel replicas).
 
 ---
 
@@ -154,11 +168,16 @@ Barbican is the **single writer** for inbox state. Citadel never calls MongoDB d
 
 ### Transitions Citadel Requests
 
-| Operation | Handler | State string | Valid from (Barbican) |
-|-----------|---------|--------------|------------------------|
-| Create directory | `create_inbox` | `active` | inbox with no `inbox_path` |
-| Publish | `publish_inbox` | `publishing` | inbox with `inbox_path` (Ready) |
-| Delete | `delete_inbox` | `deleting` | inbox with `inbox_path` |
+| Operation | Caller | Calls | Resulting state |
+|-----------|--------|-------|-----------------|
+| Create directory | `create_inbox` handler | `create_start` → (mkdir) → `create_complete` | `Creating` → `Ready` |
+| Publish (start) | `publish_inbox` handler | `publish_start` | `Publishing` |
+| Delete (start) | `delete_inbox` handler | `delete_start` | `Deleting` |
+| Progress | `job_progress` handler | `publish_progress` / `delete_progress` | unchanged |
+| Terminal | `job_callback` handler | `publish_complete`/`publish_failure`/`delete_complete`/`delete_failure` | `Published`/`Deleted`/`Failed` |
+| Self-heal | `polling/job_status.rs` | e.g. re-issues `publish_complete` for an inbox stuck in `Publishing` | `Published` |
+
+> `create_inbox` does not call `create_failure` if the directory creation fails after `create_start`; the inbox stays `Creating` until handled elsewhere.
 
 ### State Change Flow
 
@@ -166,14 +185,14 @@ Barbican is the **single writer** for inbox state. Citadel never calls MongoDB d
 Citadel handler
   │
   ▼
-barbican_client.transition_inbox_state(&id, "publishing")
-  │  POST /api/v1/inbox/{id}/transition
+barbican_client.publish_start(&id, &job_id)
+  │  POST /api/v1/inbox/{id}/publish/start
   ▼
 Barbican validates + applies (optimistic lock on version)
   │
   ├─ 200 OK ─────────────► proceed with physical operation
   ├─ 409 Conflict ───────► fail immediately (no retry)
-  └─ 5xx/timeout ────────► retry (exponential backoff, max 5)
+  └─ other error/timeout ► retry (exponential backoff, 5 retries default)
                             │
                             └─ exhausted ─► fail operation
 ```
@@ -200,7 +219,7 @@ User ──POST /api/v1/inbox──► Barbican (status: Active)
 User ──POST /inbox/{id}/create──► Citadel
                                  │ read inbox from MongoDB → validate no path
                                  │ StorageManager::create_inbox
-                                 │ transition("active") via Barbican
+                                 │ create_start → mkdir → create_complete via Barbican
                                  ▼
                            201 Created { inbox_id, inbox_path }
 ```
@@ -213,14 +232,17 @@ User uploads files (out of band)
 User ──POST /inbox/{id}/publish──► Citadel
   │  read inbox from MongoDB → validate inbox_path present
   │  create PublishInbox JobDB (jobs collection)
-  │  transition("publishing") via Barbican
+  │  publish_start via Barbican
   │  executor.submit(job) → Running
   ▼
 citadel-job: storage::transfer (lock → copy+verify → delete sources)
   │
   ▼
+Progress POST /api/v1/job/progress → publish_progress via Barbican (best-effort)
+  │
 Callback POST /api/v1/job/callback → Completed / Failed
-  └── (planned) notify catalog → notify LTA
+  ├── notify catalog → notify LTA (LTA only if catalog succeeded)
+  └── publish_complete / publish_failure via Barbican
 ```
 
 ### Delete
@@ -229,11 +251,13 @@ Callback POST /api/v1/job/callback → Completed / Failed
 User ──POST /inbox/{id}/delete──► Citadel
   │  validate inbox_path present
   │  create DeleteInbox JobDB
-  │  transition("deleting") via Barbican
+  │  delete_start via Barbican
   │  executor.submit(job) → Running
   ▼
-worker removes inbox directory → callback → Deleted (via Barbican)
+worker removes inbox directory → callback → delete_complete / delete_failure via Barbican
 ```
+
+**Delete progress:** `JobProgressRequest.transferred_bytes` means *bytes processed*; for a delete job Citadel forwards it to Barbican's `delete/progress` as `deleted_bytes` (with `total_bytes` and `phase`). `citadel-job`'s `execute_delete` does not currently send progress reports, so in practice a delete goes straight from `Deleting` to its terminal state.
 
 ---
 
@@ -242,7 +266,7 @@ worker removes inbox directory → callback → Deleted (via Barbican)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CITADEL_BARBICAN_API_URL` | `http://barbican:8080` | Barbican API base URL |
-| `CITADEL_BARBICAN_API_RETRY_MAX` | `5` | Max retries for state transitions |
+| `CITADEL_BARBICAN_API_RETRY_MAX` | `5` | Retries per call after the first attempt; also the circuit-breaker trip threshold |
 | `CITADEL_BARBICAN_API_RETRY_BACKOFF_MS` | `1000` | Initial backoff (doubles, capped 30s) |
 | `CITADEL_BARBICAN_API_TIMEOUT_SECS` | `10` | Per-request timeout |
 
@@ -272,10 +296,10 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 
 | Failure | Behavior |
 |---------|----------|
-| Barbican API unreachable | Retry with backoff; after `RETRY_MAX` → operation fails |
+| Barbican API unreachable | Retry with backoff; after `RETRY_MAX` retries → operation fails (`bad_gateway`, 502); repeated failures open the breaker (`service_unavailable`, 503) |
 | 409 Conflict | Fail immediately (no retry) |
 | Inbox not found | `InboxNotFound` (404) |
-| Inbox in wrong state | `InvalidInboxState` (409) |
+| Inbox in wrong state | Barbican 409 → `AppError::Conflict` (409 `conflict`) |
 | Drop/network timeout | Per-request timeout; retry |
 
 ### Response Codes Seen by Citadel Consumers
@@ -284,7 +308,8 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 |------|---------|
 | 404 | Inbox not found |
 | 409 | Invalid state / Barbican conflict |
-| 503 | Barbican API unavailable (after retries) |
+| 502 | Barbican request failed (after retries) |
+| 503 | Barbican circuit breaker open |
 | 401/403 | Invalid JWT / insufficient role |
 
 ### Best Practice
@@ -300,12 +325,12 @@ CITADEL_BARBICAN_API_TIMEOUT_SECS=5
 ### Features
 
 - **Retry metrics**: `citadel_barbican_api_errors_total` counter (registered in `metrics.rs`)
-- **Circuit breaker gauge** (planned): `citadel_circuit_breaker_state` (0=closed, 1=open)
+- **Circuit breaker gauge**: `citadel_circuit_breaker_state` (0=closed, 1=open); set by `BarbicanClient` when constructed `with_metrics`
 
 ### Suggested Alerts
 
 - `citadel_barbican_api_errors_total` rate spikes
-- `citadel_circuit_breaker_state == 1` (planned)
+- `citadel_circuit_breaker_state == 1`
 - Job failures caused by Barbican coordination (`job.status = Failed`)
 
 ---

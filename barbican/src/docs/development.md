@@ -118,12 +118,16 @@ BARBICAN_MONGODB_DATABASE=data_warehouse_dev
 BARBICAN_KEYCLOAK_URL=http://localhost:8080
 BARBICAN_KEYCLOAK_REALM=data-warehouse
 BARBICAN_KEYCLOAK_CLIENT_ID=barbican-dev
-BARBICAN_KEYCLOAK_CLIENT_SECRET=dev-secret
+BARBICAN_REQUIRED_ROLES=read,write
 BARBICAN_CITADEL_API_URL=http://localhost:8081
-BARBICAN_INBOX_BASE_PATH=./data/inboxes
 BARBICAN_PROMETHEUS_PORT=9091
 RUST_LOG=debug
 ```
+
+Auth variables (`BARBICAN_KEYCLOAK_*`, `BARBICAN_REQUIRED_ROLES`, ...) are
+read by `common::AuthConfig::from_env_prefixed("BARBICAN")`; an invalid value
+stops startup before MongoDB is contacted. There is no client secret
+variable. See [Configuration](configuration.md).
 
 ### Run with Cargo
 
@@ -170,13 +174,12 @@ barbican/src/
 │   ├── mod.rs
 │   ├── main_tests.rs
 │   └── handlers/
-│       ├── create_inbox.rs
-│       ├── get_inbox.rs
+│       ├── create_inbox_tests.rs
+│       ├── get_inbox_tests.rs
+│       ├── ready_tests.rs
 │       └── ...
-└── test_utils/         # Test utilities
-    ├── mod.rs
-    ├── fixtures.rs
-    └── mock_store.rs
+└── test_utils/         # Test utilities (cfg(test))
+    └── mod.rs          # create_test_state, test_auth_state
 ```
 
 ### Running Tests
@@ -203,31 +206,53 @@ cargo tarpaulin --package barbican --out html
 
 ### Test Utilities
 
+`crate::test_utils` is `#[cfg(test)]` (in-crate tests only). It re-exports
+`common::test_utils::*` and `common::MockInboxStore`, and adds:
+
+- `create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState>` — default
+  `Config`, no Citadel client, `test_auth_state()`, fresh metrics.
+- `test_auth_state() -> Arc<common::AuthMiddlewareState>` — built with
+  `common::build_auth_state` from a literal `AuthConfig` (unreachable
+  localhost Keycloak, roles `read`/`write`); no environment variables read.
+
 **Mock Store:**
 ```rust
-use barbican::test_utils::MockInboxStore;
+use crate::test_utils::create_test_state;
+use common::MockInboxStore;
+use common::test_utils::create_test_inbox_with_id;
 
 #[tokio::test]
 async fn test_handler_with_mock() {
+    let inbox_id = ObjectId::new();
+    let inbox = create_test_inbox_with_id(inbox_id, "test-inbox", 100);
+
     let mut mock_store = MockInboxStore::new();
     mock_store
         .expect_find_one()
-        .returning(|_| Ok(Some(test_fixtures::create_inbox())));
-    
-    let state = AppState::new(Arc::new(mock_store), test_config());
-    let app = create_app(Arc::new(state));
-    
-    // Test your handler
+        .returning(move |_| Ok(Some(inbox.clone())));
+
+    let state = create_test_state(Arc::new(mock_store));
+    let app = Router::new()
+        .route("/api/v1/inbox/{id}", get(get_inbox))
+        .with_state(state);
+
+    // Drive `app` with tower::ServiceExt::oneshot
 }
 ```
 
-**Test Fixtures:**
+**Production wiring** (outside tests), for reference:
 ```rust
-use barbican::test_utils::fixtures;
+let auth_state = common::build_auth_state(&auth_config, "barbican");
+let state = Arc::new(AppState::new(store, config, auth_state));
+```
+
+**Test Fixtures** (`common::test_utils`):
+```rust
+use common::test_utils::create_test_inbox_with_status;
 
 #[test]
 fn test_with_fixture() {
-    let inbox = fixtures::create_test_inbox(InboxStatus::Ready);
+    let inbox = create_test_inbox_with_status("test-inbox", 100, InboxStatus::Ready);
     assert_eq!(inbox.status, InboxStatus::Ready);
 }
 ```
@@ -239,7 +264,7 @@ fn test_with_fixture() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::fixtures;
+    use crate::test_utils::create_test_state;
     
     #[test]
     fn test_validate_inbox_name() {
@@ -251,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_inbox_handler() {
         let mock_store = MockInboxStore::new();
-        let state = AppState::new(Arc::new(mock_store), test_config());
+        let state = create_test_state(Arc::new(mock_store));
         
         let request = CreateInboxRequest {
             name: "test-inbox".to_string(),
@@ -513,9 +538,14 @@ pub async fn create_inbox(
 
 **Solutions:**
 1. Verify Keycloak is running and accessible
-2. Check `BARBICAN_KEYCLOAK_CLIENT_SECRET` is correct
-3. Ensure JWKS URL is correct: `{keycloak_url}/realms/{realm}/protocol/openid-connect/certs`
-4. Verify token hasn't expired
+2. Check `BARBICAN_KEYCLOAK_URL` includes any path prefix your Keycloak needs
+   (e.g. `.../auth` for Keycloak < 17) — JWKS URL is
+   `{BARBICAN_KEYCLOAK_URL}/realms/{realm}/protocol/openid-connect/certs`
+3. Check the token's `iss` equals `{BARBICAN_KEYCLOAK_URL}/realms/{realm}` and
+   its `aud` contains `BARBICAN_KEYCLOAK_CLIENT_ID` (needs an audience mapper)
+4. Verify token hasn't expired (leeway `BARBICAN_TOKEN_LEEWAY_MS`)
+5. Make sure you set the `BARBICAN_`-prefixed names — unprefixed
+   `KEYCLOAK_URL` etc. are no longer read
 
 ### MongoDB Connection Errors
 
@@ -635,7 +665,9 @@ spec:
 # Health endpoint (no auth required)
 curl http://localhost:8080/health
 
-# Readiness endpoint (checks MongoDB connectivity)
+# Readiness endpoint (pings MongoDB):
+#   200 {"status":"ready","mongodb":"connected"}
+#   503 {"status":"not_ready","mongodb":"disconnected"}
 curl http://localhost:8080/ready
 
 # Metrics endpoint

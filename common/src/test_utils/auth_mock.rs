@@ -37,14 +37,18 @@ pub fn mock_jwks() -> serde_json::Value {
     })
 }
 
-/// Create a mock Keycloak server for testing
+/// Create a mock Keycloak server for testing.
+///
+/// Serves realm `test` at the layout `AuthConfig` expects (D10: no hard-coded
+/// `/auth/` segment), so the returned base URL can be used directly as
+/// `keycloak_url`.
 pub async fn create_mock_keycloak_server() -> (String, tokio::task::JoinHandle<()>) {
     let app = Router::new()
         .route(
-            "/auth/realms/test/protocol/openid-connect/certs",
+            "/realms/test/protocol/openid-connect/certs",
             get(|| async { Json(mock_jwks()) }),
         )
-        .route("/auth/realms/test", get(|| async { StatusCode::OK }));
+        .route("/realms/test", get(|| async { StatusCode::OK }));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
