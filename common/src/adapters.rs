@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use mongodb::{
     Collection,
     bson::Document,
+    options::FindOptions,
     results::{DeleteResult, InsertOneResult, UpdateResult},
 };
 
@@ -19,12 +20,36 @@ impl MongoInboxStore {
 
 #[async_trait]
 impl InboxStore for MongoInboxStore {
+    /// `{ping: 1}` against the `admin` database of the collection's client.
+    async fn ping(&self) -> Result<(), mongodb::error::Error> {
+        self.collection
+            .client()
+            .database("admin")
+            .run_command(mongodb::bson::doc! { "ping": 1 })
+            .await
+            .map(|_| ())
+    }
+
     async fn insert_one(&self, inbox: InboxDB) -> Result<InsertOneResult, mongodb::error::Error> {
         self.collection.insert_one(inbox).await
     }
 
     async fn find_one(&self, filter: Document) -> Result<Option<InboxDB>, mongodb::error::Error> {
         self.collection.find_one(filter).await
+    }
+
+    async fn find_many(
+        &self,
+        filter: Document,
+        options: FindOptions,
+    ) -> Result<Vec<InboxDB>, mongodb::error::Error> {
+        let cursor = self.collection.find(filter).with_options(options).await?;
+        use futures_util::TryStreamExt;
+        cursor.try_collect().await
+    }
+
+    async fn count(&self, filter: Document) -> Result<u64, mongodb::error::Error> {
+        self.collection.count_documents(filter).await
     }
 
     async fn update_one(

@@ -29,3 +29,22 @@ where
         ),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+
+    #[test]
+    fn router_logging_layer_applies_layers() {
+        // Build a minimal router and apply the logging layer.
+        // This is a compile-time check that `router_logging_layer` accepts a generic Router<T>
+        // and returns a Router<T> with TraceLayer + TimeoutLayer applied.
+        let handler = || async { "ok" };
+        let base: Router<()> = Router::new().route("/ping", get(handler));
+        let layered = router_logging_layer(base);
+
+        // Verify the layered router still compiles and is a Router.
+        let _: Router<()> = layered;
+    }
+}

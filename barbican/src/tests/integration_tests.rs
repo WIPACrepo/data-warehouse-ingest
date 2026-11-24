@@ -11,7 +11,25 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::handlers::{create_inbox, delete_inbox, get_inbox, publish_inbox};
-use crate::{CreateInbox, InboxDB, InboxStatus, MockInboxStore};
+use crate::{AppState, Config, CreateInbox, InboxDB, InboxStatus};
+use common::MockInboxStore;
+
+/// Helper to create test AppState
+fn create_test_state(store: Arc<MockInboxStore>) -> Arc<AppState> {
+    let config = Config::default();
+
+    let auth_state = crate::test_utils::test_auth_state();
+
+    let metrics = Arc::new(crate::metrics::BarbicanMetrics::new().unwrap());
+
+    Arc::new(AppState {
+        store,
+        citadel_client: None,
+        config,
+        auth_state,
+        metrics,
+    })
+}
 
 /// End-to-end test for full inbox lifecycle
 #[tokio::test]
@@ -34,11 +52,16 @@ async fn test_full_inbox_lifecycle() {
         id: Some(inbox_id),
         name: create_inbox_data.name.clone(),
         size: create_inbox_data.size,
-        status: InboxStatus::Active,
+        status: InboxStatus::Creating,
         warehouse_path: create_inbox_data.warehouse_path.clone(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -66,10 +89,11 @@ async fn test_full_inbox_lifecycle() {
         .returning(move |_| Ok(Some(expected_inbox.clone())));
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox", post(create_inbox))
         .route("/api/v1/inbox/{id}", get(get_inbox))
-        .with_state(store);
+        .with_state(state);
 
     // Step 1: Create inbox
     let create_response = app
@@ -87,14 +111,14 @@ async fn test_full_inbox_lifecycle() {
         .await
         .unwrap();
 
-    assert_eq!(create_response.status(), StatusCode::OK);
+    assert_eq!(create_response.status(), StatusCode::ACCEPTED);
 
     // Step 2: Retrieve inbox
     let get_response = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -110,7 +134,7 @@ async fn test_full_inbox_lifecycle() {
 
     assert_eq!(retrieved_inbox["name"], "lifecycle-test");
     assert_eq!(retrieved_inbox["size"], 250);
-    assert_eq!(retrieved_inbox["status"], "active");
+    assert_eq!(retrieved_inbox["status"], "creating");
 }
 
 /// Test delete operation
@@ -125,11 +149,16 @@ async fn test_delete_inbox() {
         id: Some(inbox_id),
         name: "delete-test".to_string(),
         size: 100,
-        status: InboxStatus::Active,
+        status: InboxStatus::Ready,
         warehouse_path: "/test/delete".to_string(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -144,25 +173,31 @@ async fn test_delete_inbox() {
         .expect_update_one()
         .with(predicate::always(), predicate::always())
         .times(1)
-        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+        .returning(|_, _| {
+            let mut res = mongodb::results::UpdateResult::default();
+            res.matched_count = 1;
+            res.modified_count = 1;
+            Ok(res)
+        });
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox/{id}", delete(delete_inbox))
-        .with_state(store);
+        .with_state(state);
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/v1/inbox/{}", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}", inbox_id.to_hex()))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 }
 
 /// Test publish operation
@@ -177,11 +212,16 @@ async fn test_publish_inbox() {
         id: Some(inbox_id),
         name: "publish-test".to_string(),
         size: 100,
-        status: InboxStatus::Active,
+        status: InboxStatus::Ready,
         warehouse_path: "/test/publish".to_string(),
+        inbox_path: None,
         lifetime: None,
         archive_enabled: false,
         archive_sites: vec![],
+        version: 0,
+        current_job_id: None,
+        progress: None,
+        error: None,
         created_at: now,
         updated_at: now,
     };
@@ -196,18 +236,24 @@ async fn test_publish_inbox() {
         .expect_update_one()
         .with(predicate::always(), predicate::always())
         .times(1)
-        .returning(|_, _| Ok(mongodb::results::UpdateResult::default()));
+        .returning(|_, _| {
+            let mut res = mongodb::results::UpdateResult::default();
+            res.matched_count = 1;
+            res.modified_count = 1;
+            Ok(res)
+        });
 
     let store = Arc::new(mock_store);
+    let state = create_test_state(store.clone());
     let app = Router::new()
         .route("/api/v1/inbox/{id}/publish", post(publish_inbox))
-        .with_state(store);
+        .with_state(state);
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
+                .uri(format!("/api/v1/inbox/{}/publish", inbox_id.to_hex()))
                 .header("Content-Type", "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),
@@ -215,5 +261,5 @@ async fn test_publish_inbox() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 }

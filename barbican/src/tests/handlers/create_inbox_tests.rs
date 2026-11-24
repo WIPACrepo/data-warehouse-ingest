@@ -12,6 +12,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::handlers::create_inbox;
+    use crate::test_utils::create_test_state;
     use common::MockInboxStore;
     use common::test_utils::{create_test_inbox, create_test_request};
 
@@ -39,9 +40,10 @@ mod tests {
             });
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let request_body = create_test_request("test-inbox", 100);
         let response = app
@@ -56,7 +58,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -82,9 +84,10 @@ mod tests {
             });
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let request_body = create_test_request("minimal-inbox", 0);
         let response = app
@@ -99,7 +102,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -123,9 +126,10 @@ mod tests {
             .returning(move |_| Err(db_error.clone()));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let request_body = create_test_request("test-inbox", 100);
         let response = app
@@ -147,9 +151,10 @@ mod tests {
     async fn test_create_inbox_invalid_json() {
         let mock_store = MockInboxStore::new();
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -180,9 +185,10 @@ mod tests {
             .returning(move |_| Ok(Some(existing_inbox.clone())));
 
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         let request_body = create_test_request("test-inbox", 100);
         let response = app
@@ -204,9 +210,10 @@ mod tests {
     async fn test_create_inbox_missing_warehouse_path() {
         let mock_store = MockInboxStore::new();
         let store = Arc::new(mock_store);
+        let state = create_test_state(store.clone());
         let app = Router::new()
             .route("/api/v1/inbox", post(create_inbox))
-            .with_state(store);
+            .with_state(state);
 
         // Send request with empty warehouse_path
         let request_body = r#"{"name": "test", "size": 100, "warehouse_path": ""}"#;

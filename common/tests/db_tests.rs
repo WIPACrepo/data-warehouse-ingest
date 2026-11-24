@@ -1,6 +1,7 @@
 //! Integration tests requiring a running MongoDB instance
 //!
-//! Run with: cargo test-integration
+//! Run with: `cargo test --package common --features integration-tests`
+//! (`integration-tests` implies `test-utils`, which provides `InboxBuilder`).
 
 #![cfg(feature = "integration-tests")]
 
@@ -13,26 +14,32 @@ use common::{
 };
 use mongodb::Collection;
 
-#[tokio::test]
-async fn test_db_setup_with_default_url() {
-    let result = db_setup().await;
-    let _ = result;
+fn env_uri() -> String {
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| "mongodb://localhost:27017".to_string())
 }
 
-async fn clear_db() -> Result<(), mongodb::error::Error> {
-    // 1. Fetch a cursor of all collection names
-    let client = db_setup().await;
-    let db = db_database(client);
+fn env_db() -> String {
+    std::env::var("DATABASE_NAME").unwrap_or_else(|_| "data_warehouse".to_string())
+}
+
+#[tokio::test]
+async fn test_db_setup_with_default_url() {
+    let uri = env_uri();
+    let db_name = env_db();
+    let result = db_setup(&uri, &db_name).await;
+    assert!(result.is_ok());
+}
+
+async fn clear_db(client: &mongodb::Client) -> Result<(), mongodb::error::Error> {
+    let db_name = env_db();
+    let db = db_database(client, &db_name);
     let collection_names = db.list_collection_names().await?;
 
-    // 2. Iterate and drop each collection
     for name in collection_names {
-        // Skip system collections if needed
         if !name.starts_with("system.") {
             db.collection::<mongodb::bson::Document>(&name)
                 .drop()
                 .await?;
-            println!("Dropped collection: {}", name);
         }
     }
 
@@ -41,10 +48,12 @@ async fn clear_db() -> Result<(), mongodb::error::Error> {
 
 #[tokio::test]
 async fn test_mongo_inbox_store_insert_and_find() {
-    let client = db_setup().await;
-    clear_db().await.unwrap();
-    let collection: Collection<InboxDB> = db_collection(client, "tests");
+    let uri = env_uri();
+    let db_name = env_db();
+    let client = db_setup(&uri, &db_name).await.expect("db_setup failed");
+    clear_db(&client).await.expect("clear_db failed");
 
+    let collection: Collection<InboxDB> = db_collection(&client, &db_name, "tests");
     let store = MongoInboxStore::new(collection);
 
     let inbox = InboxBuilder::new()
@@ -54,12 +63,11 @@ async fn test_mongo_inbox_store_insert_and_find() {
     let result = store.insert_one(inbox.clone()).await;
     assert!(result.is_ok());
 
-    // Then try to find it
     let filter = mongodb::bson::doc! { "name": "Integration Test Inbox" };
     let found = store.find_one(filter).await.unwrap();
 
     assert!(found.is_some());
     assert_eq!(found.unwrap().name, "Integration Test Inbox");
 
-    clear_db().await.unwrap();
+    clear_db(&client).await.expect("clear_db cleanup failed");
 }

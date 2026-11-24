@@ -3,4 +3,48 @@ name = "citadel"
 version = "0.0.0"
 edition = "2024"
 
+[[bin]]
+name = "citadel"
+path = "src/main.rs"
+
+[[bin]]
+name = "citadel-job"
+path = "src/job_main.rs"
+
 [dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+common = { workspace = true, features = ["auth"] }
+futures = { workspace = true }
+hex = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+mongodb = { workspace = true }
+nix = { workspace = true }
+notify = { workspace = true }
+prometheus = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+axum-test = { workspace = true }
+# Same pattern as Barbican: tests use common::test_utils (signed test JWTs,
+# mock Keycloak). Cargo unifies features for test builds only, so the
+# production graph keeps `auth` alone.
+common = { workspace = true, features = ["test-utils"] }
+
+[features]
+default = []
+integration-tests = []

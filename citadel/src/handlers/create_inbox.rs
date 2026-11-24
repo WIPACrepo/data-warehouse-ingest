@@ -1,0 +1,126 @@
+//! Create inbox handler
+
+use axum::{
+    Json,
+    extract::{Extension, Path, State},
+    http::StatusCode,
+};
+use mongodb::bson::{doc, oid::ObjectId};
+use serde::{Deserialize, Serialize};
+use tracing::{error, info};
+
+use crate::AppState;
+use crate::db::inboxes_collection;
+use crate::error::{AppError, Result};
+use crate::handlers::compensate::{Operation, codes, compensate};
+use common::Claims;
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInboxParams {
+    pub warehouse_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateInboxResponse {
+    pub inbox_id: String,
+    pub inbox_path: String,
+    pub status: String,
+}
+
+pub async fn create_inbox(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(inbox_id): Path<String>,
+    Json(_params): Json<CreateInboxParams>,
+) -> Result<(StatusCode, Json<CreateInboxResponse>)> {
+    // Check authorization
+    if !claims.can_write("citadel") {
+        return Err(AppError::Forbidden(
+            "Insufficient permissions to create inbox".to_string(),
+        ));
+    }
+
+    let object_id =
+        ObjectId::parse_str(&inbox_id).map_err(|_| AppError::InboxNotFound(inbox_id.clone()))?;
+
+    // Get inbox metadata directly from MongoDB (shared collection, read-only for Citadel)
+    let inboxes_coll = inboxes_collection(&state.db_client, &state.config);
+    let inbox = inboxes_coll
+        .find_one(doc! { "_id": object_id })
+        .await
+        .map_err(|e| {
+            error!("Failed to get inbox from MongoDB: {}", e);
+            AppError::DatabaseError(format!("Failed to query inbox: {}", e))
+        })?
+        .ok_or_else(|| AppError::InboxNotFound(inbox_id.clone()))?;
+
+    // Validate inbox state - should be Active with no inbox_path
+    if inbox.inbox_path.is_some() {
+        return Err(AppError::InvalidStateTransition(
+            "Inbox already has a path assigned".to_string(),
+        ));
+    }
+
+    // Create a job_id for tracking this create operation
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    // Signal start of creation to Barbican
+    state
+        .barbican_client
+        .create_start(&object_id, &job_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to signal create start to Barbican: {}", e);
+            e
+        })?;
+
+    // Create inbox directory. On failure, move the inbox out of `creating`
+    // (compensate) and return the original error.
+    let inbox_path = match state.storage_manager.create_inbox(&object_id).await {
+        Ok(path) => path,
+        Err(e) => {
+            compensate(
+                &state,
+                Operation::Create,
+                &object_id,
+                &job_id,
+                codes::STORAGE_ERROR,
+                &e,
+            )
+            .await;
+            return Err(e);
+        }
+    };
+
+    // Signal completion to Barbican. If that fails the directory stays
+    // (`create_dir_all` is idempotent, so a retried create reuses it) and the
+    // inbox is moved to `failed`.
+    if let Err(e) = state
+        .barbican_client
+        .create_complete(&object_id, &job_id, &inbox_path.to_string_lossy())
+        .await
+    {
+        error!("Failed to signal create complete to Barbican: {}", e);
+        compensate(
+            &state,
+            Operation::Create,
+            &object_id,
+            &job_id,
+            codes::BARBICAN_ERROR,
+            &e,
+        )
+        .await;
+        return Err(e);
+    }
+
+    info!("Created inbox {} at path {:?}", inbox_id, inbox_path);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateInboxResponse {
+            inbox_id,
+            inbox_path: inbox_path.to_string_lossy().to_string(),
+            status: "ready".to_string(),
+        }),
+    ))
+}

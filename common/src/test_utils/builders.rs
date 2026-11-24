@@ -1,4 +1,4 @@
-use crate::models::{CreateInbox, InboxDB, InboxStatus};
+use crate::models::{CreateInbox, InboxDB, InboxProgress, InboxStatus};
 use chrono::Utc;
 use mongodb::bson::oid::ObjectId;
 
@@ -10,9 +10,13 @@ pub struct InboxBuilder {
     size: u64,
     status: InboxStatus,
     warehouse_path: String,
+    inbox_path: Option<String>,
     lifetime: Option<u64>,
     archive_enabled: bool,
     archive_sites: Vec<String>,
+    version: u32,
+    current_job_id: Option<String>,
+    progress: Option<InboxProgress>,
 }
 
 impl InboxBuilder {
@@ -24,9 +28,13 @@ impl InboxBuilder {
             size: 100,
             status: InboxStatus::Active,
             warehouse_path: "/test/warehouse/path".to_string(),
+            inbox_path: None,
             lifetime: None,
             archive_enabled: false,
             archive_sites: vec![],
+            version: 0,
+            current_job_id: None,
+            progress: None,
         }
     }
 
@@ -84,6 +92,24 @@ impl InboxBuilder {
         self
     }
 
+    /// Sets the version
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Sets the current job ID
+    pub fn with_current_job_id(mut self, job_id: String) -> Self {
+        self.current_job_id = Some(job_id);
+        self
+    }
+
+    /// Sets the progress
+    pub fn with_progress(mut self, progress: InboxProgress) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
     /// Builds the InboxDB instance
     pub fn build(self) -> InboxDB {
         let now = Utc::now();
@@ -93,9 +119,14 @@ impl InboxBuilder {
             size: self.size,
             status: self.status,
             warehouse_path: self.warehouse_path,
+            inbox_path: self.inbox_path,
             lifetime: self.lifetime,
             archive_enabled: self.archive_enabled,
             archive_sites: self.archive_sites,
+            version: self.version,
+            current_job_id: self.current_job_id,
+            progress: self.progress,
+            error: None,
             created_at: now,
             updated_at: now,
         }
